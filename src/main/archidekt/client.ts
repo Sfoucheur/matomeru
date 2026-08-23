@@ -22,6 +22,10 @@
  * omits them entirely, so `deckCount` can exceed the number of decks listed.
  */
 
+import { t } from '@shared/i18n/index'
+import type { TranslationKey } from '@shared/types'
+import { getLocale } from '../db/repos/settings.js'
+
 const BASE = 'https://archidekt.com/api'
 // No published rate limit, so stay conservative — this is someone else's service.
 const MIN_INTERVAL_MS = 500
@@ -48,6 +52,17 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return run
 }
 
+/**
+ * Localised message, resolved at throw time from the stored locale.
+ *
+ * These reach the user verbatim through the renderer's single error funnel, so
+ * they were the last English strings left in a French app — and a sync failure is
+ * exactly where someone reads carefully.
+ */
+function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
+  return t(getLocale(), key, vars)
+}
+
 export class ArchidektError extends Error {
   constructor(
     message: string,
@@ -70,7 +85,10 @@ async function request<T>(path: string, allowNotFound = false): Promise<T | null
         response = await fetch(`${BASE}${path}`, { headers: HEADERS })
       } catch (err) {
         if (attempt >= 3) {
-          throw new ArchidektError(`Could not reach Archidekt: ${(err as Error).message}`, 0)
+          throw new ArchidektError(
+            tr('err.archidektUnreachable', { message: (err as Error).message }),
+            0
+          )
         }
         await sleep(600 * attempt)
         continue
@@ -78,14 +96,17 @@ async function request<T>(path: string, allowNotFound = false): Promise<T | null
 
       if (response.status === 404) {
         if (allowNotFound) return null
-        throw new ArchidektError('Not found on Archidekt.', 404, true)
+        throw new ArchidektError(tr('err.archidektNotFound'), 404, true)
       }
       if ((response.status === 429 || response.status >= 500) && attempt < 4) {
         await sleep(1200 * attempt)
         continue
       }
       if (!response.ok) {
-        throw new ArchidektError(`Archidekt returned ${response.status}`, response.status)
+        throw new ArchidektError(
+          tr('err.archidektStatus', { status: response.status }),
+          response.status
+        )
       }
       return (await response.json()) as T
     }

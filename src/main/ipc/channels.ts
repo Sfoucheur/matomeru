@@ -30,6 +30,7 @@ export const CH = {
   pickListsConfirm: 'pickLists:confirm',
   pickListsCancel: 'pickLists:cancel',
   pickListsReopen: 'pickLists:reopen',
+  pickListsRevert: 'pickLists:revert',
   pickListsDelete: 'pickLists:delete',
   pickListsExport: 'pickLists:export',
 
@@ -40,6 +41,16 @@ export const CH = {
   decksAddByUrl: 'decks:addByUrl',
   decksDelete: 'decks:delete',
   decksLabelColors: 'decks:labelColors',
+  decksPullSources: 'decks:pullSources',
+  decksChoices: 'decks:choices',
+  decksMoveToCollection: 'decks:moveToCollection',
+  decksMoveToDeck: 'decks:moveToDeck',
+  decksRevertMove: 'decks:revertMove',
+
+  // Undo / redo
+  undoUndo: 'undo:undo',
+  undoRedo: 'undo:redo',
+  undoState: 'undo:state',
 
   // Prices / stats / settings
   pricesRefresh: 'prices:refresh',

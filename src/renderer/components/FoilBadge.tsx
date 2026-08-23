@@ -42,11 +42,11 @@ export default function FoilBadge({
 
   // A gold chip over artwork, so it reads against both dark and light cards.
   const chip =
-    'flex items-center gap-0.5 rounded bg-gold-500/90 px-1 py-0.5 text-[9px] font-bold uppercase text-ink-950'
+    'flex items-center gap-0.5 rounded bg-gold-500 px-1 py-0.5 text-[9px] font-bold uppercase text-ink-950'
 
   if (density === 'minimal') {
     return (
-      <span title={title} className={chip} aria-label={title}>
+      <span title={title} className={chip} aria-label={title} data-foil-badge="">
         <Sparkles size={9} />
         {forced && <span aria-hidden>★</span>}
       </span>
@@ -56,7 +56,7 @@ export default function FoilBadge({
   const shown = foilLabelForDensity(full, density)
 
   return (
-    <span title={title} className={`${chip} max-w-full`}>
+    <span title={title} className={`${chip} max-w-full`} data-foil-badge="">
       <Sparkles size={9} className="shrink-0" />
       <span className="truncate">{shown}</span>
       {forced && <span aria-hidden>★</span>}

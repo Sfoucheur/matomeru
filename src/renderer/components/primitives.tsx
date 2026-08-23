@@ -181,6 +181,7 @@ export function QuantityStepper({
   return (
     <div className="inline-flex items-center overflow-hidden rounded-lg border border-ink-700 bg-ink-800">
       <button
+        data-step="down"
         onClick={() => onChange(clamp(value - 1))}
         disabled={value <= min}
         className={`${btn} grid place-items-center text-ink-400 transition-colors hover:bg-ink-750
@@ -190,6 +191,7 @@ export function QuantityStepper({
         <Minus size={12} />
       </button>
       <input
+        data-step="value"
         value={draft}
         onChange={(e) => setDraft(e.target.value.replace(/[^\d]/g, ''))}
         onBlur={commit}
@@ -200,6 +202,7 @@ export function QuantityStepper({
         aria-label={t('common.quantity')}
       />
       <button
+        data-step="up"
         onClick={() => onChange(clamp(value + 1))}
         disabled={max !== undefined && value >= max}
         className={`${btn} grid place-items-center text-ink-400 transition-colors hover:bg-ink-750
@@ -451,7 +454,7 @@ export function Modal({
             // sit above the overlay rather than below it.
             role="dialog"
             aria-modal="true"
-            className={`panel flex max-h-[85vh] w-full flex-col overflow-hidden shadow-2xl shadow-black/60 ${width}`}
+            className={`panel-floating flex max-h-[85vh] w-full flex-col overflow-hidden shadow-2xl shadow-black/60 ${width}`}
           >
             <header className="flex shrink-0 items-center justify-between border-b border-ink-700 px-5 py-3.5">
               <h2 className="text-sm font-semibold text-ink-100">{title}</h2>

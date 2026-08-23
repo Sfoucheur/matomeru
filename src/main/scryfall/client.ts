@@ -7,6 +7,20 @@
  * no matter how many features are talking to the API at once.
  */
 
+import { t } from '@shared/i18n/index'
+import type { TranslationKey } from '@shared/types'
+import { getLocale } from '../db/repos/settings.js'
+
+/**
+ * Localised message, resolved at throw time from the stored locale.
+ *
+ * These reach the user verbatim through the renderer's single error funnel — a
+ * failed lookup is exactly when someone reads the message.
+ */
+function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
+  return t(getLocale(), key, vars)
+}
+
 const BASE = 'https://api.scryfall.com'
 /*
   Scryfall asks for under 10 requests a second and warns that sustained abuse
@@ -87,7 +101,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       } catch (err) {
         if (attempt >= 3) {
           throw new ScryfallError(
-            `Could not reach Scryfall: ${(err as Error).message}`,
+            tr('err.scryfallUnreachable', { message: (err as Error).message }),
             0,
             false
           )
@@ -98,7 +112,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
       if (response.status === 404) {
         if (options.allowNotFound) return null
-        throw new ScryfallError('Card not found on Scryfall.', 404, true)
+        throw new ScryfallError(tr('err.scryfallNotFound'), 404, true)
       }
 
       // 429 means we have been too eager; back off and retry the same request.
@@ -121,7 +135,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
           /* non-JSON error body */
         }
         throw new ScryfallError(
-          `Scryfall returned ${response.status}${detail}`,
+          tr('err.scryfallStatus', { status: response.status, detail }),
           response.status,
           false
         )

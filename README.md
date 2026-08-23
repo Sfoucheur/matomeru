@@ -268,6 +268,106 @@ imply. They are the reason parts of the code look the way they do.
   `""`, not null.
 - Throttled to 1 request / 500 ms, and decks whose `updatedAt` is unchanged are skipped.
 
+## Moving cards between decks and the collection
+
+A card sitting in an Archidekt deck under a label colour you have mapped to "owned"
+is a physical card of yours, just sleeved. It can be moved into the collection, and
+a card in the collection can be moved into a deck — in either direction, at once,
+from the Decks screen or the Collection. Moving into a deck asks which deck and how
+many; a deck need not already list the card, so you can put anything you own into
+one.
+
+A move **relocates**: the card is yours before and after, so your card count and
+your total value do not change. That is what makes it a different act from a pick
+list, which is for cards **leaving your possession** — which is why validating one
+removes them. A deck card can still go on a pick list, and then it carries a
+destination, because pulling a card out to keep and pulling it out to sell are
+different errands: *to the collection* keeps it, *out of the collection* does not.
+
+Archidekt is read-only reference data, so the app cannot change a decklist there.
+Instead `deck_card_moves` records the local divergence — negative for copies taken
+out, positive for copies put in — and the deck screen tags it: **Out** or **Added**,
+each listing its moves with an undo. Each sync compares its baseline against what
+Archidekt now says: caught up in full, the marker goes; in part, it shrinks and
+rebases; not at all, it stands. One rule, both directions.
+
+Two design points worth knowing:
+
+- **Moves are written into `deck_cards`, not applied when reading it.** The deck
+  rows *are* what the deck physically holds. An earlier version adjusted quantities
+  at read time, which meant threading the adjustment through the 27 queries that
+  read a deck — two of which never got it, and Stats ended up reporting a card and
+  $485 more than the Collection. Materialising deletes that whole class of bug
+  rather than guarding against it. The cost is that `applyDeckMoves` is not
+  idempotent, so it runs in exactly one place: inside `replaceDeckCards`, where the
+  rows are known to be pristine.
+- **An emptied slot keeps its row, at quantity 0.** Deleting it looked tidier and
+  hid the one fact worth reporting: moving the last copy out left the deck screen
+  with nothing to hang the tag on, so a deck missing a card looked complete and
+  there was nothing to click to undo. Rows at 0 are excluded from the derived
+  collection rows, so an empty slot is never mistaken for a holding.
+
+A card you moved into a deck has no Archidekt label, and the sync's possession
+recompute derives every flag from those labels — so it exempts rows the ledger says
+you put there yourself. Reading that from the ledger rather than a column on the row
+is deliberate: a flag had to be written and unwritten, and the version that did so
+marked a row as locally-added while *undoing* a move out, for copies that were
+Archidekt's all along.
+
+Two moves out are refused, both to stop one inventing a card: an entry not labelled
+as owned is a wishlist line rather than a card you hold, and a slot filled by a
+proxy cannot become a collection row without dragging real copies of the same
+printing into being proxies too — `collection_items` is UNIQUE on
+(scryfall_id, finish, condition), which does not include `proxied`.
+
+## Undo and redo
+
+Ctrl+Z and Ctrl+Y cover every local edit in the Collection, Decks and Pick lists —
+around twenty actions, including validating and reverting a pull. Syncs and price
+refreshes are deliberately outside it: they refetch from the network and can be
+run again, and a sync *clears* the history because it rewrites whole tables and
+could move rows out from under a pending step.
+
+The mechanism is a row-level before/after journal rather than hand-written inverse
+SQL, so insert, update and delete are one case — "make these rows look like this
+again" — and there is no per-action inverse to keep in step. The history is
+session-only, held in the main process, capped at 50 steps.
+
+Restoring a snapshot passes through intermediate states that violate foreign keys
+on their own — a pick list item references a collection row that has not been put
+back yet — so the restore runs with `PRAGMA defer_foreign_keys = ON` and the
+constraints are checked once, against the finished image. Ordering parents before
+children fixes the common case and the scopes are ordered that way, but it cannot
+fix every case: `setPrinting` legitimately passes two scopes over the same table,
+and one can remove a row the other is about to restore. Without the deferral,
+every undo of a validated pick list failed with *"FOREIGN KEY constraint failed"*.
+
+What that design costs is that each action must declare **which rows it can
+touch**, on a key a new row already satisfies. `collection_items` is scoped on its
+UNIQUE key rather than an id, because an add has no id yet and because changing a
+copy's finish moves it across that key and can merge it into a sibling row. Inside
+a text field Ctrl+Z is left to the browser: there it means "undo my typing", and
+stealing it to roll back a database write while you fixed a typo would be both
+surprising and destructive.
+
+## Floating surfaces
+
+Popovers, dialogs and toasts use `.panel-floating`, not `.panel`. The two want
+opposite things: sitting *on* the page, a 4% lightness step groups content without
+shouting; floating *over* it, the same step means no discernible edge. Measured,
+the old popover was 1.04 contrast against the page with a 1.21 border — opaque, but
+reading as though you could see through it. The edge carries the separation rather
+than the fill, because a fill bright enough to reach 3:1 against a dark page is no
+longer a dark theme.
+
+The tone colours (`good`, `warn`, `bad`) are overridden for a light shell, so each
+stays legible as text on the surface it lands on. Because they invert with the
+shell, a solid chip of one pairs correctly with `text-ink-950`, which inverts the
+other way: near-black on light amber in dark mode, white on dark amber in light. A
+fixed label colour would read 8:1 in one mode and 2.4:1 in the other. A tinted chip
+is fine on a panel — its text contrasts with the panel — but a chip over card
+artwork must be solid, since nothing controls what is behind it.
+
 ## Verification
 
 `npm run verify` runs 279 checks against a throwaway database and the live APIs, covering
@@ -337,6 +437,23 @@ the things most likely to break quietly:
 - **every tile row declares the same track count its height was computed from** — laying a short
   final chunk over fewer, wider tracks made it taller than its slot, and the overflow painted behind
   the rows below as duplicate giant cards
+
+Moves are checked as a **conservation property** rather than field by field: move,
+resync, revert, and assert the card count and the money are unchanged at every
+step, because a move only relocates. That is what caught the bugs worth recording —
+a read-time subtraction applied to *every* `deck_cards` row sharing an oracle, so
+one copy taken out emptied two slots when a deck listed the same card in two
+printings; and a check that asserted `held` survived a sync passed while the
+mechanism was broken, because `held` also counts the loose copy the fixture had left
+in the collection. The second is the more instructive: assert the mechanism, not a
+number that something else can satisfy.
+
+Undo is checked as a **generic property over every action**: do it, undo it, and a
+fingerprint of the whole database must equal what it was; redo it, and it must
+equal what it was after. One loop covers all of them, and it is what catches a
+scope too narrow to cover its action — the one way a before/after journal fails
+silently. The suite includes a deliberately under-scoped step that must fail the
+round trip, so the property cannot pass by measuring nothing.
 
 `npm run check:themes` measures every colour scheme in a running app. The ramps are built with
 `color-mix()` and `oklch(from ...)` over a few per-theme seeds, so nothing about a theme can be

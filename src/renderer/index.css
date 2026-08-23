@@ -59,6 +59,20 @@
   --color-gold-400: oklch(from var(--color-gold-500) calc(l + 0.05) c h);
   --color-gold-300: oklch(from var(--color-gold-500) calc(l + 0.12) c h);
 
+  /*
+    Label colour for a chip filled with a card-identity colour.
+
+    Fixed in both modes, and that is the point. The mana and rarity colours are
+    deliberately *not* themed — a black-mana pip states something about the card —
+    so a label that inverts with the theme is right in one mode and wrong in the
+    other. Measured: `text-ink-950` on `mana-u` reads 6:1 in dark and 2.70:1 in
+    light, because ink-950 becomes white while the blue stays put.
+
+    This is not the same as a chip filled with a *semantic* tone. Those do invert,
+    so they pair with the inverting ink instead — see the note beside --color-good.
+  */
+  --color-on-identity: #0b0d12;
+
   /* MTG mana colours, for colour-identity pips and filters. */
   --color-mana-w: #f8f2dc;
   --color-mana-u: #4a90d9;
@@ -74,10 +88,41 @@
   --color-rarity-mythic: #e07a3c;
   --color-rarity-special: #b072c9;
 
-  /* Semantic */
+  /*
+    Floating surfaces — popovers, dialogs, toasts.
+
+    Their own tokens because `.panel` was being used for both an inline panel and
+    a floating one, and the two want opposite things. Inline, sitting *on* the
+    page, a 4% lightness step is right: it groups content without shouting.
+    Floating *over* the page it is wrong, and measurably so — the popover
+    background came out at 1.04 contrast against the page and its border at 1.21,
+    so a dropdown had no discernible edge and read as though you could see
+    through it. (It could not: measured opacity was 1. The problem was never
+    alpha.)
+
+    The edge does the work here rather than the fill. A dark fill is what makes a
+    popover legible over bright card art; a light border is what separates it from
+    the dark page. Chasing a 3:1 fill against the page instead would mean a
+    mid-grey popover, which is not a dark theme any more.
+  */
+  --color-surface: #1b202b;
+  --color-surface-edge: #4a5464;
+
+  /*
+    Semantic tones. These are tuned for a dark page and are overridden for a light
+    one, so each stays legible as *text* on its own shell.
+
+    Because they invert with the shell, a solid chip of one of them pairs
+    correctly with `text-ink-950` — which inverts too, and in the opposite
+    direction: near-black on light amber in dark mode, white on dark amber in
+    light. A fixed label colour would be right in one mode and 2.4:1 in the other.
+  */
   --color-good: #4ba872;
   --color-warn: #d99a3c;
-  --color-bad: #d4574e;
+  /* Lightened from #d4574e, which measured 4.09:1 as text on a floating surface —
+     just under readable, and this is the colour an error message is written in. */
+  --color-bad: #e2716a;
+
 
   /*
     Segoe UI carries no Japanese glyphs, and this app shows plenty: the ま in the
@@ -113,6 +158,22 @@
   --color-ink-200: #333c4d;
   --color-ink-100: #1d2532;
   --color-ink-50: #0d1218;
+  /* On a light shell the page is already near-white, so a floating surface goes
+     pure white and leans harder on its border. */
+  --color-surface: #ffffff;
+  --color-surface-edge: #8b95a8;
+
+  /*
+    The semantic colours, darkened for a light shell.
+
+    The values in `@theme` are tuned to read on a dark page; on white the warn
+    amber measured 2.43 against a floating surface, so an error message was
+    fainter than the text around it. These are the same hues taken down to where
+    they carry small text on white.
+  */
+  --color-good: #1b6b3f;
+  --color-warn: #8a5a08;
+  --color-bad: #a8281f;
   /*
     The accent carries text on white here, so the band is inverted: every stop
     has to be dark enough to read, and the ordering flips with it — 300 is the
@@ -213,6 +274,10 @@
   --color-ink-800: #131313;
   --color-ink-750: #1b1b1b;
   --color-ink-700: #262626;
+  /* A floating surface needs *more* separation here, not less: everything it
+     sits on is pure black. */
+  --color-surface: #1f1f1f;
+  --color-surface-edge: #4a4a4a;
 }
 
 @layer base {
@@ -324,6 +389,19 @@
     background-color: var(--color-ink-850);
     border: 1px solid var(--color-ink-700);
     border-radius: var(--radius-card);
+  }
+
+  /*
+    A panel that floats over content rather than sitting in the layout.
+    Used by Popover, Modal and the toast stack. `opacity: 1` is stated
+    deliberately: a floating surface must never inherit a parent's fade, and
+    saying so here is cheaper than finding out from a screenshot that it did.
+  */
+  .panel-floating {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-surface-edge);
+    border-radius: var(--radius-card);
+    opacity: 1;
   }
 
   .field {

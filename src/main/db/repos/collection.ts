@@ -66,17 +66,30 @@ const ROW_SOURCES = `
     'deck', NULL,
     ${DECK_PRINTING}, ${DECK_FINISH},
     NULL,                                  -- Archidekt does not record condition
+    -- Simply what the deck rows say. deck_cards holds what each deck physically
+    -- contains: a card moved out has already been taken off the row, and one moved
+    -- in has been added to it, so nothing is adjusted while reading. That is the
+    -- whole reason moves are materialised -- the version that adjusted here had to
+    -- be repeated in every query that reads a deck, and was not.
+    -- (No backticks in this comment on purpose: it lives inside a TS template
+    -- literal, and one would close it.)
     SUM(dc.quantity),
     NULL, NULL, NULL, NULL,
     MAX(o.forced_lang), MAX(o.forced_name), MAX(o.foil_treatment),
     MAX(COALESCE(o.proxied, 0)),
     GROUP_CONCAT(DISTINCT d.name),
-    0                                      -- a card inside a deck cannot be staged
+    -- Nothing reserves a sleeved card. A pick list means cards leaving your
+    -- possession, and only collection rows can be staged into one; taking a card
+    -- out of a deck is a move, which happens at once and reserves nothing.
+    0
   FROM deck_cards dc
   JOIN decks d ON d.id = dc.deck_id
   ${DECK_OVERRIDE_JOIN}
   WHERE dc.label_possession = 'owned' AND ${DECK_PRINTING} IS NOT NULL
   GROUP BY ${DECK_PRINTING}, ${DECK_FINISH}
+  -- A slot whose copies have all been moved out is kept on the deck screen, so the
+  -- deck can say it is empty. It is not a holding, so it does not belong here.
+  HAVING SUM(dc.quantity) > 0
 `
 
 /**
@@ -363,8 +376,13 @@ function toCollectionRow(row: JoinedRow): CollectionRow {
       ...(row.forced_name ? { printed_name: row.forced_name } : {})
     },
     reserved: row.reserved,
-    // A card sleeved in a deck is not available to pull from bulk.
-    available: source === 'deck' ? 0 : row.quantity - row.reserved,
+    /*
+      Only a collection row can be staged. A sleeved card is moved to the
+      collection first, which is a different act with a different meaning: a pick
+      list is for cards leaving your possession, and moving one out of a deck loses
+      nothing. Floored, because a stale reservation must never offer a negative.
+    */
+    available: source === 'deck' ? 0 : Math.max(0, row.quantity - row.reserved),
     deck_count: row.deck_count,
     deck_names: row.deck_names ? row.deck_names.split(',').filter(Boolean) : [],
     unit_value: row.unit_value,
@@ -539,7 +557,7 @@ export function setQuantity(itemId: number, quantity: number): void {
   ).reserved
   if (quantity < reserved) {
     throw new Error(
-      `Cannot set quantity to ${quantity}: ${reserved} copies are reserved by an open pick list.`
+      tr('err.quantityBelowReserved', { quantity, reserved })
     )
   }
   db.run('UPDATE collection_items SET quantity = ?, updated_at = ? WHERE id = ?', [
@@ -812,7 +830,7 @@ export function setItemPrinting(itemId: number, scryfallId: string): number {
   if (!item) throw new Error(tr('err.itemNotFound'))
   if (item.reserved > 0) {
     throw new Error(
-      'Cannot change the printing: copies are reserved by an open pick list. Cancel or confirm it first.'
+      tr('err.repointReserved')
     )
   }
   if (!getDb().get('SELECT 1 FROM printings WHERE scryfall_id = ?', [scryfallId])) {

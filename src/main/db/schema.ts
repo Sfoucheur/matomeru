@@ -442,5 +442,154 @@ export const MIGRATIONS: Migration[] = [
       -- reports honestly after the collection row it came from is gone.
       ALTER TABLE pick_list_items ADD COLUMN proxied INTEGER;
     `
+  },
+  {
+    version: 12,
+    name: 'deck_pulls',
+    sql: `
+      -- Where a staged copy came from, when it was not a collection row.
+      --
+      -- A card sitting in a deck under an "owned" label is a physical card of
+      -- yours, just sleeved. Until now it could not be staged at all: the whole
+      -- pick list path keyed on collection_items.id, and such a card has no row
+      -- there. These two columns are that key for the other case, and
+      -- collection_item_id simply stays NULL -- it was already nullable, and
+      -- confirmPickList already skipped NULL rows, so old lists are unaffected.
+      ALTER TABLE pick_list_items ADD COLUMN source_deck_id INTEGER
+        REFERENCES decks(id) ON DELETE SET NULL;
+      ALTER TABLE pick_list_items ADD COLUMN source_oracle_id TEXT;
+
+      -- A card that has physically left a deck while Archidekt still lists it.
+      --
+      -- Its own table rather than a column on deck_card_overrides, for the reason
+      -- migration 5 already wrote down: one meaning per table. An override says
+      -- which printing you own; a pull says a slot is empty. Overloading the
+      -- override row would also tie a pull to a printing, and the pull is about
+      -- the card leaving, not about which version it was.
+      --
+      -- One row per pull event, not per card, so the provenance survives (which
+      -- list, when) and a revert can undo a single pull rather than every pull of
+      -- that card at once.
+      --
+      -- deck_quantity_at_pull is what makes a resync decidable. On each sync we
+      -- compare it against the new incoming quantity for the same oracle: if the
+      -- deck has shrunk by at least as much as was pulled, Archidekt has caught
+      -- up and the marker is dropped; if it shrank partly, the marker shrinks
+      -- with it; if it is unchanged, the card stays tagged.
+      --
+      -- pick_list_id is ON DELETE SET NULL on purpose. Deleting the paperwork
+      -- must not put the card back in the deck -- it really is out of it -- so the
+      -- marker outlives the list that produced it.
+      CREATE TABLE deck_card_pulls (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        deck_id               INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        oracle_id             TEXT    NOT NULL,
+        scryfall_id           TEXT    NOT NULL,
+        finish                TEXT    NOT NULL,
+        condition             TEXT    NOT NULL,
+        quantity              INTEGER NOT NULL CHECK (quantity > 0),
+        deck_quantity_at_pull INTEGER NOT NULL,
+        pick_list_id          INTEGER REFERENCES pick_lists(id) ON DELETE SET NULL,
+        created_at            TEXT    NOT NULL
+      );
+      CREATE INDEX idx_pulls_deck_oracle ON deck_card_pulls(deck_id, oracle_id);
+      CREATE INDEX idx_pulls_list ON deck_card_pulls(pick_list_id);
+    `
+  },
+  {
+    version: 13,
+    name: 'deck_card_moves',
+    sql: `
+      -- Cards moved between a deck and the collection, in either direction.
+      --
+      -- Replaces deck_card_pulls, which only recorded the out direction because
+      -- taking a card out of a deck was routed through a pick list. That was the
+      -- wrong shape for the act: a pick list means cards leaving your possession,
+      -- and a card coming out of a deck has not left anything -- it moved. So the
+      -- move is direct now, it goes both ways, and this table is the ledger.
+      --
+      -- quantity is signed: negative took copies out of the deck, positive put
+      -- them in. That is what makes reconciliation one rule instead of two. On
+      -- each sync we compare Archidekt's new quantity for the oracle against
+      -- deck_quantity_at_move; if the deck has moved toward the marker by at
+      -- least its size, Archidekt has caught up and the marker goes; if it moved
+      -- part of the way the marker shrinks and rebases; if not, it stands.
+      --
+      -- No pick_list_id: a move does not come from a list any more.
+      CREATE TABLE deck_card_moves (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        deck_id               INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        oracle_id             TEXT    NOT NULL,
+        scryfall_id           TEXT    NOT NULL,
+        finish                TEXT    NOT NULL,
+        condition             TEXT    NOT NULL,
+        quantity              INTEGER NOT NULL CHECK (quantity != 0),
+        deck_quantity_at_move INTEGER NOT NULL,
+        created_at            TEXT    NOT NULL
+      );
+      CREATE INDEX idx_moves_deck_oracle ON deck_card_moves(deck_id, oracle_id);
+
+      -- Existing pulls carry over as negatives: a pull is the out direction.
+      INSERT INTO deck_card_moves
+        (deck_id, oracle_id, scryfall_id, finish, condition, quantity,
+         deck_quantity_at_move, created_at)
+      SELECT deck_id, oracle_id, scryfall_id, finish, condition, -quantity,
+             deck_quantity_at_pull, created_at
+      FROM deck_card_pulls;
+
+      /*
+        The old model subtracted a pull when *reading* a deck, so deck_cards still
+        holds Archidekt's full quantity. The new model materialises moves into
+        deck_cards instead -- that is what lets every query that reads a deck stop
+        caring about moves at all -- so the rows have to be brought down to what
+        the decks physically hold, once, here.
+
+        Every sibling row of an oracle is reduced by the same amount, which would
+        over-subtract for a deck that lists one card under two printings. That is
+        not worth more SQL: applyDeckMoves does the distribution properly and runs
+        on the next sync, which rebuilds these rows from scratch anyway. This only
+        has to be right for the ordinary one-row-per-card case until then.
+      */
+      UPDATE deck_cards SET quantity = MAX(0, quantity - COALESCE((
+        SELECT SUM(-m.quantity) FROM deck_card_moves m
+        WHERE m.deck_id = deck_cards.deck_id
+          AND m.oracle_id = deck_cards.oracle_id
+          AND m.quantity < 0
+      ), 0));
+      DELETE FROM deck_cards WHERE quantity <= 0;
+
+      DROP TABLE deck_card_pulls;
+
+      /*
+        What validating a staged deck card should do with it.
+
+        A collection row has only one answer — it leaves your possession, which is
+        what a pick list is for. A deck card has two: pull it out to your box, or
+        pull it out to sell. Both take it out of the deck; only one keeps it. NULL
+        for a collection-sourced row, where the question does not arise.
+      */
+      ALTER TABLE pick_list_items ADD COLUMN destination TEXT;
+
+      -- Rows already staged from a deck were validated under the old behaviour,
+      -- which always kept the card, so that is what they meant.
+      UPDATE pick_list_items SET destination = 'collection' WHERE source_deck_id IS NOT NULL;
+
+    `
+  },
+  {
+    version: 14,
+    name: 'move_foil_treatment',
+    sql: `
+      -- The foil type the copies carried when they moved.
+      --
+      -- A move has to be able to put a card back exactly as it was, and the
+      -- treatment is the one thing about a copy that neither side can re-derive: a
+      -- treatment you *corrected* by hand is precisely the case where the printing's
+      -- own tags do not imply it. Without this, moving a card out and back lost the
+      -- correction silently.
+      --
+      -- Its own migration rather than an edit to 13, because 13 has already run.
+      ALTER TABLE deck_card_moves ADD COLUMN foil_treatment TEXT;
+    `
   }
 ]

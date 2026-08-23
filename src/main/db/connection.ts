@@ -34,7 +34,16 @@ function wrap(raw: InstanceType<typeof Database>): Sql {
       raw.run(sql, params as never)
     },
     all: (sql, params) => raw.all(sql, params as never) as unknown[],
-    get: (sql, params) => raw.get(sql, params as never) as unknown,
+    /*
+      Nothing found is `undefined`, not `null`.
+
+      The driver returns null for an empty result, while every caller annotates the
+      row as `| undefined` and tests it with `if (!row)` — which works for both, so
+      the mismatch never showed. It is still a lie in the type, and it bites the
+      moment anyone compares strictly; that is exactly the bug this normalisation
+      was written after. One `??` here makes every one of those annotations true.
+    */
+    get: (sql, params) => (raw.get(sql, params as never) ?? undefined) as unknown,
     exec: (sql) => {
       raw.exec(sql)
     }
@@ -114,18 +123,43 @@ function migrate(db: Sql): void {
 }
 
 /**
- * Runs `fn` inside a transaction, rolling back on any throw. Not reentrant —
- * SQLite has no nested transactions, so never call this from inside itself.
+ * How deep we are in nested `transaction()` calls.
+ *
+ * SQLite has no nested BEGIN — a second one is an error, not a nesting — so the
+ * outermost call owns the transaction and inner ones use savepoints. This used to
+ * be documented as "not reentrant, never call from inside itself", which held
+ * only as long as no two operations ever needed composing. They do now: an undo
+ * step wraps whatever action it is recording, and that action already runs in a
+ * transaction of its own, as does validating a pick list, which calls into the
+ * collection.
+ */
+let depth = 0
+
+/**
+ * Runs `fn` in a transaction, rolling back on any throw.
+ *
+ * Reentrant. The outermost call issues BEGIN and COMMIT; a nested call issues a
+ * SAVEPOINT and releases it, so an inner failure unwinds only the inner work and
+ * the outer call is still free to commit — or to rethrow and roll everything
+ * back, which is what the callers here all do.
  */
 export function transaction<T>(fn: (db: Sql) => T): T {
   const db = getDb()
-  db.run('BEGIN')
+  const nested = depth > 0
+  const name = `sp${depth}`
+  db.run(nested ? `SAVEPOINT ${name}` : 'BEGIN')
+  depth += 1
   try {
     const result = fn(db)
-    db.run('COMMIT')
+    db.run(nested ? `RELEASE ${name}` : 'COMMIT')
+    depth -= 1
     return result
   } catch (err) {
-    db.run('ROLLBACK')
+    // Decrement before unwinding so a throw from the rollback itself cannot
+    // leave the depth permanently wrong and every later write unwrapped.
+    depth -= 1
+    db.run(nested ? `ROLLBACK TO ${name}` : 'ROLLBACK')
+    if (nested) db.run(`RELEASE ${name}`)
     throw err
   }
 }

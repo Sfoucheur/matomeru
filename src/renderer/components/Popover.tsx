@@ -136,7 +136,13 @@ export default function Popover({
             */
             zIndex: trigger.current?.closest('[role="dialog"]') ? 55 : 45
           }}
-          className={`panel p-1 shadow-2xl shadow-black/50 ${
+          /*
+            A stable hook for the live checks. They used to find this by its
+            styling class, so renaming `.panel` to `.panel-floating` silently broke
+            four of them — a check should not depend on how something looks.
+          */
+          data-popover=""
+          className={`panel-floating p-1 shadow-2xl shadow-black/50 ${
             scroll ? 'max-h-72 overflow-y-auto' : ''
           } ${className}`}
         >

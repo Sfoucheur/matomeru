@@ -1,4 +1,4 @@
-import { getDb, nowIso, transaction } from '../connection.js'
+import { getDb, nowIso, transaction, type Sql } from '../connection.js'
 import { priceExpr, priceIsProxyExpr } from './printings.js'
 import { parseLabel } from '../../archidekt/mappers.js'
 import { foilTreatmentOf } from '@shared/types'
@@ -9,6 +9,8 @@ import type {
   DeckCardRow,
   DeckGroup,
   DeckLabelColor,
+  DeckMove,
+  DeckSource,
   DeckTotals,
   Finish,
   Possession,
@@ -91,6 +93,17 @@ export interface DeckCardUpsert {
   label: string | null
 }
 
+/*
+  `cardCount` below deliberately sums the raw `dc.quantity`, not the pull-adjusted
+  quantity.
+
+  It answers "how big is this decklist", which is a fact about the deck as
+  Archidekt describes it — a 100-card Commander deck is still a 100-card deck
+  while one of its cards is sitting in your trade box. What you physically hold
+  for it is `held`, reported per card, and the hole is reported by the pull badge.
+  Subtracting here would make the deck list say 99 and invite the question of
+  which card was missing, which the deck screen already answers better.
+*/
 export function listDecks(): Deck[] {
   return (
     getDb().all(
@@ -200,7 +213,189 @@ export function replaceDeckCards(deckId: number, cards: DeckCardUpsert[]): void 
         ]
       )
     }
+    /*
+      The decklist is back to what Archidekt says; put the local moves on top, so
+      the rows describe what the deck physically holds again.
+
+      Here rather than after the sync's label recompute, because this is the only
+      place that knows the rows are pristine — applying a move twice would double
+      it, and a sync leaves unchanged decks alone.
+    */
+    applyDeckMoves(db, deckId)
   })
+}
+
+/**
+ * Re-applies this deck's local moves on top of what Archidekt just said.
+ *
+ * `replaceDeckCards` has wiped and rebuilt the rows from the decklist, so at this
+ * point `deck_cards` is Archidekt's view. This brings it back to what the deck
+ * physically holds, and drops any marker Archidekt has caught up with.
+ *
+ * Deliberately **not idempotent**: it applies every move to a pristine list, so it
+ * is only ever correct immediately after `replaceDeckCards`. Running it twice would
+ * apply the moves twice. That is the price of materialising instead of adjusting at
+ * read time, and it is worth paying — the alternative threaded an adjustment
+ * through 27 queries, two of which I missed.
+ *
+ * Reconciliation is one rule for both directions, which is the point of a signed
+ * quantity: measure how far Archidekt has moved toward the marker since the move
+ * was made, and take that much off the marker.
+ */
+export function applyDeckMoves(db: Sql, deckId: number): void {
+  const moves = db.all(
+    `SELECT id, oracle_id, scryfall_id, finish, condition, quantity, deck_quantity_at_move
+     FROM deck_card_moves WHERE deck_id = ? ORDER BY id`,
+    [deckId]
+  ) as {
+    id: number
+    oracle_id: string
+    scryfall_id: string
+    finish: string
+    condition: string
+    quantity: number
+    deck_quantity_at_move: number
+  }[]
+
+  for (const move of moves) {
+    const listed = (
+      db.get(
+        'SELECT COALESCE(SUM(quantity), 0) AS quantity FROM deck_cards WHERE deck_id = ? AND oracle_id = ?',
+        [deckId, move.oracle_id]
+      ) as { quantity: number }
+    ).quantity
+
+    /*
+      How far the decklist has travelled toward this move. For a move out
+      (negative) the deck shrinking is progress; for a move in, growing is. Signed
+      arithmetic makes both the same subtraction.
+    */
+    const travelled = move.quantity < 0
+      ? move.deck_quantity_at_move - listed
+      : listed - move.deck_quantity_at_move
+    const size = Math.abs(move.quantity)
+
+    if (travelled >= size) {
+      // Archidekt has caught up: the decklist already says what the deck holds.
+      db.run('DELETE FROM deck_card_moves WHERE id = ?', [move.id])
+      continue
+    }
+
+    const remaining = size - Math.max(0, travelled)
+    if (travelled > 0) {
+      db.run(
+        'UPDATE deck_card_moves SET quantity = ?, deck_quantity_at_move = ? WHERE id = ?',
+        [move.quantity < 0 ? -remaining : remaining, listed, move.id]
+      )
+    }
+    applyOneMove(db, deckId, { ...move, quantity: move.quantity < 0 ? -remaining : remaining })
+  }
+}
+
+/**
+ * Moves copies into or out of `deck_cards` for one marker.
+ *
+ * Taking copies out walks the oracle's rows in order, so a card the deck lists
+ * under two printings loses the right number in total rather than that many from
+ * each — the mistake the read-time version made, where one pulled copy emptied two
+ * slots.
+ */
+export function applyOneMove(
+  db: Sql,
+  deckId: number,
+  move: { oracle_id: string; scryfall_id: string; finish: string; quantity: number }
+): void {
+  if (move.quantity < 0) {
+    let owed = -move.quantity
+    const rows = db.all(
+      'SELECT id, quantity FROM deck_cards WHERE deck_id = ? AND oracle_id = ? ORDER BY id',
+      [deckId, move.oracle_id]
+    ) as { id: number; quantity: number }[]
+    for (const row of rows) {
+      if (owed <= 0) break
+      const take = Math.min(owed, row.quantity)
+      owed -= take
+      /*
+        The row stays even when it empties, at quantity 0.
+
+        Deleting it looked tidier and was wrong: moving the last copy out of a deck
+        left the deck screen with no row to hang the "out of this deck" tag on, so
+        the one fact worth reporting — that the decklist wants a card the deck does
+        not have — became invisible, and there was nothing left to click to undo the
+        move. An empty slot is information.
+
+        Rows at 0 are excluded from the derived collection rows, so this cannot
+        become a phantom holding.
+      */
+      db.run('UPDATE deck_cards SET quantity = ? WHERE id = ?', [row.quantity - take, row.id])
+    }
+    return
+  }
+
+  /*
+    Putting copies in. An existing row for the same printing is topped up;
+    otherwise a row is created, because you can move a card into a deck whose
+    decklist has never mentioned it.
+
+    `label_possession` is set explicitly and this is load-bearing: it is a card you
+    physically put there, so it has to count as held, and a row created here has no
+    Archidekt label for `recomputeLabelPossession` to derive one from. That is also
+    why this runs *after* the recompute — the recompute clears every row's flag.
+  */
+  const existing = db.get(
+    'SELECT id, quantity FROM deck_cards WHERE deck_id = ? AND scryfall_id = ? ORDER BY id LIMIT 1',
+    [deckId, move.scryfall_id]
+  ) as { id: number; quantity: number } | undefined
+
+  if (existing) {
+    db.run(
+      "UPDATE deck_cards SET quantity = ?, label_possession = 'owned' WHERE id = ?",
+      [existing.quantity + move.quantity, existing.id]
+    )
+    return
+  }
+
+  const printing = db.get(
+    `SELECT name, lang, set_code, collector_number, rarity, image_uri_small
+     FROM printings WHERE scryfall_id = ?`,
+    [move.scryfall_id]
+  ) as
+    | {
+        name: string
+        lang: string
+        set_code: string | null
+        collector_number: string | null
+        rarity: string | null
+        image_uri_small: string | null
+      }
+    | undefined
+  if (!printing) throw new Error(tr('err.itemNotFound'))
+
+  db.run(
+    `INSERT INTO deck_cards (
+       deck_id, scryfall_id, oracle_id, quantity, finish, categories, in_maindeck,
+       name, lang, set_code, collector_number, rarity, image_uri_small, label,
+       label_possession
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'owned')`,
+    [
+      deckId,
+      move.scryfall_id,
+      move.oracle_id,
+      move.quantity,
+      move.finish,
+      // No Archidekt category, so it lands in the deck's default group rather
+      // than inventing one.
+      JSON.stringify([]),
+      1,
+      printing.name,
+      printing.lang,
+      printing.set_code,
+      printing.collector_number,
+      printing.rarity,
+      printing.image_uri_small,
+      null
+    ]
+  )
 }
 
 export function recordDeckError(externalId: string, meta: Partial<DeckUpsert>, error: string): void {
@@ -320,7 +515,12 @@ export function deckBreakdown(
                       WHERE ci.scryfall_id = COALESCE(o.scryfall_id, dc.scryfall_id)), 0) AS owned_exact,
             COALESCE((SELECT SUM(ci.quantity) FROM collection_items ci
                       JOIN printings p2 ON p2.scryfall_id = ci.scryfall_id
-                      WHERE dc.oracle_id IS NOT NULL AND p2.oracle_id = dc.oracle_id), 0) AS owned_any
+                      WHERE dc.oracle_id IS NOT NULL AND p2.oracle_id = dc.oracle_id), 0) AS owned_any,
+            -- The net local divergence from the decklist for this card: negative
+            -- means copies were taken out, positive means copies were put in.
+            -- Reported, not applied: dc.quantity already includes it.
+            COALESCE((SELECT SUM(m.quantity) FROM deck_card_moves m
+                      WHERE m.deck_id = dc.deck_id AND m.oracle_id = dc.oracle_id), 0) AS moved
      FROM deck_cards dc
      LEFT JOIN deck_card_overrides o
             ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
@@ -347,6 +547,7 @@ export function deckBreakdown(
     | 'treatment_forced'
     | 'finish_forced'
     | 'proxied'
+    | 'moves'
   > & {
     forced_lang: string | null
     override_finish: string | null
@@ -363,6 +564,10 @@ export function deckBreakdown(
     unit_value: number | null
     price_is_proxy: number
   })[]
+
+  // One read for the whole deck; a per-row query would be a hundred round trips
+  // for a table that is almost always empty.
+  const moves = deckMoves(deckId)
 
   const cards: DeckCardRow[] = rows.map((row) => {
     const label = parseLabel(row.label)
@@ -401,6 +606,7 @@ export function deckBreakdown(
         ),
       treatment_forced: row.override_treatment !== null,
       proxied: row.proxied === 1,
+      moves: moves.get(row.oracle_id ?? '') ?? [],
       // The single source of truth for "how many do I have for this entry".
       // A card under an "owned" label is held by definition — that is the whole
       // point of the label — added to what the collection holds, matching the
@@ -409,6 +615,11 @@ export function deckBreakdown(
       // A proxied entry is held outright: the slot is filled by a card you can
       // actually play, so the deck reads complete and it leaves the Missing pile.
       // It is still marked, so a deck is never quietly complete on stand-ins.
+      //
+      //
+      // Nothing is subtracted here for a local move: `quantity` already is what
+      // the deck physically holds, because a move is written into the row. What a
+      // move changes is only whether Archidekt agrees, which `moves` reports.
       held:
         row.proxied === 1
           ? row.quantity
@@ -552,9 +763,30 @@ export function recomputeLabelPossession(
     if (normalized) byState[state].push(normalized)
   }
 
-  // Clear first, then set each state, so a colour that was just unmapped falls
-  // back to NULL (ignored) rather than keeping a stale flag.
-  db.run('UPDATE deck_cards SET label_possession = NULL WHERE label_possession IS NOT NULL')
+  /*
+    Clear first, then set each state, so a colour that was just unmapped falls back
+    to NULL (ignored) rather than keeping a stale flag.
+
+    Rows holding copies you moved in yourself are exempt. They have no Archidekt
+    label to derive a state from, so clearing them would stop a card you physically
+    put there from counting as held — and it is held by the strongest evidence
+    there is, which is that you put it there.
+
+    Read from the ledger rather than a flag on the row. A flag would have to be
+    written when copies are put in and unwritten when they leave, and the version
+    that did so marked a row as locally-added while *undoing* a move out — copies
+    that were Archidekt's all along. The ledger cannot drift from itself.
+  */
+  db.run(
+    `UPDATE deck_cards SET label_possession = NULL
+     WHERE label_possession IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM deck_card_moves m
+         WHERE m.deck_id = deck_cards.deck_id
+           AND m.oracle_id = deck_cards.oracle_id
+           AND m.quantity > 0
+       )`
+  )
 
   for (const state of ['owned', 'not_owned'] as Possession[]) {
     const colors = [...new Set(byState[state])]
@@ -786,6 +1018,118 @@ export function setCardProxied(deckId: number, oracleId: string, proxied: boolea
      ON CONFLICT(deck_id, oracle_id) DO UPDATE SET proxied = excluded.proxied`,
     [deckId, oracleId, current.scryfall_id, current.lang, proxied ? 1 : 0, nowIso()]
   )
+}
+
+/**
+ * The decks a copy of this printing could be taken out of.
+ *
+ * Stricter than `cardLocations`, which answers "where does this card appear" and so
+ * admits unmapped labels: this answers "where can I take one from", so it wants an
+ * `owned` label, no proxy, and copies actually left after anything already staged.
+ *
+ * Reads `dc.quantity` directly — that is what the deck physically holds, since a
+ * move is written into the row rather than adjusted while reading.
+ */
+export function deckSourcesFor(scryfallId: string, finish: string): DeckSource[] {
+  return getDb().all(
+    `SELECT d.id AS deck_id, d.name AS deck_name, dc.oracle_id AS oracle_id,
+            SUM(dc.quantity)
+              - COALESCE((
+                  SELECT SUM(pli.quantity) FROM pick_list_items pli
+                  JOIN pick_lists pl ON pl.id = pli.pick_list_id
+                  WHERE pl.status = 'open'
+                    AND pli.source_deck_id = d.id
+                    AND pli.source_oracle_id = dc.oracle_id
+                ), 0) AS quantity
+     FROM deck_cards dc
+     JOIN decks d ON d.id = dc.deck_id
+     ${DECK_OVERRIDE_JOIN}
+     WHERE dc.label_possession = 'owned'
+       AND COALESCE(o.proxied, 0) = 0
+       AND ${DECK_PRINTING} = ?
+       AND ${DECK_FINISH} = ?
+     GROUP BY d.id, d.name, dc.oracle_id
+     HAVING quantity > 0
+     ORDER BY d.name`,
+    [scryfallId, finish]
+  ) as DeckSource[]
+}
+
+/** Every deck, for a chooser that has to offer somewhere to put a card. */
+export function deckChoices(): { deck_id: number; deck_name: string }[] {
+  return getDb().all(
+    "SELECT id AS deck_id, name AS deck_name FROM decks WHERE source = 'archidekt' ORDER BY name"
+  ) as { deck_id: number; deck_name: string }[]
+}
+
+/**
+ * Records a move in the ledger.
+ *
+ * `quantity` is signed: negative took copies out of the deck, positive put them in.
+ * The baseline is what the decklist says right now, which is what a later sync
+ * measures its own progress against.
+ */
+export function recordMove(
+  db: Sql,
+  input: {
+    deckId: number
+    oracleId: string
+    scryfallId: string
+    finish: string
+    condition: string
+    quantity: number
+    /** The treatment the copies carried, so a revert can put it back. */
+    foilTreatment?: string | null
+  }
+): void {
+  const listed = (
+    db.get(
+      'SELECT COALESCE(SUM(quantity), 0) AS quantity FROM deck_cards WHERE deck_id = ? AND oracle_id = ?',
+      [input.deckId, input.oracleId]
+    ) as { quantity: number }
+  ).quantity
+
+  db.run(
+    `INSERT INTO deck_card_moves
+       (deck_id, oracle_id, scryfall_id, finish, condition, quantity,
+        deck_quantity_at_move, foil_treatment, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [
+      input.deckId,
+      input.oracleId,
+      input.scryfallId,
+      input.finish,
+      input.condition,
+      input.quantity,
+      listed,
+      input.foilTreatment ?? null,
+      nowIso()
+    ]
+  )
+}
+
+/**
+ * The moves recorded against a deck, newest first, keyed by oracle id.
+ *
+ * What the badge on a deck card reads from: a negative entry means copies are out
+ * of the deck while the decklist still counts them, a positive one means copies are
+ * in it that the decklist has not caught up with.
+ */
+export function deckMoves(deckId: number): Map<string, DeckMove[]> {
+  const rows = getDb().all(
+    `SELECT id, deck_id, oracle_id, scryfall_id, finish, condition, quantity, created_at
+     FROM deck_card_moves WHERE deck_id = ?
+     ORDER BY created_at DESC, id DESC`,
+    [deckId]
+  ) as DeckMove[]
+
+  const byOracle = new Map<string, DeckMove[]>()
+  for (const row of rows) {
+    const list = byOracle.get(row.oracle_id)
+    if (list) list.push(row)
+    else byOracle.set(row.oracle_id, [row])
+  }
+  return byOracle
 }
 
 export function clearCardOverride(deckId: number, oracleId: string): void {

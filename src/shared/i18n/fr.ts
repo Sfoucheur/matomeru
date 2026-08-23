@@ -25,7 +25,6 @@ export const fr: Record<keyof typeof en, string> = {
   // -------------------------------------------------------------- common verbs
   'common.save': 'Enregistrer',
   'common.cancel': 'Annuler',
-  'common.remove': 'Supprimer',
   'common.close': 'Fermer',
   'common.clearAll': 'Tout effacer',
   'common.clearSelection': 'Désélectionner tout',
@@ -40,12 +39,9 @@ export const fr: Record<keyof typeof en, string> = {
   'common.deselect': 'Désélectionner {name}',
   'boosters.setCards': '{count} carte(s) de booster que vous possédez',
   'common.search': 'Rechercher',
-  'common.loading': 'Chargement…',
   'common.never': 'jamais',
-  'common.none': 'aucun',
   'common.of': '{shown} sur {total}',
   'common.selected': '{count} sélectionnée(s)',
-  'common.retry': 'Réessayer',
 
   // -------------------------------------------------------------- vocabulary
   'rarity.common': 'Commune',
@@ -96,21 +92,11 @@ export const fr: Record<keyof typeof en, string> = {
   'settings.title': 'Paramètres',
   'settings.archidekt': 'Archidekt',
   'settings.username': "Nom d'utilisateur",
-  'settings.usernameHint':
-    'Decks publics uniquement. Les decks privés renvoient une erreur 404 à qui n’est pas connecté et ne peuvent donc pas être synchronisés — ajoutez-les par URL s’ils sont non répertoriés.',
   'settings.usernamePlaceholder': 'votre-nom-archidekt',
-  'settings.saveUsername': 'Enregistrer',
   'settings.syncNow': 'Synchroniser',
-  'settings.labels': 'Signification de vos étiquettes de deck',
-  'settings.pricesMatching': 'Prix et correspondance',
   'settings.currency': 'Devise',
   'settings.currencyHint':
     'Scryfall ne fournit pas de prix en EUR distinct pour les foils gravés : ceux-ci reprennent le prix foil normal.',
-  'settings.currencySourceUsd': 'Les prix en USD proviennent de TCGplayer, via Scryfall.',
-  'settings.currencySourceEur': 'Les prix en EUR proviennent de Cardmarket, via Scryfall.',
-  'settings.exactPrinting': 'Exiger l’édition exacte pour les correspondances de deck',
-  'settings.exactPrintingHint':
-    'Avec cette option, posséder l’édition japonaise ne compte pas comme posséder une carte que le deck liste en anglais.',
   'settings.appearance': 'Apparence',
   'settings.language': 'Langue',
   'settings.languageHint':
@@ -129,12 +115,6 @@ export const fr: Record<keyof typeof en, string> = {
   'settings.reduceMotion': 'Réduire les animations',
   'settings.reduceMotionHint':
     'Immobilise les animations, y compris celles dessinées en JavaScript plutôt qu’en CSS.',
-  'settings.data': 'Données',
-  'settings.dataHint':
-    'Tout tient dans un seul fichier SQLite, plus un dossier d’images de cartes en cache. Copiez-le où vous voulez pour déplacer ou sauvegarder votre collection.',
-  'settings.savedUsername': 'Nom d’utilisateur Archidekt défini sur {name}.',
-  'settings.clearedUsername': 'Nom d’utilisateur effacé.',
-  'settings.enterUsernameFirst': 'Saisissez d’abord votre nom d’utilisateur Archidekt.',
   'settings.languageChanged': 'L’application est maintenant en {language}.',
 
   // ------------------------------------------------------------------ filters
@@ -251,11 +231,6 @@ export const fr: Record<keyof typeof en, string> = {
   'bulk.finishCleared': '{count} carte(s) revenue(s) au finish d’Archidekt.',
   'bulk.clearOverride': 'Effacer le remplacement',
   'bulk.languageHint': 'Une recherche par carte. Toute carte sans édition dans cette langue conserve la sienne et est signalée.',
-  'bulk.converted': '{count} définie(s) en {lang}',
-  'bulk.viaSearch': '{count} trouvée(s) sous une autre édition',
-  'bulk.unavailable': '{count} sans édition {lang}',
-  'bulk.failed': '{count} en échec',
-  'bulk.cleared': '{count} de retour à ce qu’indique Archidekt',
 
   // ------------------------------------------------------------ booster odds
   'picks.title': 'Listes de prélèvement',
@@ -283,8 +258,17 @@ export const fr: Record<keyof typeof en, string> = {
   'picks.validatePull': 'Valider la sortie',
   'picks.reopen': 'Réouvrir',
   'picks.delete': 'Supprimer',
+  'picks.revertPull': 'Remettre les cartes',
+  'picks.reverted':
+    '{restored} carte(s) remise(s) dans la collection et {returned} dans leurs decks. La liste est de nouveau ouverte.',
+  'picks.deleteTitle': 'Supprimer cette liste validée ?',
+  'picks.deleteBody':
+    'Cette liste est le seul enregistrement de ce qui a été prélevé, et sa suppression est définitive. Les cartes déjà sorties d’un deck restent marquées comme sorties : elles l’ont réellement quitté, supprimer l’enregistrement ne les y remet pas. Utilisez d’abord « Remettre les cartes » si c’est ce que vous voulez.',
+  'picks.freedFromDecks': '{count} sortie(s) d’un deck et maintenant dans votre collection.',
   'picks.confirmedKept': 'Les listes validées sont conservées comme historique.',
   'picks.rowGone': '(ligne plus dans la collection)',
+  'picks.destKeep': 'vers la collection',
+  'picks.destGone': 'sortie',
   'picks.deckCount_one': '{count} deck',
   'picks.deckCount_other': '{count} decks',
   'picks.removeItem': 'Retirer de la liste',
@@ -444,7 +428,6 @@ export const fr: Record<keyof typeof en, string> = {
   'add.allFilteredTitle': 'Toutes les éditions sont filtrées',
   'add.allFilteredHint_one': 'Cette carte a {count} édition, et les filtres ci-dessus la masquent. Retirez un filtre pour la revoir.',
   'add.allFilteredHint_other': 'Cette carte a {count} éditions, et les filtres ci-dessus les masquent toutes. Retirez un filtre pour les revoir.',
-  'add.onlyFinish': '{name} n’existe qu’en {finish} — sera ajoutée en {finish}',
   'add.addCard': 'Ajouter {name}',
   'add.foilIs': 'Le foil de cette édition est {treatment}',
   'add.finishOnly': '{finish} uniquement',
@@ -469,6 +452,46 @@ export const fr: Record<keyof typeof en, string> = {
   'coll.noMatchTitle': 'Aucune carte ne correspond à ces filtres',
   'coll.emptyHint': 'Ajoutez des cartes depuis l’onglet Ajouter, ou chargez une liste existante depuis Import / export.',
   'coll.noMatchHint': 'Essayez de retirer un filtre ou deux.',
+  'coll.sleevedNote': '({count} dans des decks - seul le prélèvement s’applique)',
+  'coll.whichDeckTitle': 'De quel deck sortent-elles ?',
+  'coll.whichDeckHint':
+    'Ces cartes se trouvent dans plusieurs decks : le prélèvement doit donc indiquer duquel chaque exemplaire sort. Rien ne quitte un deck avant la validation du prélèvement.',
+  'coll.whichDeckConfirm': 'Mettre de côté',
+  'coll.showingFirst':
+    'Affichage des {shown} premières lignes sur {total} — affinez les filtres pour voir le reste.',
+  'add.cacheNote':
+    'Chaque édition est mise en cache localement au fur et à mesure, pour rester consultable hors ligne.',
+  'app.credits': 'Données des cartes : Scryfall. Decks : Archidekt.',
+  'decks.youSetThis': '(défini par vous)',
+  'coll.noDecks': 'Aucun deck synchronisé',
+  'coll.moveAvailable': 'jusqu’à {count} par ligne sélectionnée',
+  'coll.moveRefused_one': '{count} ligne n’a pas pu être déplacée (ses exemplaires sont sur une liste ouverte).',
+  'coll.moveRefused_other': '{count} lignes n’ont pas pu être déplacées (leurs exemplaires sont sur une liste ouverte).',
+  'coll.nothingToMove': 'Rien n’a pu être déplacé.',
+  'coll.moveToDeck': 'Déplacer vers un deck',
+  'coll.moveTitle': 'Déplacer vers un deck',
+  'coll.moveHint':
+    'Les exemplaires quittent votre collection pour rejoindre le deck. Rien n’est perdu : la carte reste la vôtre. Si Archidekt n’a pas encore suivi, le deck l’affiche comme ajoutée jusqu’à la prochaine synchronisation.',
+  'coll.moveHowMany': 'Combien ?',
+  'coll.moveWhichDeck': 'Quel deck ?',
+  'coll.moveConfirm': 'Déplacer',
+  'coll.movedToDeck': '{count} déplacée(s) vers {deck}.',
+  'decks.movedToCollection': '{count} déplacée(s) vers la collection.',
+  'decks.moveToCollectionHint': 'Sortir ces cartes du deck et les placer dans votre collection maintenant.',
+  'decks.moveToCollection': 'Déplacer vers la collection',
+  'decks.movedOutBadge': 'Sortie',
+  'decks.movedInBadge': 'Ajoutée',
+  'decks.movedOutHint':
+    '{count} exemplaire(s) a quitté ce deck. Archidekt les liste encore, donc le marqueur reste jusqu’à la mise à jour du deck là-bas.',
+  'decks.movedInHint':
+    '{count} exemplaire(s) a été placé dans ce deck depuis votre collection. Archidekt ne les liste pas encore.',
+  'decks.movedOutTitle': 'Sortie de ce deck',
+  'decks.movedInTitle': 'Ajoutée à ce deck',
+  'decks.movedExplain':
+    'La liste sur Archidekt et le contenu physique de ce deck diffèrent : voici les écarts. En annuler un remet les exemplaires où ils étaient. Une synchronisation qui confirme un écart l’efface d’elle-même.',
+  'decks.movedOut': '{count} sortie(s)',
+  'decks.movedIn': '{count} ajoutée(s)',
+  'decks.moveReverted': 'Annulé — {count} exemplaire(s) remis.',
   'coll.nothingToPick': 'Rien de disponible — ces exemplaires sont déjà réservés.',
   'coll.staged_one': '{count} carte préparée',
   'coll.staged_other': '{count} cartes préparées',
@@ -487,6 +510,10 @@ export const fr: Record<keyof typeof en, string> = {
   'coll.reservedBadge': '{count} réservée(s) par une liste ouverte',
   'coll.rowRemoved': 'Ligne retirée.',
   'coll.removeRow': 'Retirer la ligne',
+  'coll.alsoRemove': 'Les retirer aussi de ma collection',
+  'coll.alsoRemoveHint':
+    'Laissez décoché pour les sortir du deck et les garder. Cochez si elles quittent votre collection pour de bon : vendues, échangées ou données.',
+  'coll.zoomHint': 'Voir l’illustration en grand',
   'coll.chooseList': 'Quelle liste ?',
   'coll.newList': 'Nouvelle liste…',
   'coll.noOpenLists': 'Aucune liste ouverte — une sera créée.',
@@ -525,7 +552,8 @@ export const fr: Record<keyof typeof en, string> = {
   'decks.syncSynced': '{count} synchronisés',
   'decks.syncUnchanged': '{count} inchangés',
   'decks.syncUnavailable': '{count} indisponibles',
-  'decks.privateWarning': 'Archidekt annonce {reported} decks mais n’en a partagé que {shared}. Les decks privés ne peuvent pas être lus sans connexion — ajoutez-les par URL s’ils sont simplement non listés.',
+  'decks.privateWarning':
+    'Archidekt indique {reported} decks mais n’en liste que {shared}. Les autres ne figurent pas sur votre profil public : non répertoriés ou privés. Les non répertoriés peuvent être ajoutés par URL, et une fois ajoutés ils restent synchronisés.',
   'decks.added': '« {name} » ajouté.',
   'decks.cardCount': '{count} cartes',
   'decks.noneYet': 'Aucun deck pour l’instant. Synchronisez votre compte Archidekt, ou collez une URL de deck ci-dessus.',
@@ -595,8 +623,73 @@ export const fr: Record<keyof typeof en, string> = {
   'settings.dataTitle': 'Où vivent vos données',
   'settings.dataNote1': 'La base de la collection et le cache des images vivent dans votre dossier app-data Windows, délibérément hors du dossier de l’application, pour qu’une réinstallation ou une mise à jour de Matomeru ne touche jamais votre collection.',
   'settings.dataNote2': 'Les données de carte viennent de Scryfall ; celles des decks d’Archidekt. Aucun des deux n’est affilié à cette application, et rien n’est envoyé où que ce soit — chaque requête est une lecture.',
-  'err.noDataDir': 'Répertoire de données non configuré — appelez setDataDir() au démarrage.',
   'err.reserved': 'Suppression impossible : des exemplaires sont réservés par une liste ouverte.',
+  'decks.pullRefused_one': '{count} carte n’a pas pu être prélevée (proxy, ou non marquée comme possédée).',
+  'decks.pullRefused_other': '{count} cartes n’ont pas pu être prélevées (proxys, ou non marquées comme possédées).',
+  'decks.pullNothing': 'Aucune de ces cartes ne peut être prélevée : ce sont des proxys, ou elles ne sont pas marquées comme possédées.',
+  'err.notConfirmed': 'Seule une liste de prélèvement validée peut être annulée.',
+  // What Ctrl+Z would take back, named so the toast can say which action
+  // it was rather than just "undone".
+  'undo.moveToCollection': 'Déplacement vers la collection',
+  'undo.moveToDeck': 'Déplacement vers un deck',
+  'undo.revertMove': 'Annulation d’un déplacement',
+  'undo.addCard': 'Ajout de cartes',
+  'undo.setQuantity': 'Changement de quantité',
+  'undo.editCopy': 'Modification d’un exemplaire',
+  'undo.removeCopies': 'Retrait d’exemplaires',
+  'undo.bulkEdit': 'Modification en lot',
+  'undo.bulkRemove': 'Retrait en lot',
+  'undo.setPrinting': 'Changement d’édition',
+  'undo.setLanguage': 'Changement de langue',
+  'undo.forceLanguage': 'Langue définie à la main',
+  'undo.createList': 'Création d’une liste de prélèvement',
+  'undo.renameList': 'Renommage d’une liste',
+  'undo.stage': 'Ajout à une liste de prélèvement',
+  'undo.stageQuantity': 'Changement de quantité mise de côté',
+  'undo.unstage': 'Retrait d’une liste de prélèvement',
+  'undo.validatePull': 'Validation d’un prélèvement',
+  'undo.revertPull': 'Cartes prélevées remises',
+  'undo.cancelList': 'Annulation d’une liste',
+  'undo.reopenList': 'Réouverture d’une liste',
+  'undo.deleteList': 'Suppression d’une liste',
+  'undo.setDeckLanguage': 'Langue d’une carte de deck',
+  'undo.clearDeckOverride': 'Effacement d’une correction de deck',
+  'undo.setProxied': 'Changement du marqueur proxy',
+  'undo.setDeckFinish': 'Finish d’une carte de deck',
+  'undo.setDeckPrinting': 'Édition d’une carte de deck',
+  'undo.deleteDeck': 'Suppression d’un deck',
+  'undo.done': 'Annulé : {label}',
+  'undo.redone': 'Rétabli : {label}',
+  'undo.nothing': 'Plus rien à annuler.',
+  'undo.nothingRedo': 'Plus rien à rétablir.',
+  'err.pickShortfall':
+    'La liste demande {asked} exemplaires de {name} mais il n’en reste que {held} — quelque chose a changé depuis la mise de côté. Actualisez et réessayez.',
+  'err.archidektNotFound': 'Introuvable sur Archidekt.',
+  'err.deckUnreachable':
+    'Archidekt a répondu 404 pour ce deck : il est privé, ou il n’existe plus.',
+  'err.setListFailed': 'Scryfall a répondu {status} pour la liste des éditions.',
+  'err.quantityBelowReserved':
+    'Impossible de fixer la quantité à {quantity} : {reserved} exemplaires sont réservés par une liste de prélèvement ouverte.',
+  'err.repointReserved':
+    'Impossible de changer l’édition tant que des exemplaires sont réservés par une liste ouverte. Annulez-la ou validez-la d’abord.',
+  'err.scryfallUnreachable': 'Scryfall est injoignable : {message}',
+  'err.scryfallNotFound': 'Carte introuvable sur Scryfall.',
+  'err.scryfallStatus': 'Scryfall a répondu {status}{detail}',
+  'err.moveNotOwned':
+    'Cette carte du deck n’est pas marquée comme une carte que vous possédez, il n’y a donc rien à déplacer. Associez d’abord la couleur de son étiquette à « possédée ».',
+  'err.moveProxyMixes':
+    'Ce deck contient déjà des exemplaires de cette carte, et un proxy ne peut pas y être distingué des autres : le deck n’enregistre qu’un marqueur proxy par carte. Sortez d’abord les vrais exemplaires, ou marquez vous-même l’entrée du deck comme proxy.',
+  'err.moveProxy':
+    'Cet emplacement du deck est occupé par un proxy. Le déplacer vers la collection le fusionnerait avec vos vrais exemplaires de la même édition et les marquerait aussi comme proxys : ce n’est donc pas autorisé.',
+  'err.moveShortfall': 'Seuls {held} exemplaires peuvent être déplacés, or {asked} ont été demandés.',
+  'err.moveNotFound': 'Ce déplacement n’est plus enregistré.',
+  'err.moveGone':
+    'Impossible d’annuler ce déplacement : il n’y a que {count} exemplaires là où il en faudrait {needed}. Ils ont été déplacés ou retirés depuis.',
+  'err.deckNotFound': 'Ce deck n’existe plus.',
+  'err.pickNotOwned':
+    'Cette carte du deck n’est pas marquée comme une carte que vous possédez, il n’y a donc rien à prélever. Associez d’abord la couleur de son étiquette à « possédée ».',
+  'err.pickProxy':
+    'Cet emplacement du deck est occupé par un proxy. L’ajouter à la collection le fusionnerait avec vos vrais exemplaires de la même édition et les marquerait aussi comme proxys : ce n’est donc pas autorisé.',
   'err.itemNotFound': 'Ligne de collection introuvable.',
   'err.notCached': 'Cette édition n’est pas encore en cache — cherchez d’abord la carte.',
   'err.noLangAnchor': 'Cette entrée de deck n’a aucune édition sur laquelle fixer une langue.',
@@ -632,7 +725,6 @@ export const fr: Record<keyof typeof en, string> = {
   'boosters.loadHint': 'Télécharge les recettes de booster de cette édition depuis MTGJSON (quelques Mo, une fois par édition) et ne conserve que les probabilités.',
   'boosters.noData': 'MTGJSON ne répertorie aucun booster pour {set}. Les cartes des decks Commander, Secret Lair et produits similaires ne sont pas vendues en booster.',
   'boosters.notInBooster': 'absente de ce booster',
-  'boosters.perPack': '{percent} par booster',
   'boosters.oneIn': 'environ 1 booster sur {count}',
   'boosters.expected': '{count} par booster en moyenne',
   'boosters.cardsPerPack': '{count} cartes par booster',
@@ -644,7 +736,6 @@ export const fr: Record<keyof typeof en, string> = {
   'boosters.viaEnglish': 'Trouvée via l’édition anglaise, la seule que les données de booster nomment.',
   'boosters.loadAll': 'Récupérer les données de booster de ma collection',
   'boosters.loadAllHint': 'Récupère les éditions dont vous possédez des cartes de booster, en ignorant les précons',
-  'boosters.loadAllRunning': 'Récupération {done} sur {total}…',
   'boosters.loadAllDone': '{sets} édition(s) chargée(s) ; {skipped} en avaient déjà.',
   'boosters.loadAllFailed': '{sets} édition(s) chargée(s). MTGJSON n’a pas de données pour {failed}.',
   'boosters.loadAllNothing': 'Toutes les éditions concernées ont déjà leurs données.',
@@ -659,41 +750,6 @@ export const fr: Record<keyof typeof en, string> = {
   'boosters.loaded': '{boosters} types de booster, {cards} cartes calculées pour {set}.',
 
   // ------------------------------------------------------------------- errors
-  'error.printingNotCached':
-    'Cette édition n’est pas encore en cache — cherchez d’abord la carte.',
-  'error.quantityAtLeastOne': 'La quantité doit être au moins 1.',
-  'error.noPrintingFound': 'Aucune édition trouvée pour {set} #{number} en « {lang} ».',
-  'error.noArchidektAccount': 'Aucun compte Archidekt trouvé pour « {name} ».',
-  'error.deckPrivateOr404':
-    'Archidekt a renvoyé 404 — le deck est privé ou n’existe plus.',
-  'error.notADeckUrl': 'Cela ne ressemble pas à une URL ou un identifiant de deck Archidekt.',
-  'error.setUsernameFirst':
-    'Renseignez d’abord votre nom d’utilisateur Archidekt dans les paramètres.',
-  'error.pickListNotFound': 'Liste de prélèvement introuvable.',
-  'error.pickListClosed': 'Cette liste de prélèvement est déjà clôturée.',
-  'error.pickListConfirmed':
-    'Une liste de prélèvement validée fait partie de l’historique et ne peut pas être réouverte.',
-  'error.collectionItemNotFound': 'Élément de collection introuvable.',
-  'error.pickItemNotFound': 'Élément de la liste de prélèvement introuvable.',
-  'error.onlyAvailable': 'Seulement {count} disponible(s) à prélever.',
-  'error.pickListShort':
-    'La liste demande {wanted} exemplaires mais seulement {held} sont détenus. Actualisez puis réessayez.',
-  'error.reservedQuantity':
-    'Impossible de fixer la quantité à {quantity} : {reserved} exemplaires sont réservés par une liste de prélèvement ouverte.',
-  'error.reservedDelete':
-    'Suppression impossible : des exemplaires sont réservés par une liste de prélèvement ouverte.',
-  'error.reservedPrinting':
-    'Impossible de changer l’édition : des exemplaires sont réservés par une liste de prélèvement ouverte. Annulez-la ou validez-la d’abord.',
-  'error.noAnchorPrinting':
-    'Cette entrée de deck n’a aucune édition sur laquelle rattacher une langue.',
-  'error.archidektUnreachable': 'Archidekt inaccessible : {message}',
-  'error.archidektNotFound': 'Introuvable sur Archidekt.',
-  'error.archidektStatus': 'Archidekt a renvoyé {status}',
-  'error.noSetNumber': 'Cette entrée n’a ni édition ni numéro de collection à rechercher.',
-  'error.noOracleId':
-    'Cette entrée n’a pas d’identifiant oracle : impossible de la relier à une autre édition.',
 
   // ------------------------------------------------------- deck sync statuses
-  'sync.private': 'privé — non synchronisé',
-  'sync.notFound': 'introuvable sur Archidekt'
 }

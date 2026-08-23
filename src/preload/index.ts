@@ -18,7 +18,10 @@ import type {
   Finish,
   PickList,
   PickListItem,
+  PickSource,
   Printing,
+  DeckSource,
+  UndoState,
   PrintingChoice,
   ProgressEvent,
   QuickAddInput,
@@ -115,14 +118,14 @@ const api = {
     rename: (id: number, name: string, note?: string | null) =>
       call<boolean>('pickLists:rename', id, name, note),
     items: (id: number) => call<PickListItem[]>('pickLists:items', id),
-    add: (pickListId: number | null, itemId: number, quantity: number) =>
+    add: (pickListId: number | null, source: PickSource, quantity: number) =>
       call<{ pickListId: number; added: number; capped: boolean }>(
         'pickLists:add',
         pickListId,
-        itemId,
+        source,
         quantity
       ),
-    addMany: (pickListId: number | null, entries: { itemId: number; quantity: number }[]) =>
+    addMany: (pickListId: number | null, entries: { source: PickSource; quantity: number }[]) =>
       call<{ pickListId: number; added: number; capped: number }>(
         'pickLists:addMany',
         pickListId,
@@ -132,12 +135,19 @@ const api = {
       call<boolean>('pickLists:setQuantity', pickItemId, quantity),
     removeItem: (pickItemId: number) => call<boolean>('pickLists:removeItem', pickItemId),
     confirm: (id: number) =>
-      call<{ pickListId: number; cardsRemoved: number; rowsDeleted: number }>(
-        'pickLists:confirm',
-        id
-      ),
+      call<{
+        pickListId: number
+        cardsRemoved: number
+        rowsDeleted: number
+        cardsFreedFromDecks: number
+      }>('pickLists:confirm', id),
     cancel: (id: number) => call<boolean>('pickLists:cancel', id),
     reopen: (id: number) => call<boolean>('pickLists:reopen', id),
+    revert: (id: number) =>
+      call<{ pickListId: number; cardsRestored: number; cardsReturnedToDecks: number }>(
+        'pickLists:revert',
+        id
+      ),
     remove: (id: number) => call<boolean>('pickLists:delete', id),
     exportCsv: (id: number) =>
       call<{ canceled: boolean; count: number; path?: string }>('pickLists:export', id)
@@ -152,6 +162,7 @@ const api = {
         skipped: number
         failed: number
         privateCount: number
+        listedCount: number
         unavailable: { id: string; name: string; reason: string }[]
         deckCountReported: number | null
       }>('decks:syncUser', username),
@@ -159,6 +170,15 @@ const api = {
     remove: (deckId: number) => call<boolean>('decks:delete', deckId),
     /** Label colours found across synced decks, for the "don't own" picker. */
     labelColors: () => call<DeckLabelColor[]>('decks:labelColors'),
+    pullSources: (scryfallId: string, finish: string) =>
+      call<DeckSource[]>('decks:pullSources', scryfallId, finish),
+    choices: () => call<{ deck_id: number; deck_name: string }[]>('decks:choices'),
+    moveToCollection: (deckId: number, oracleId: string, quantity: number) =>
+      call<{ moved: number }>('decks:moveToCollection', deckId, oracleId, quantity),
+    moveToDeck: (deckId: number, itemId: number, quantity: number) =>
+      call<{ moved: number }>('decks:moveToDeck', deckId, itemId, quantity),
+    revertMove: (moveId: number) =>
+      call<{ deckId: number; quantity: number }>('decks:revertMove', moveId),
     /** Records which printing you own, for the cards you selected and no others. */
     setCardsLanguage: (deckId: number, oracleIds: string[], lang: string) =>
       call<{ converted: number; unavailable: { name: string; lang: string }[]; failed: number }>(
@@ -224,6 +244,11 @@ const api = {
     get: () => call<Stats>('stats:get')
   },
 
+  undo: {
+    undo: () => call<{ label: string } | null>('undo:undo'),
+    redo: () => call<{ label: string } | null>('undo:redo'),
+    state: () => call<UndoState>('undo:state')
+  },
   settings: {
     get: () => call<AppSettings>('settings:get'),
     update: (patch: Partial<AppSettings>) => call<AppSettings>('settings:update', patch)

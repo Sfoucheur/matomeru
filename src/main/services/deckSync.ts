@@ -1,6 +1,7 @@
 import type { ProgressEvent } from '@shared/types'
 import {
   ArchidektError,
+  decksForUserId,
   fetchDeck,
   formatName,
   parseDeckId,
@@ -12,6 +13,7 @@ import { toDeckCards, toDeckUpsert } from '../archidekt/mappers.js'
 import {
   deckPrintingsNeedingCache,
   deckSyncState,
+  listDecks,
   recomputeLabelPossession,
   recordDeckError,
   replaceDeckCards,
@@ -37,9 +39,42 @@ export interface DeckSyncResult {
   skipped: number
   failed: number
   privateCount: number
+  /** How many decks the profile actually listed, as opposed to how many exist. */
+  listedCount: number
   /** Decks Archidekt would not show us, so the UI can explain rather than hide. */
   unavailable: { id: string; name: string; reason: string }[]
   deckCountReported: number | null
+}
+
+/**
+ * Decides what a sync should touch, given what Archidekt lists and what we hold.
+ *
+ * Pure, and separate from the request loop, so the decision can be tested without
+ * a network or an account — which is the only reason the bug it fixes was
+ * reachable at all. Two faults lived here:
+ *
+ *   - A deck we already hold that the profile does not list was skipped entirely.
+ *     That is precisely what an unlisted deck looks like, so "Sync decks" never
+ *     refreshed one and it went stale forever, while the same deck could be
+ *     re-imported by link at any time.
+ *   - Everything Archidekt counted but did not list was reported as private. A
+ *     count difference cannot tell "private" from "unlisted", and it certainly
+ *     cannot tell either from "you already added it", so the warning fired every
+ *     sync for decks that were sitting right there.
+ */
+export function planDeckSync(
+  listedIds: string[],
+  localIds: string[],
+  reportedCount: number
+): { localOnly: string[]; hidden: number } {
+  const listed = new Set(listedIds)
+  const localOnly = localIds.filter((id) => !listed.has(id))
+  return {
+    localOnly,
+    // Never negative: Archidekt's count can lag its own listing, and a negative
+    // "hidden" would read as a warning about decks that do not exist.
+    hidden: Math.max(0, reportedCount - listedIds.length - localOnly.length)
+  }
 }
 
 /**
@@ -58,6 +93,7 @@ export async function syncUserDecks(
     skipped: 0,
     failed: 0,
     privateCount: 0,
+    listedCount: 0,
     unavailable: [],
     deckCountReported: null
   }
@@ -70,22 +106,61 @@ export async function syncUserDecks(
   }
   result.deckCountReported = user.deckCount ?? null
 
-  const summaries: ArchidektDeckSummary[] = user.decks ?? []
-  const hidden = (user.deckCount ?? 0) - summaries.length
-  if (hidden > 0) {
-    result.privateCount = hidden
+  /*
+    The profile listing, with the by-id endpoint as a fallback.
+
+    `decksForUserId` has existed unused since this was written. It is worth asking
+    when the username response comes back with fewer decks than it claims to have,
+    because the two endpoints do not always agree, and a deck we can list is a deck
+    we can sync.
+  */
+  let summaries: ArchidektDeckSummary[] = user.decks ?? []
+  if (user.id && summaries.length < (user.deckCount ?? 0)) {
+    const secondary = await decksForUserId(user.id)
+    if (secondary.length > summaries.length) summaries = secondary
   }
 
-  const total = summaries.length
+  const plan = planDeckSync(
+    summaries.map((d) => String(d.id)),
+    listDecks()
+      .filter((deck) => deck.source === 'archidekt')
+      .map((deck) => deck.external_id),
+    user.deckCount ?? 0
+  )
+  const localOnly = plan.localOnly
+  const localOnlyIds = new Set(localOnly)
+  result.listedCount = summaries.length
+  if (plan.hidden > 0) result.privateCount = plan.hidden
+
+  /*
+    Locally-known decks are appended to the queue as bare summaries. They carry no
+    profile metadata — that is the point, the profile does not list them — so the
+    name and format come from what the fetch returns, and `recordDeckError` falls
+    back to what we already stored.
+  */
+  /*
+    The work queue: what the profile listed, then what we hold that it did not.
+
+    A local-only entry has no summary — that is the whole point, the profile does
+    not describe it — so it is modelled as an id with no metadata rather than cast
+    to a summary shape whose fields would all be undefined. The first version of
+    this did exactly that, and `summary.name` reached `recordDeckError` as
+    undefined on the failure path.
+  */
+  const queue: { externalId: string; summary: ArchidektDeckSummary | null }[] = [
+    ...summaries.map((summary) => ({ externalId: String(summary.id), summary })),
+    ...localOnly.map((externalId) => ({ externalId, summary: null }))
+  ]
+
+  const total = queue.length
   onProgress({ job: 'deck-sync', phase: 'Syncing decks', done: 0, total })
 
-  for (let i = 0; i < summaries.length; i += 1) {
-    const summary = summaries[i]
-    const externalId = String(summary.id)
+  for (let i = 0; i < queue.length; i += 1) {
+    const { externalId, summary } = queue[i]
 
     // Skip decks that have not changed since our last successful sync.
     const state = deckSyncState(externalId)
-    if (state && summary.updatedAt && state.external_updated_at === summary.updatedAt) {
+    if (state && summary?.updatedAt && state.external_updated_at === summary.updatedAt) {
       result.skipped += 1
       onProgress({
         job: 'deck-sync',
@@ -105,32 +180,51 @@ export async function syncUserDecks(
         phase: 'Syncing decks',
         done: i + 1,
         total,
-        message: summary.name
+        message: summary?.name ?? externalId
       })
     } catch (err) {
       const error = err as ArchidektError
-      const reason = error.likelyPrivate ? 'private — not synced' : error.message
+      /*
+        A deck we already hold and that the profile does not list is not evidence
+        of privacy — it is what an unlisted deck looks like. Only say "private" for
+        one Archidekt itself listed, where a 404 really is a permission answer.
+      */
+      const reason =
+        error.likelyPrivate && !localOnlyIds.has(externalId)
+          ? 'private — not synced'
+          : error.message
       recordDeckError(
         externalId,
         {
-          name: summary.name,
-          format: formatName(summary.deckFormat),
-          owner_username: summary.owner?.username ?? username,
+          // Undefined leaves whatever is already stored in place: `recordDeckError`
+          // only overwrites the error, the timestamp and the private flag, so a
+          // deck we already hold keeps its real name rather than gaining a
+          // placeholder.
+          name: summary?.name,
+          format: summary ? formatName(summary.deckFormat) : undefined,
+          owner_username: summary?.owner?.username ?? username,
           url: deckUrl(externalId),
-          external_updated_at: summary.updatedAt,
-          is_private: error.likelyPrivate || summary.private,
-          is_unlisted: summary.unlisted
+          external_updated_at: summary?.updatedAt,
+          /*
+            A 404 on a deck the profile never listed is not evidence of privacy —
+            it is what an unlisted deck looks like from outside, and the reason
+            string above already says so. Flagging it private here as well would
+            put the padlock back on the very decks this change stopped calling
+            private.
+          */
+          is_private: !summary ? false : error.likelyPrivate || summary.private,
+          is_unlisted: summary?.unlisted ?? true
         },
         reason
       )
       result.failed += 1
-      result.unavailable.push({ id: externalId, name: summary.name, reason })
+      result.unavailable.push({ id: externalId, name: summary?.name ?? externalId, reason })
       onProgress({
         job: 'deck-sync',
         phase: 'Syncing decks',
         done: i + 1,
         total,
-        message: `${summary.name} — ${reason}`
+        message: `${summary?.name ?? externalId} — ${reason}`
       })
     }
   }
@@ -149,11 +243,7 @@ export async function syncUserDecks(
 export async function syncOneDeck(externalId: string): Promise<{ deckId: number; name: string }> {
   const deck = await fetchDeck(externalId)
   if (!deck) {
-    throw new ArchidektError(
-      'Archidekt returned 404 — the deck is private or no longer exists.',
-      404,
-      true
-    )
+    throw new ArchidektError(tr('err.deckUnreachable'), 404, true)
   }
   const deckId = upsertDeck(toDeckUpsert(deck))
   replaceDeckCards(deckId, toDeckCards(deck))

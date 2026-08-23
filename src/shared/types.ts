@@ -259,14 +259,15 @@ export interface CollectionRow {
   added_at: string | null
   updated_at: string | null
   printing: Printing
-  /** Copies staged in open pick lists. Always 0 for a derived row. */
+  /** Copies staged in open pick lists. Counts derived rows too — a sleeved card can be pulled. */
   reserved: number
-  /** quantity minus reserved. Always 0 for a derived row — it is inside a deck. */
+  /** quantity minus reserved: what can still be staged, whichever source the row has. */
   available: number
   /** Number of synced decks containing this card (exact printing or same oracle id). */
   deck_count: number
   /** For a derived row, the decks the copies are sleeved in. */
   deck_names: string[]
+
   /** Unit value in the active currency, honouring finish. Null when Scryfall has no price. */
   unit_value: number | null
   /**
@@ -387,6 +388,43 @@ export interface PickList {
   totalValue: number
 }
 
+/**
+ * One move of copies between a deck and the collection.
+ *
+ * `quantity` is signed: negative took copies out of the deck, positive put them in.
+ * A move lives in this ledger only while Archidekt disagrees with what the deck
+ * physically holds — once a sync catches up it is deleted, because there is nothing
+ * left to record.
+ *
+ * Replaces `DeckPull`, which could only describe the out direction because taking
+ * a card out of a deck was routed through a pick list. `PullSource` went with it:
+ * nothing needs to ask where a card could be pulled from now that moving is direct.
+ */
+export interface DeckMove {
+  id: number
+  deck_id: number
+  oracle_id: string
+  scryfall_id: string
+  finish: Finish
+  condition: Condition
+  quantity: number
+  created_at: string
+}
+
+/**
+ * A deck a copy could be taken out of, with how many are still takeable.
+ *
+ * Its own type rather than a `DeckRef`: that says where a card appears, this says
+ * where one can be taken from, and it carries the `oracle_id` a `PickSource` needs.
+ */
+export interface DeckSource {
+  deck_id: number
+  deck_name: string
+  oracle_id: string
+  /** Copies still takeable: what the deck holds, less anything already staged. */
+  quantity: number
+}
+
 export interface DeckRef {
   deck_id: number
   deck_name: string
@@ -400,6 +438,33 @@ export interface DeckRef {
   /** 1 when the finish is yours rather than Archidekt's. */
   finish_forced: number
 }
+
+/**
+ * What a pull does with the copies when the list is validated.
+ *
+ * A collection row only ever has one answer — it leaves your possession, which is
+ * what a pick list is for. A deck card has two, and they are genuinely different
+ * acts: taking it out to put in your box, or taking it out to sell. The list is a
+ * batch of things to physically do, so it has to carry which.
+ */
+export type PickDestination = 'collection' | 'gone'
+
+/**
+ * Where a staged copy comes from.
+ *
+ * A deck card has no `collection_items` row to name, so the source says which of
+ * the two it is rather than passing a number and guessing — and a deck source
+ * carries its destination, because taking a card out of a deck does not say by
+ * itself whether you are keeping it.
+ */
+export type PickSource =
+  | { kind: 'collection'; itemId: number }
+  | {
+      kind: 'deck'
+      deckId: number
+      oracleId: string
+      destination: PickDestination
+    }
 
 export interface PickListItem {
   id: number
@@ -425,6 +490,13 @@ export interface PickListItem {
   unit_value: number | null
   /** Copies still in the collection. Null once the row has been removed. */
   owned_quantity: number | null
+  /**
+   * What validating will do with a deck-sourced copy, or null for a collection row.
+   *
+   * Worth showing: a list can hold both a card you are pulling out to keep and one
+   * you are pulling out to sell, and nothing else on the row distinguishes them.
+   */
+  destination: PickDestination | null
   /** Decks that use this card, so we can warn before pulling it. */
   decks: DeckRef[]
 }
@@ -498,6 +570,17 @@ export interface DeckCardRow {
    * rather than recomputing, or the number drifts from the owned/missing totals.
    */
   held: number
+  /**
+   * Net local divergence from the decklist for this card, or 0 when there is none.
+   *
+   * Negative means copies were taken out of the deck, positive that copies were
+   * put in, in both cases while Archidekt still says otherwise. Reported rather
+   * than applied: `quantity` above already accounts for it, because a move is
+   * written into the deck rows instead of adjusted while reading them.
+   */
+  moved: number
+  /** The moves behind `moved`, newest first, so each can be reverted on its own. */
+  moves: DeckMove[]
   /** True when this card sits in the deck's premier category (its commander). */
   is_commander: boolean
   /**
@@ -802,6 +885,14 @@ export interface AddCardInput {
   quantity: number
   purchase_price?: number | null
   notes?: string | null
+  /**
+   * Only set when the copies being added are known proxies. Note that
+   * `collection_items` is UNIQUE on (scryfall_id, finish, condition) and does
+   * *not* include this, so a proxy merges into a real copy of the same printing
+   * and would flag it too — which is why pulling a proxied deck entry is
+   * refused rather than merged. See PICK_PROXY_REFUSED in pickLists.ts.
+   */
+  proxied?: boolean
 }
 
 export interface QuickAddInput {
@@ -966,6 +1057,21 @@ export const DEFAULT_VIEW_MODES: ViewModes = {
   // handling cards, not something you browse as art.
   picks: 'rows',
   decks: 'rows'
+}
+
+/**
+ * What the undo stack can currently do, for the UI to label and disable by.
+ *
+ * Labels arrive already translated: the stack lives in the main process, which is
+ * where the locale is resolved for every other message that reaches the user
+ * verbatim.
+ */
+export interface UndoState {
+  canUndo: boolean
+  canRedo: boolean
+  /** What Ctrl+Z would take back, or null when there is nothing. */
+  undoLabel: string | null
+  redoLabel: string | null
 }
 
 export interface AppSettings {

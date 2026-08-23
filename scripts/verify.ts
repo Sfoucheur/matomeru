@@ -15,6 +15,7 @@ import {
   addToCollection,
   cardLocations,
   forceItemLanguage,
+  bulkUpdate,
   getItem,
   queryCollection,
   setItemPrinting,
@@ -28,17 +29,40 @@ import {
   cancelPickList,
   confirmPickList,
   createPickList,
-  getPickListItems
+  deletePickList,
+  getPickListItems,
+  revertPickList,
+  setPickItemQuantity
 } from '../src/main/db/repos/pickLists.js'
+import { moveToCollection, moveToDeck, revertMove } from '../src/main/db/repos/moves.js'
 import {
   deckBreakdown,
+  deckMoves,
   discoverLabelColors,
   recomputeLabelPossession,
   replaceDeckCards,
+  setCardProxied,
   upsertDeck
 } from '../src/main/db/repos/decks.js'
 import { getPrinting } from '../src/main/db/repos/printings.js'
+import {
+  clearUndoHistory,
+  redo,
+  undo,
+  undoDepth,
+  undoable,
+  type UndoScope
+} from '../src/main/db/undo.js'
+// The real builders, not restatements of them: testing a journal against scopes
+// invented here is what let a bad scope ship.
+import {
+  collectionKeyScope,
+  moveScopes,
+  pickListScopes,
+  scryfallScopeMany
+} from '../src/main/db/undoScopes.js'
 import { parseLabel } from '../src/main/archidekt/mappers.js'
+import { planDeckSync } from '../src/main/services/deckSync.js'
 import {
   clampColumns,
   DEFAULT_DECK_FILTERS,
@@ -99,10 +123,11 @@ import {
 import { en as enDict } from '../src/shared/i18n/en.js'
 import { fr as frDict } from '../src/shared/i18n/fr.js'
 import { resolveLocale, t, tp } from '../src/shared/i18n/index.js'
-import type { ProgressEvent } from '../src/shared/types.js'
+import type { Prices, ProgressEvent } from '../src/shared/types.js'
 
 let passed = 0
 let failed = 0
+let skipped = 0
 const failures: string[] = []
 
 function check(label: string, condition: boolean, detail?: string): void {
@@ -117,6 +142,20 @@ function check(label: string, condition: boolean, detail?: string): void {
 }
 
 /**
+ * A case the fixture cannot support.
+ *
+ * Its own outcome, not a pass. These used to be written as `check(label, true)`,
+ * which counted an untested path as a verified one and left the total looking
+ * healthier than it was — the same failure mode as a check that cannot fail, just
+ * spelled differently. Counted separately and printed loudly, so a fixture that
+ * quietly stops covering something is visible.
+ */
+function skip(label: string, why: string): void {
+  skipped += 1
+  console.log(`  SKIP  ${label} — ${why}`)
+}
+
+/**
  * Every card in a deck, flattened out of its groups.
  *
  * The breakdown no longer hands back owned/missing arrays: each card is assigned
@@ -125,6 +164,15 @@ function check(label: string, condition: boolean, detail?: string): void {
  */
 function allDeckCards(breakdown: DeckBreakdown | null): DeckCardRow[] {
   return (breakdown?.groups ?? []).flatMap((group) => group.cards)
+}
+
+/** The UNIQUE key scope an add needs, since the row has no id yet. */
+function undoScopeForAdd(scryfallId: string): UndoScope {
+  return {
+    table: 'collection_items',
+    where: 'scryfall_id = ?',
+    params: [scryfallId]
+  }
 }
 
 function section(title: string): void {
@@ -306,7 +354,7 @@ async function main(): Promise<void> {
   section('Pick list: reserve, then validate')
 
   const listId = createPickList('Trade with Alice')
-  const staged = addToPickList(listId, jaItemId, 5)
+  const staged = addToPickList(listId, { kind: 'collection', itemId: jaItemId }, 5)
   check('staged 5 copies', staged.added === 5, `added ${staged.added}`)
 
   const afterStage = queryCollection(filters({ langs: ['ja'] }), 'usd', 100, 0)
@@ -325,9 +373,9 @@ async function main(): Promise<void> {
   )
 
   // Over-picking is capped at what is actually available.
-  const over = addToPickList(listId, jaItemId, 99)
+  const over = addToPickList(listId, { kind: 'collection', itemId: jaItemId }, 99)
   check('over-picking is capped, not rejected', over.added === 7 && over.capped, `added ${over.added}`)
-  const capped = addToPickList(listId, jaItemId, 1)
+  const capped = addToPickList(listId, { kind: 'collection', itemId: jaItemId }, 1)
   check('nothing left to stage once fully reserved', capped.added === 0)
 
   // Guard: the collection cannot be reduced below what is reserved.
@@ -360,7 +408,7 @@ async function main(): Promise<void> {
 
   // Confirm actually moves the quantity, exactly once.
   const listId2 = createPickList('Sell pile')
-  addToPickList(listId2, jaItemId, 5)
+  addToPickList(listId2, { kind: 'collection', itemId: jaItemId }, 5)
   const confirmed = confirmPickList(listId2)
   check('confirm reports 5 cards removed', confirmed.cardsRemoved === 5, `got ${confirmed.cardsRemoved}`)
   const afterConfirm = (
@@ -386,7 +434,7 @@ async function main(): Promise<void> {
 
   // Emptying a row deletes it but the history survives.
   const listId3 = createPickList('Empty it out')
-  addToPickList(listId3, jaItemId, 7)
+  addToPickList(listId3, { kind: 'collection', itemId: jaItemId }, 7)
   const emptied = confirmPickList(listId3)
   check('emptying deletes the collection row', emptied.rowsDeleted === 1, `got ${emptied.rowsDeleted}`)
   const goneRow = db.get('SELECT quantity FROM collection_items WHERE id = ?', [jaItemId])
@@ -955,7 +1003,686 @@ async function main(): Promise<void> {
       check('it appears as a row', !!derived, `${fresh.name} not listed`)
       check('the row is marked as derived', derived?.source === 'deck', `got ${derived?.source}`)
       check('a derived row has no id, so nothing can edit it', derived?.id === null)
-      check('a derived row is not available to pull', derived?.available === 0)
+      /*
+        A sleeved card used to be unpullable by construction — the derived branch
+        of ROW_SOURCES hardcoded a 0 here. It is pullable now: it is still a card
+        you physically hold, and a pick list is exactly the thing for taking it
+        out of the deck. What must stay true is that nothing is reserved yet.
+      */
+      /*
+        A sleeved card is not "available" in the collection sense — that number is
+        about staging a collection row, and a deck card is reached by moving it or
+        by naming its deck on a list. Its quantity is what says the copies exist.
+      */
+      check('a derived row reports the copies the deck holds', derived?.quantity === fresh.quantity)
+      check('and offers none of them as bulk stock', derived?.available === 0)
+
+      /*
+        Moving cards between a deck and the collection.
+
+        The governing property is conservation: a move relocates a card, so the
+        total count and the total value must be identical either side of it. Every
+        assertion here is a before/after comparison rather than a fixed number, so
+        it survives whatever the fixture happens to hold.
+      */
+      const oracleOf = (scryfallId: string): string =>
+        (
+          db.get('SELECT oracle_id FROM printings WHERE scryfall_id = ?', [scryfallId]) as {
+            oracle_id: string
+          }
+        ).oracle_id
+      const moveOracle = oracleOf(fresh.scryfall_id)
+
+      const holdings = (): { quantity: number; value: number } => {
+        const page = queryCollection(filters(), 'usd', 500, 0)
+        return { quantity: page.totalQuantity, value: page.totalValue ?? 0 }
+      }
+      const deckCards = (): DeckCardRow[] => allDeckCards(deckBreakdown(deckId3, 'usd', false))
+      const entryFor = (oracleId: string): DeckCardRow | undefined =>
+        deckCards().find((c) => c.oracle_id === oracleId)
+      const fingerprint = (): string =>
+        JSON.stringify([
+          db.all(
+            'SELECT scryfall_id, finish, condition, quantity, foil_treatment, proxied FROM collection_items ORDER BY scryfall_id, finish, condition'
+          ),
+          db.all('SELECT deck_id, oracle_id, quantity FROM deck_cards ORDER BY deck_id, oracle_id, id'),
+          db.all('SELECT deck_id, oracle_id, quantity FROM deck_card_moves ORDER BY id')
+        ])
+
+      /*
+        Names the section that moved. `stateDiff` is the equivalent for `dbState`
+        and is declared much later besides -- reaching for it here read fine and
+        threw at run time, since the fingerprint is these three tables and not that
+        snapshot's shape.
+      */
+      const fpDiff = (before: string, after: string): string => {
+        if (before === after) return ''
+        const a = JSON.parse(before) as unknown[]
+        const b = JSON.parse(after) as unknown[]
+        const names = ['collection_items', 'deck_cards', 'deck_card_moves']
+        const moved = names.filter((_, i) => JSON.stringify(a[i]) !== JSON.stringify(b[i]))
+        return `${moved.join(', ')} differ`
+      }
+
+      /*
+        A resync is replaceDeckCards followed by recomputeLabelPossession — the
+        order deckSync.ts uses, because the reinserted rows carry no possession flag
+        until it is recomputed. Wrapped together so the fixture cannot drift from
+        the real sequence.
+      */
+      const deckCardsAsUpsert = (): DeckCardUpsert[] =>
+        (
+          db.all(
+            `SELECT scryfall_id, oracle_id, quantity, finish, categories, in_maindeck, name,
+                    lang, set_code, collector_number, rarity, image_uri_small, label
+             FROM deck_cards WHERE deck_id = ?`,
+            [deckId3]
+          ) as {
+            scryfall_id: string | null
+            oracle_id: string | null
+            quantity: number
+            finish: string
+            categories: string
+            in_maindeck: number
+            name: string
+            lang: string
+            set_code: string | null
+            collector_number: string | null
+            rarity: string | null
+            image_uri_small: string | null
+            label: string | null
+          }[]
+        ).map((r) => ({
+          ...r,
+          finish: r.finish as Finish,
+          categories: JSON.parse(r.categories) as string[],
+          in_maindeck: !!r.in_maindeck
+        }))
+
+      const resyncWith = (cards: DeckCardUpsert[]): void => {
+        replaceDeckCards(deckId3, cards)
+        recomputeLabelPossession({ '#4caf50': 'owned' })
+      }
+      const snapshot = deckCardsAsUpsert()
+
+      // ---- out of the deck, directly
+      const beforeOut = holdings()
+      const printOut = fingerprint()
+      const outResult = moveToCollection(deckId3, moveOracle, 1)
+      check('a card can be moved out of a deck', outResult.moved === 1, JSON.stringify(outResult))
+      check(
+        'a move creates and destroys nothing: the count is unchanged',
+        holdings().quantity === beforeOut.quantity,
+        `${beforeOut.quantity} -> ${holdings().quantity}`
+      )
+      check(
+        'and neither is the money',
+        Math.abs(holdings().value - beforeOut.value) < 0.005,
+        `${beforeOut.value} -> ${holdings().value}`
+      )
+      check(
+        'the deck row itself came down, so nothing is counted twice',
+        (
+          db.get('SELECT COALESCE(SUM(quantity), 0) AS q FROM deck_cards WHERE deck_id = ? AND oracle_id = ?', [
+            deckId3,
+            moveOracle
+          ]) as { q: number }
+        ).q === fresh.quantity - 1
+      )
+      check(
+        'the copy is a real collection row now',
+        (
+          db.get('SELECT COALESCE(SUM(quantity), 0) AS q FROM collection_items WHERE scryfall_id = ?', [
+            fresh.scryfall_id
+          ]) as { q: number }
+        ).q === 1
+      )
+      const outMoves = deckMoves(deckId3).get(moveOracle) ?? []
+      check(
+        'and the ledger records it as an out, so the deck can say the list is stale',
+        outMoves.length === 1 && outMoves[0].quantity === -1,
+        JSON.stringify(outMoves)
+      )
+
+      // ---- and back
+      revertMove(outMoves[0].id)
+      check(
+        'undoing a move puts the database back exactly as it was',
+        fingerprint() === printOut,
+        'the fingerprint differs after reverting'
+      )
+
+      // ---- into a deck, including one that never listed the card
+      const spare = db.get(
+        `SELECT p.scryfall_id, p.oracle_id FROM printings p
+         WHERE NOT EXISTS (SELECT 1 FROM deck_cards dc WHERE dc.deck_id = ? AND dc.oracle_id = p.oracle_id)
+           AND p.oracle_id IS NOT NULL
+         ORDER BY p.scryfall_id LIMIT 1`,
+        [deckId3]
+      ) as { scryfall_id: string; oracle_id: string } | undefined
+
+      if (spare) {
+        addToCollection({
+          scryfall_id: spare.scryfall_id,
+          finish: 'nonfoil',
+          condition: 'NM',
+          quantity: 2
+        })
+        const spareItem = (
+          db.get('SELECT id FROM collection_items WHERE scryfall_id = ?', [
+            spare.scryfall_id
+          ]) as { id: number }
+        ).id
+
+        const beforeIn = holdings()
+        const printIn = fingerprint()
+        const inResult = moveToDeck(deckId3, spareItem, 1)
+        check('a card can be moved into a deck', inResult.moved === 1, JSON.stringify(inResult))
+        check(
+          'even one the decklist has never mentioned — the row is created',
+          (entryFor(spare.oracle_id)?.quantity ?? 0) === 1,
+          JSON.stringify(entryFor(spare.oracle_id)?.quantity)
+        )
+        check(
+          'and it counts as held, because you physically put it there',
+          (entryFor(spare.oracle_id)?.held ?? 0) >= 1,
+          `held ${entryFor(spare.oracle_id)?.held}`
+        )
+        check(
+          'the ledger records it as an in',
+          (deckMoves(deckId3).get(spare.oracle_id) ?? [])[0]?.quantity === 1
+        )
+        check(
+          'moving in creates and destroys nothing either',
+          holdings().quantity === beforeIn.quantity &&
+            Math.abs(holdings().value - beforeIn.value) < 0.005,
+          `${beforeIn.quantity}/${beforeIn.value} -> ${holdings().quantity}/${holdings().value}`
+        )
+
+        /*
+          The ordering trap this design was built to avoid.
+
+          A sync rebuilds deck_cards from the decklist and then recomputes label
+          possession from Archidekt labels — which a row you added yourself has
+          none of. If either step forgot about it, the card you physically put in
+          the deck would quietly stop counting as held.
+        */
+        resyncWith(deckCardsAsUpsert().filter((c) => c.oracle_id !== spare.oracle_id))
+        check(
+          'a sync re-applies it, so a card you put in a deck survives one',
+          (entryFor(spare.oracle_id)?.quantity ?? 0) === 1,
+          `quantity ${entryFor(spare.oracle_id)?.quantity}`
+        )
+        /*
+          Asserted on the label, not on `held`.
+
+          `held` also counts what the collection holds of the same printing, and the
+          fixture leaves a copy there — so a version of this that checked `held >= 1`
+          passed even with the exemption removed, satisfied by the loose copy rather
+          than by the deck vouching for anything. The label is the mechanism under
+          test, so the label is what to look at.
+        */
+        check(
+          'and the deck still vouches for it, despite having no Archidekt label',
+          entryFor(spare.oracle_id)?.label_possession === 'owned',
+          `label_possession ${entryFor(spare.oracle_id)?.label_possession}`
+        )
+
+        // ---- reconciliation, the in direction
+        const listedNow = deckCardsAsUpsert().map((c) =>
+          c.oracle_id === spare.oracle_id ? { ...c, quantity: (c.quantity ?? 0) + 1 } : c
+        )
+        resyncWith(listedNow)
+        check(
+          'and once Archidekt lists it, the marker is dropped',
+          (deckMoves(deckId3).get(spare.oracle_id) ?? []).length === 0,
+          JSON.stringify(deckMoves(deckId3).get(spare.oracle_id))
+        )
+        check(
+          'without the card disappearing — the decklist owns it now',
+          (entryFor(spare.oracle_id)?.quantity ?? 0) >= 1
+        )
+
+        // Put the fixture back.
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+        db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [spare.scryfall_id])
+        resyncWith(snapshot)
+        void printIn
+      } else {
+        skip('moving into a deck', 'no printing outside this deck in the fixture')
+      }
+
+      // ---- reconciliation, the out direction
+      const pullsNow = (): { quantity: number; deck_quantity_at_move: number }[] =>
+        db.all(
+          'SELECT quantity, deck_quantity_at_move FROM deck_card_moves WHERE deck_id = ? AND oracle_id = ?',
+          [deckId3, moveOracle]
+        ) as { quantity: number; deck_quantity_at_move: number }[]
+
+      db.run('UPDATE deck_cards SET quantity = 3 WHERE deck_id = ? AND oracle_id = ?', [
+        deckId3,
+        moveOracle
+      ])
+      recomputeLabelPossession({ '#4caf50': 'owned' })
+      moveToCollection(deckId3, moveOracle, 2)
+
+      resyncWith(deckCardsAsUpsert().map((c) => (c.oracle_id === moveOracle ? { ...c, quantity: 3 } : c)))
+      check(
+        'a sync that still lists the copies leaves an out-marker standing',
+        pullsNow().length === 1 && pullsNow()[0].quantity === -2,
+        JSON.stringify(pullsNow())
+      )
+      resyncWith(deckCardsAsUpsert().map((c) => (c.oracle_id === moveOracle ? { ...c, quantity: 2 } : c)))
+      check(
+        'one that absorbed part of it shrinks and rebases it',
+        pullsNow().length === 1 && pullsNow()[0].quantity === -1,
+        JSON.stringify(pullsNow())
+      )
+      resyncWith(deckCardsAsUpsert().filter((c) => c.oracle_id !== moveOracle))
+      check(
+        'and one that dropped the card clears it',
+        pullsNow().length === 0,
+        JSON.stringify(pullsNow())
+      )
+
+      db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+      db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [fresh.scryfall_id])
+      resyncWith(snapshot)
+
+      /*
+        Two printings of one oracle.
+
+        The read-time design got this wrong — one copy taken out emptied two slots,
+        because the pull was subtracted from every row sharing the oracle. Nothing
+        is subtracted at read time now, so it should be impossible; asserted anyway,
+        because that is exactly the kind of thing this codebase has been bitten by.
+      */
+      const sibling = db.get(
+        `SELECT scryfall_id FROM printings
+         WHERE scryfall_id != ? AND scryfall_id NOT IN (SELECT scryfall_id FROM deck_cards WHERE deck_id = ?)
+         ORDER BY scryfall_id LIMIT 1`,
+        [fresh.scryfall_id, deckId3]
+      ) as { scryfall_id: string } | undefined
+      if (sibling) {
+        const original = db.get(
+          'SELECT quantity, finish, categories, in_maindeck, name, lang, set_code, collector_number, rarity, image_uri_small, label FROM deck_cards WHERE deck_id = ? AND scryfall_id = ?',
+          [deckId3, fresh.scryfall_id]
+        ) as {
+          quantity: number
+          finish: string
+          categories: string
+          in_maindeck: number
+          name: string
+          lang: string
+          set_code: string | null
+          collector_number: string | null
+          rarity: string | null
+          image_uri_small: string | null
+          label: string | null
+        }
+        db.run(
+          `INSERT INTO deck_cards (deck_id, scryfall_id, oracle_id, quantity, finish, categories,
+                                   in_maindeck, name, lang, set_code, collector_number, rarity,
+                                   image_uri_small, label)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            deckId3,
+            sibling.scryfall_id,
+            moveOracle,
+            1,
+            original.finish,
+            original.categories,
+            original.in_maindeck,
+            original.name,
+            original.lang,
+            original.set_code,
+            original.collector_number,
+            original.rarity,
+            original.image_uri_small,
+            original.label
+          ]
+        )
+        recomputeLabelPossession({ '#4caf50': 'owned' })
+
+        const twoRows = queryCollection(filters(), 'usd', 500, 0).deckQuantity
+        moveToCollection(deckId3, moveOracle, 1)
+        const afterOne = queryCollection(filters(), 'usd', 500, 0).deckQuantity
+        check(
+          'taking one copy out empties exactly one slot, with the oracle on two rows',
+          twoRows - afterOne === 1,
+          `sleeved ${twoRows} -> ${afterOne}, a drop of ${twoRows - afterOne} for one copy`
+        )
+
+        /*
+          The two SQL paths, compared while a multi-copy entry is partly moved.
+
+          stats.ts keeps its own copy of the row sources. When quantities were
+          adjusted at read time, this copy never learned about the adjustment and
+          Stats reported a card and $485 more than the Collection. The multi-copy
+          part is what makes the comparison bite: with a single copy the grouping
+          drops out entirely and two wrongs cancel.
+        */
+        const statsNow = collectionStats()
+        const collNow = queryCollection(filters(), 'usd', 500, 0)
+        check(
+          'Stats and the Collection agree on the count while a move is in effect',
+          statsNow.totalCards === collNow.totalQuantity,
+          `stats ${statsNow.totalCards} vs collection ${collNow.totalQuantity}`
+        )
+        check(
+          'and on the money',
+          Math.abs(statsNow.totalValue - (collNow.totalValue ?? 0)) < 0.005,
+          `stats ${statsNow.totalValue} vs collection ${collNow.totalValue}`
+        )
+
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+        db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [fresh.scryfall_id])
+        db.run('DELETE FROM deck_cards WHERE deck_id = ? AND scryfall_id = ?', [
+          deckId3,
+          sibling.scryfall_id
+        ])
+        resyncWith(snapshot)
+      } else {
+        skip('one oracle across two printings', 'no spare printing to build the case with')
+      }
+
+      /*
+        A pick list can still hold a deck card, and the destination is what it adds:
+        pulling a card out to keep is not the same errand as pulling it out to sell.
+      */
+      {
+        const keepBefore = holdings().quantity
+        const keep = createPickList('Pull to keep')
+        addToPickList(
+          keep,
+          { kind: 'deck', deckId: deckId3, oracleId: moveOracle, destination: 'collection' },
+          1
+        )
+        const keepResult = confirmPickList(keep)
+        check(
+          'validating a pull that keeps the card reports it as freed, not removed',
+          keepResult.cardsFreedFromDecks === 1 && keepResult.cardsRemoved === 0,
+          JSON.stringify(keepResult)
+        )
+        check(
+          'and the count is unchanged, because it only moved',
+          holdings().quantity === keepBefore,
+          `${keepBefore} -> ${holdings().quantity}`
+        )
+        revertPickList(keep)
+        check('reverting it restores the count', holdings().quantity === keepBefore)
+        cancelPickList(keep)
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+        db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [fresh.scryfall_id])
+
+        const sellBefore = holdings().quantity
+        const sell = createPickList('Pull to sell')
+        addToPickList(
+          sell,
+          { kind: 'deck', deckId: deckId3, oracleId: moveOracle, destination: 'gone' },
+          1
+        )
+        const sellResult = confirmPickList(sell)
+        check(
+          'validating a pull that sells the card reports it as removed',
+          sellResult.cardsRemoved === 1 && sellResult.cardsFreedFromDecks === 0,
+          JSON.stringify(sellResult)
+        )
+        check(
+          'and the count drops, because it did leave',
+          holdings().quantity === sellBefore - 1,
+          `${sellBefore} -> ${holdings().quantity}`
+        )
+        check(
+          'with no collection row invented for it',
+          (
+            db.get('SELECT COALESCE(SUM(quantity), 0) AS q FROM collection_items WHERE scryfall_id = ?', [
+              fresh.scryfall_id
+            ]) as { q: number }
+          ).q === 0
+        )
+        revertPickList(sell)
+        check(
+          'and reverting puts it back in the deck',
+          holdings().quantity === sellBefore,
+          `${holdings().quantity} vs ${sellBefore}`
+        )
+        cancelPickList(sell)
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+        resyncWith(snapshot)
+      }
+
+      /*
+        What a move must not lose.
+
+        A move relocates, so the copies have to arrive as the copies that left. Two
+        things about a copy are not re-derivable, and both were being dropped: a
+        foil treatment you corrected by hand — the only case where the printing's own
+        tags do not imply it — and a proxy's worthlessness.
+      */
+      {
+        // ---- a corrected treatment survives out and back
+        const treatOracle = moveOracle
+        setCardFinish(deckId3, treatOracle, 'foil', 'surgefoil')
+        const beforeTreat = fingerprint()
+        moveToCollection(deckId3, treatOracle, 1)
+        const landed = db.get(
+          'SELECT foil_treatment FROM collection_items WHERE scryfall_id = ?',
+          [fresh.scryfall_id]
+        ) as { foil_treatment: string | null } | undefined
+        check(
+          'a corrected foil type arrives with the copies',
+          landed?.foil_treatment === 'surgefoil',
+          `treatment ${landed?.foil_treatment}`
+        )
+        const backMove = db.get(
+          'SELECT id FROM deck_card_moves WHERE deck_id = ? ORDER BY id DESC LIMIT 1',
+          [deckId3]
+        ) as { id: number }
+        revertMove(backMove.id)
+        check(
+          'and undoing the move puts everything back, treatment included',
+          fingerprint() === beforeTreat,
+          // The per-table differ lives with the undo cases further down; reaching
+          // forward for it here is a use-before-initialization.
+          'the fingerprint differs after reverting the move'
+        )
+        clearCardOverride(deckId3, treatOracle)
+        recomputeLabelPossession({ '#4caf50': 'owned' })
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+        db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [fresh.scryfall_id])
+
+        // ---- a proxy stays worth nothing
+        const proxySpare = db.get(
+          `SELECT p.scryfall_id FROM printings p
+           WHERE p.oracle_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM deck_cards dc
+               WHERE dc.deck_id = ? AND dc.oracle_id = p.oracle_id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = p.scryfall_id
+             )
+           ORDER BY p.scryfall_id LIMIT 1`,
+          [deckId3]
+        ) as { scryfall_id: string } | undefined
+
+        if (proxySpare) {
+          addToCollection({
+            scryfall_id: proxySpare.scryfall_id,
+            finish: 'nonfoil',
+            condition: 'NM',
+            quantity: 1
+          })
+          const proxyItem = (
+            db.get('SELECT id FROM collection_items WHERE scryfall_id = ?', [
+              proxySpare.scryfall_id
+            ]) as { id: number }
+          ).id
+          updateItem(proxyItem, { proxied: 1 })
+
+          const valueBefore = queryCollection(filters(), 'usd', 500, 0).totalValue ?? 0
+          moveToDeck(deckId3, proxyItem, 1)
+          const valueAfter = queryCollection(filters(), 'usd', 500, 0).totalValue ?? 0
+          check(
+            'a proxy is still worth nothing after moving into a deck',
+            Math.abs(valueAfter - valueBefore) < 0.005,
+            `${valueBefore} -> ${valueAfter}`
+          )
+
+          db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+          db.run('DELETE FROM deck_card_overrides WHERE deck_id = ? AND oracle_id = (SELECT oracle_id FROM printings WHERE scryfall_id = ?)', [
+            deckId3,
+            proxySpare.scryfall_id
+          ])
+          db.run('DELETE FROM deck_cards WHERE deck_id = ? AND scryfall_id = ?', [
+            deckId3,
+            proxySpare.scryfall_id
+          ])
+          db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [proxySpare.scryfall_id])
+        } else {
+          skip('a proxy is still worth nothing after moving into a deck', 'no spare printing')
+        }
+
+        /*
+          The other direction, which is the one that needs the ledger.
+
+          Moving out and back was the wrong test for this: the treatment lives in
+          `deck_card_overrides`, which the move does not touch, so the round trip
+          passed with the ledger column blanked and the check proved nothing.
+          Moving *in* deletes the collection row outright, so its corrected
+          treatment exists nowhere else, and only `deck_card_moves.foil_treatment`
+          can bring it back. The fingerprint holds no ids, so a row recreated under
+          a new id still compares equal.
+        */
+        const treatSpare = db.get(
+          `SELECT p.scryfall_id FROM printings p
+           WHERE p.oracle_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM deck_cards dc
+               WHERE dc.deck_id = ? AND dc.oracle_id = p.oracle_id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = p.scryfall_id
+             )
+           ORDER BY p.scryfall_id LIMIT 1`,
+          [deckId3]
+        ) as { scryfall_id: string } | undefined
+
+        if (treatSpare) {
+          addToCollection({
+            scryfall_id: treatSpare.scryfall_id,
+            finish: 'foil',
+            condition: 'NM',
+            quantity: 1
+          })
+          const treatItem = (
+            db.get('SELECT id FROM collection_items WHERE scryfall_id = ?', [
+              treatSpare.scryfall_id
+            ]) as { id: number }
+          ).id
+          updateItem(treatItem, { foil_treatment: 'surgefoil' })
+
+          const beforeIn = fingerprint()
+          moveToDeck(deckId3, treatItem, 1)
+          // Counted rather than compared against an empty result, so the assertion
+          // states the property -- the copies left the collection -- instead of
+          // depending on what the driver hands back for no rows.
+          const gone =
+            (db.get('SELECT COUNT(*) AS n FROM collection_items WHERE id = ?', [treatItem]) as {
+              n: number
+            }).n === 0
+          const inMove = db.get(
+            'SELECT id FROM deck_card_moves WHERE deck_id = ? ORDER BY id DESC LIMIT 1',
+            [deckId3]
+          ) as { id: number }
+          revertMove(inMove.id)
+          const restored = db.get(
+            'SELECT foil_treatment FROM collection_items WHERE scryfall_id = ?',
+            [treatSpare.scryfall_id]
+          ) as { foil_treatment: string | null } | undefined
+          check(
+            'undoing a move into a deck restores the treatment you corrected',
+            gone && restored?.foil_treatment === 'surgefoil',
+            `row ${gone ? 'was consumed' : 'survived'}, back as ${restored?.foil_treatment}`
+          )
+          check(
+            'and that undo leaves the database exactly as it was',
+            fingerprint() === beforeIn,
+            fpDiff(beforeIn, fingerprint())
+          )
+
+          db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckId3])
+          db.run(
+            `DELETE FROM deck_card_overrides WHERE deck_id = ?
+               AND oracle_id = (SELECT oracle_id FROM printings WHERE scryfall_id = ?)`,
+            [deckId3, treatSpare.scryfall_id]
+          )
+          db.run('DELETE FROM deck_cards WHERE deck_id = ? AND scryfall_id = ?', [
+            deckId3,
+            treatSpare.scryfall_id
+          ])
+          db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [treatSpare.scryfall_id])
+        } else {
+          skip('undoing a move into a deck restores the treatment you corrected', 'no spare printing')
+          skip('and that undo leaves the database exactly as it was', 'no spare printing')
+        }
+      }
+
+      /*
+        The refusals. Both stop a move inventing a card: an entry under any other
+        label is a wishlist line rather than a card you hold, and a proxy cannot
+        become a collection row without dragging real copies of the same printing
+        into being proxies too.
+      */
+      const otherEntry = db.get(
+        `SELECT oracle_id FROM deck_cards
+         WHERE deck_id = ? AND oracle_id IS NOT NULL AND label_possession IS NOT 'owned'
+         LIMIT 1`,
+        [deckId3]
+      ) as { oracle_id: string } | undefined
+      if (otherEntry) {
+        let refused = ''
+        try {
+          moveToCollection(deckId3, otherEntry.oracle_id, 1)
+        } catch (err) {
+          refused = (err as Error).message
+        }
+        check(
+          'an entry you have not marked as owned cannot be moved out',
+          refused.length > 0,
+          refused || 'it moved anyway'
+        )
+      } else {
+        skip('an entry you have not marked as owned cannot be moved out', 'no such entry')
+      }
+
+      setCardProxied(deckId3, moveOracle, true)
+      let proxyRefused = ''
+      try {
+        moveToCollection(deckId3, moveOracle, 1)
+      } catch (err) {
+        proxyRefused = (err as Error).message
+      }
+      check(
+        'and neither can a slot filled by a proxy',
+        proxyRefused.length > 0,
+        proxyRefused || 'it moved anyway'
+      )
+      setCardProxied(deckId3, moveOracle, false)
+
+      let tooMany = ''
+      try {
+        moveToCollection(deckId3, moveOracle, 99)
+      } catch (err) {
+        tooMany = (err as Error).message
+      }
+      check(
+        'asking for more copies than the deck holds is refused',
+        tooMany.length > 0,
+        tooMany || 'it moved anyway'
+      )
+
       check('a derived row names the deck it is sleeved in', (derived?.deck_names.length ?? 0) > 0)
       check('a derived row has no condition', derived?.condition === null)
 
@@ -2051,7 +2778,7 @@ async function main(): Promise<void> {
     ) as { id: number } | undefined
 
     if (row) {
-      addToPickList(older, row.id, 1)
+      addToPickList(older, { kind: 'collection', itemId: row.id }, 1)
       const inOlder = getPickListItems(older, 'usd')
       const inNewer = getPickListItems(newer, 'usd')
       check(
@@ -2083,7 +2810,7 @@ async function main(): Promise<void> {
       confirmPickList(older)
       let refused = ''
       try {
-        addToPickList(older, row.id, 1)
+        addToPickList(older, { kind: 'collection', itemId: row.id }, 1)
       } catch (err) {
         refused = (err as Error).message
       }
@@ -2457,11 +3184,18 @@ async function main(): Promise<void> {
     // Named interpolation has to survive translation, or a sentence loses its
     // number or its card name.
     const mismatched = enKeys.filter((k) => {
-      const holes = (s: string): string =>
-        [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',')
-      return (
-        holes((enDict as Record<string, string>)[k]) !== holes((frDict as Record<string, string>)[k])
-      )
+      /*
+        Tolerates a missing counterpart rather than crashing on it. The Record type
+        normally makes that impossible, but this suite runs through esbuild, which
+        strips types — so a key added to one dictionary only reached here as
+        undefined and took the whole run down with a TypeError instead of naming the
+        key. A missing translation is a mismatch, and should be reported as one.
+      */
+      const holes = (value: string | undefined): string =>
+        [...(value ?? '').matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',')
+      const fr = (frDict as Record<string, string | undefined>)[k]
+      if (fr === undefined) return true
+      return holes((enDict as Record<string, string>)[k]) !== holes(fr)
     })
     check(
       'every placeholder survives translation',
@@ -2538,6 +3272,35 @@ async function main(): Promise<void> {
       for (const file of files) {
         const text = readFileSync(file, 'utf8')
         const name = file.split(/[\\/]/).pop()
+        /*
+          Prose sitting between tags rather than in an attribute.
+
+          This is the gap the two sweeps above left, and it was not hypothetical:
+          "Showing the first N of M rows" and "Card data from Scryfall. Decks from
+          Archidekt." rendered in English inside the French app for as long as both
+          existed. Neither is an attribute and neither looks like a string literal,
+          so nothing saw them — and the runtime French sweep could not either,
+          because it matches a curated list of phrases and therefore only finds
+          leftovers someone already knew about.
+
+          Extracted first and judged second, rather than in one regular
+          expression: the first attempt at this was a single pattern and it
+          silently failed to span the full stop between two sentences, so it
+          reported the file clean while the offending line was still there.
+        */
+        for (const match of text.matchAll(/>([^<>{}]+)</g)) {
+          const prose = match[1].replace(/\s+/g, ' ').trim()
+          if (!/^[A-Z]/.test(prose)) continue
+          // Anything with code punctuation is a fragment of an expression, not
+          // copy the user reads.
+          if (/[=;()[\]|&]/.test(prose)) continue
+          const words = prose.match(/[A-Za-z]{3,}/g) ?? []
+          // Three real words is a sentence. Fewer is a label, and every label in
+          // this codebase is either translated or a proper noun.
+          if (words.length < 3) continue
+          if (words.every((w) => /^(Archidekt|Scryfall|Matomeru|MTGJSON)$/.test(w))) continue
+          offenders.push(`${name}: "${prose.slice(0, 48)}"`)
+        }
         for (const match of text.matchAll(attr)) {
           // A single capitalised word that is a proper noun is fine.
           if (/^(Archidekt|Scryfall|Matomeru|MTGJSON)$/.test(match[1])) continue
@@ -2551,8 +3314,102 @@ async function main(): Promise<void> {
           offenders.push(`${name}: \`${match[1].slice(0, 40)}\``)
         }
       }
+      /*
+        The same sweep over the main process, where the errors are thrown.
+
+        Worth its own pass because the renderer sweep cannot see these: a message
+        thrown in main reaches the user verbatim through the renderer's single
+        error funnel. And it found the sharpest version of this bug — two keys,
+        `err.archidektUnreachable` and `err.archidektStatus`, existed and were
+        translated, while the throw sites next to them built English strings by
+        hand. The translation was written and then not used.
+
+        `connection.ts` is exempt: it throws before any window exists, so its
+        message is for whoever is running the app, not for a user.
+      */
+      {
+        const mainFiles: string[] = []
+        const walkMain = (dir: string): void => {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const full = joinPath(dir, entry.name)
+            if (entry.isDirectory()) walkMain(full)
+            else if (entry.name.endsWith('.ts')) mainFiles.push(full)
+          }
+        }
+        walkMain(joinPath('src', 'main'))
+
+        const thrown: string[] = []
+        for (const file of mainFiles) {
+          const name = file.split(/[\\/]/).pop() ?? ''
+          if (name === 'connection.ts') continue
+          const text = readFileSync(file, 'utf8')
+          for (const match of text.matchAll(/throw new \w*Error\(\s*([`'"])([^`'"]{6,})\1/g)) {
+            const message = match[2]
+            // A capital and two words is prose. Anything else is an identifier or
+            // a formatting fragment.
+            if (!/^[A-Z]/.test(message)) continue
+            if ((message.match(/[A-Za-z]{3,}/g) ?? []).length < 2) continue
+            thrown.push(`${name}: "${message.slice(0, 44)}"`)
+          }
+        }
+      /*
+        Keys nothing references.
+
+        Said last review that unused keys "sit there indefinitely because nothing
+        polices them" — and then left six behind when the pull model became the move
+        model. A dictionary that accumulates dead entries is one nobody trusts to
+        read, and it makes the real question — is this string still shown anywhere —
+        unanswerable by grep.
+
+        Plural keys are matched on their base: `x_one` and `x_other` are reached
+        through `t.p('x', n)`, so the suffix never appears in source.
+      */
+      {
+        const sources: string[] = []
+        const walkSrc = (dir: string): void => {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const full = joinPath(dir, entry.name)
+            if (entry.isDirectory()) walkSrc(full)
+            else if (/\.(ts|tsx)$/.test(entry.name) && !full.includes(joinPath('shared', 'i18n'))) {
+              sources.push(readFileSync(full, 'utf8'))
+            }
+          }
+        }
+        walkSrc('src')
+        const haystack = sources.join('\n')
+
+        /*
+          Prefixes built at runtime are exempt: their keys never appear as literals
+          anywhere. Any template of the form `prefix.${...}` counts, not just one
+          written inside t() — `rarityName` builds its key into a variable first, and
+          a narrower pattern missed it and reported the whole rarity vocabulary as
+          dead. Detected rather than allowlisted, so a new dynamic family cannot
+          silently start reporting dozens of orphans.
+        */
+        const dynamic = [...haystack.matchAll(/`([a-zA-Z]+)\.\$\{/g)].map((m) => m[1])
+        const orphans = Object.keys(enDict).filter((key) => {
+          const base = key.replace(/_(one|other)$/, '')
+          if (dynamic.some((prefix) => key.startsWith(`${prefix}.`))) return false
+          return !haystack.includes(`'${key}'`) && !haystack.includes(`'${base}'`)
+        })
+        check(
+          'every translation key is referenced somewhere',
+          orphans.length === 0,
+          `${orphans.length} unused: ${orphans.join(', ')}`
+        )
+        console.log(`        → swept ${Object.keys(enDict).length} keys`)
+      }
+
+        check(
+          'no main-process error is thrown as hard-coded English',
+          thrown.length === 0,
+          thrown.slice(0, 6).join(' | ')
+        )
+        console.log(`        → swept ${mainFiles.length} main-process files`)
+      }
+
       check(
-        'no renderer file hard-codes a user-visible label',
+        'no renderer file hard-codes a user-visible label or sentence',
         offenders.length === 0,
         offenders.slice(0, 6).join(' | ')
       )
@@ -2605,7 +3462,17 @@ async function main(): Promise<void> {
 
     // priceFor is the one definition of which column a finish reads; the
     // Add-cards tiles used to re-implement it.
-    const prices = { usd: '1.00', usd_foil: '5.00', usd_etched: '9.00', eur: '0.80', eur_foil: '4.00' }
+    // `tix` is spelled out even though nothing here reads it: Prices requires it,
+    // and this fixture only compiled before because scripts/ was outside the
+    // typecheck — which is also how three stale addToPickList calls survived.
+    const prices: Prices = {
+      usd: '1.00',
+      usd_foil: '5.00',
+      usd_etched: '9.00',
+      eur: '0.80',
+      eur_foil: '4.00',
+      tix: null
+    }
     check(
       'a finish picks its own price column',
       priceFor(prices, 'nonfoil', 'usd') === 1 &&
@@ -2848,7 +3715,7 @@ async function main(): Promise<void> {
 
     // Copies promised to an open pick list must not move out from under it.
     const guardList = createPickList('printing guard')
-    addToPickList(guardList, survivor, 1)
+    addToPickList(guardList, { kind: 'collection', itemId: survivor }, 1)
     let refused = false
     try {
       setItemPrinting(survivor, fr.scryfall_id)
@@ -3091,6 +3958,471 @@ async function main(): Promise<void> {
   check('boolean settings round-trip', updated.deckMatchExact === true)
 
   // ------------------------------------------------------------- persistence
+  section('Undo and redo')
+
+  /*
+    One property, applied to every undoable action: do it, undo it, and the whole
+    database must be byte-identical to what it was; then redo it, and it must be
+    identical to what it was straight after the action.
+
+    Written as a property rather than as per-action assertions on purpose. The way
+    a before/after journal fails is a **scope that is too narrow** — it captures
+    some of the rows an action touched and silently misses the rest — and no
+    hand-written assertion about one field would notice that. A whole-database
+    fingerprint does.
+
+    The fingerprint covers every table an action here can reach. `sqlite_sequence`
+    is deliberately excluded: an AUTOINCREMENT counter does not go backwards when
+    a row is removed, so it legitimately differs after an undo and comparing it
+    would fail every insert case for no reason.
+  */
+  const UNDO_TABLES = [
+    'collection_items',
+    'pick_lists',
+    'pick_list_items',
+    'deck_card_moves',
+    'deck_card_overrides',
+    'deck_card_lang_requests',
+    'decks',
+    'deck_cards'
+  ]
+
+  const dbState = (): string =>
+    JSON.stringify(
+      UNDO_TABLES.map((table) => [table, getDb().all(`SELECT * FROM ${table}`)])
+    )
+
+  /**
+   * Which table a fingerprint mismatch is in, and how it differs.
+   *
+   * A bare "the fingerprint differs" says something is wrong and nothing about
+   * what, which is most of the work. Naming the table and showing the first row
+   * that disagrees is the difference between a failing check and a diagnosis.
+   */
+  const stateDiff = (before: string, after: string): string => {
+    const a = JSON.parse(before) as [string, Record<string, unknown>[]][]
+    const b = JSON.parse(after) as [string, Record<string, unknown>[]][]
+    for (let i = 0; i < a.length; i += 1) {
+      const [table, rowsA] = a[i]
+      const rowsB = b[i][1]
+      if (JSON.stringify(rowsA) === JSON.stringify(rowsB)) continue
+      if (rowsA.length !== rowsB.length) {
+        return `${table}: ${rowsA.length} rows before, ${rowsB.length} after`
+      }
+      for (let r = 0; r < rowsA.length; r += 1) {
+        if (JSON.stringify(rowsA[r]) === JSON.stringify(rowsB[r])) continue
+        const changed = Object.keys(rowsA[r]).filter(
+          (k) => JSON.stringify(rowsA[r][k]) !== JSON.stringify(rowsB[r][k])
+        )
+        return `${table}.${changed.join(',')}: ${changed
+          .map((k) => `${JSON.stringify(rowsA[r][k])} -> ${JSON.stringify(rowsB[r][k])}`)
+          .join('; ')}`
+      }
+    }
+    return 'no per-table difference found'
+  }
+
+  /**
+   * Runs one action through the whole cycle.
+   *
+   * `perform` must go through the same path the app does, so the scope under test
+   * is the real one rather than one restated by the test.
+   */
+  const roundTrip = (name: string, perform: () => void): void => {
+    const before = dbState()
+    perform()
+    const after = dbState()
+    if (before === after) {
+      check(`${name}: the action changed something`, false, 'nothing changed, so nothing is proven')
+      return
+    }
+    const undone = undo()
+    check(`${name}: undo reports what it took back`, undone !== null, 'undo() returned null')
+    check(
+      `${name}: undo restores the database exactly`,
+      dbState() === before,
+      stateDiff(before, dbState())
+    )
+    const redone = redo()
+    check(`${name}: redo reports what it put back`, redone !== null, 'redo() returned null')
+    check(
+      `${name}: redo reproduces the action exactly`,
+      dbState() === after,
+      stateDiff(after, dbState())
+    )
+    // Leave the stack clean so each case starts from a known depth.
+    undo()
+    clearUndoHistory()
+  }
+
+  {
+    const printing = getDb().get(
+      `SELECT scryfall_id FROM printings
+       WHERE NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = printings.scryfall_id)
+       ORDER BY scryfall_id LIMIT 1`
+    ) as { scryfall_id: string } | undefined
+
+    if (printing) {
+      // Adding a row that does not exist yet — the case an id-based scope misses.
+      roundTrip('adding a card', () =>
+        undoable('undo.addCard', [undoScopeForAdd(printing.scryfall_id)], () =>
+          addToCollection({
+            scryfall_id: printing.scryfall_id,
+            finish: 'nonfoil',
+            condition: 'NM',
+            quantity: 3
+          })
+        )
+      )
+
+      // With the row present, the update, merge and delete cases.
+      addToCollection({
+        scryfall_id: printing.scryfall_id,
+        finish: 'nonfoil',
+        condition: 'NM',
+        quantity: 3
+      })
+      const added = (
+        getDb().get('SELECT id FROM collection_items WHERE scryfall_id = ?', [
+          printing.scryfall_id
+        ]) as { id: number }
+      ).id
+
+      roundTrip('changing a quantity', () =>
+        undoable('undo.setQuantity', [{ table: 'collection_items', where: 'id = ?', params: [added] }], () =>
+          setQuantity(added, 7)
+        )
+      )
+
+      roundTrip('editing a copy', () =>
+        undoable(
+          'undo.editCopy',
+          [{ table: 'collection_items', where: 'scryfall_id = ?', params: [printing.scryfall_id] }],
+          () => updateItem(added, { foil_treatment: 'surgefoil', proxied: 1 })
+        )
+      )
+
+      /*
+        The merge case, and the reason `collection:update` is scoped on the whole
+        printing rather than on the row's id. Changing a finish moves the row
+        across its own UNIQUE key: it merges into the sibling and deletes itself,
+        so an id-scoped image would restore the row it was told about and leave the
+        sibling holding the extra copies.
+      */
+      addToCollection({
+        scryfall_id: printing.scryfall_id,
+        finish: 'foil',
+        condition: 'NM',
+        quantity: 2
+      })
+      roundTrip('a finish change that merges two rows', () =>
+        undoable(
+          'undo.editCopy',
+          [{ table: 'collection_items', where: 'scryfall_id = ?', params: [printing.scryfall_id] }],
+          () => updateItem(added, { finish: 'foil' })
+        )
+      )
+
+      roundTrip('removing copies', () =>
+        undoable('undo.removeCopies', [{ table: 'collection_items', where: 'id = ?', params: [added] }], () =>
+          removeItem(added)
+        )
+      )
+
+      getDb().run('DELETE FROM collection_items WHERE scryfall_id = ?', [printing.scryfall_id])
+    } else {
+      check('undo round trips (no spare printing in the fixture)', false, 'fixture too thin')
+    }
+  }
+
+  /*
+    Proof the property can fail, run in-process rather than left to a comment.
+
+    The scope here names only the row's id, while the action also merges a sibling
+    row away — exactly the mistake the wide scopes above exist to avoid. If this
+    "passes", the property test is not measuring anything and none of the results
+    above mean what they say.
+  */
+  {
+    const spare = getDb().get(
+      `SELECT scryfall_id FROM printings
+       WHERE NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = printings.scryfall_id)
+       ORDER BY scryfall_id DESC LIMIT 1`
+    ) as { scryfall_id: string } | undefined
+    if (spare) {
+      addToCollection({ scryfall_id: spare.scryfall_id, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+      addToCollection({ scryfall_id: spare.scryfall_id, finish: 'foil', condition: 'NM', quantity: 1 })
+      const target = (
+        getDb().get(
+          "SELECT id FROM collection_items WHERE scryfall_id = ? AND finish = 'nonfoil'",
+          [spare.scryfall_id]
+        ) as { id: number }
+      ).id
+
+      const before = dbState()
+      undoable('undo.editCopy', [{ table: 'collection_items', where: 'id = ?', params: [target] }], () =>
+        updateItem(target, { finish: 'foil' })
+      )
+      undo()
+      check(
+        'a scope too narrow to cover the action fails the round trip, as it must',
+        dbState() !== before,
+        'an under-scoped step round-tripped cleanly, so this property proves nothing'
+      )
+      clearUndoHistory()
+      getDb().run('DELETE FROM collection_items WHERE scryfall_id = ?', [spare.scryfall_id])
+    } else {
+      check('the property can fail (no spare printing)', false, 'fixture too thin')
+    }
+  }
+
+  /*
+    The same property, over the scopes the *handlers* declare.
+
+    This is the gap that let a real bug ship. The cases above call `undoable()`
+    with scopes written here, which tests the journal but not the configuration —
+    and the configuration is the only part that can be wrong. `pickListScopes`
+    listed `pick_list_items` before the `collection_items` rows it references, so
+    the restore re-inserted a pick item pointing at a row it had not put back yet
+    and every undo of a validated pick list died with "FOREIGN KEY constraint
+    failed". Importing the real builders is what makes this test mean something.
+  */
+  {
+    const spare = db.get(
+      `SELECT scryfall_id FROM printings
+       WHERE NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = printings.scryfall_id)
+       ORDER BY scryfall_id LIMIT 1`
+    ) as { scryfall_id: string } | undefined
+
+    if (spare) {
+      addToCollection({
+        scryfall_id: spare.scryfall_id,
+        finish: 'nonfoil',
+        condition: 'NM',
+        quantity: 2
+      })
+      const itemId = (
+        db.get('SELECT id FROM collection_items WHERE scryfall_id = ?', [
+          spare.scryfall_id
+        ]) as { id: number }
+      ).id
+
+      /*
+        The row-level cases run first, on purpose: the pick list below stages this
+        row in full, so validating deletes it and anything addressing it afterwards
+        would silently do nothing — which is exactly how this case first "passed"
+        while asserting nothing.
+      */
+      roundTrip('a bulk edit (real scopes)', () =>
+        undoable('undo.bulkEdit', [scryfallScopeMany([itemId])], () => {
+          // Condition, not a foil treatment: the app correctly refuses to store a
+          // treatment on a nonfoil copy, so that would have been a no-op too.
+          bulkUpdate([itemId], { condition: 'LP' })
+          return true
+        })
+      )
+      roundTrip('an add (real scopes)', () =>
+        undoable(
+          'undo.addCard',
+          [
+            collectionKeyScope({
+              scryfall_id: spare.scryfall_id,
+              finish: 'etched',
+              condition: 'NM'
+            })
+          ],
+          () =>
+            addToCollection({
+              scryfall_id: spare.scryfall_id,
+              finish: 'etched',
+              condition: 'NM',
+              quantity: 1
+            })
+        )
+      )
+
+      /*
+        Staged in full so validating empties the row and deletes it. That is what
+        makes the pick item's `collection_item_id` go NULL and come back pointing
+        at a row that has to be re-created — the ordering the bug tripped over.
+      */
+      const list = createPickList('Real-scope undo')
+      addToPickList(list, { kind: 'collection', itemId }, 2)
+
+      /*
+        Moving a card between a deck and the collection, through the real scopes.
+
+        Untested until a bug turned up in use: Ctrl+Z after taking a card out of a
+        deck left the card in the collection and did not put it back in the deck.
+        The property test covered the collection and pick-list scopes and never
+        `moveScopes`, so the one set of scopes belonging to the newest feature was
+        the one nothing checked.
+      */
+      {
+        /*
+          Its own owned row. By this point in the suite the label mapping has been
+          reset, so querying for one that is already owned found nothing and the
+          case skipped — reporting SKIP rather than passing, which is the only
+          reason that was visible at all.
+        */
+        const anyDeckRow = db.get(
+          `SELECT deck_id, oracle_id, scryfall_id FROM deck_cards
+           WHERE oracle_id IS NOT NULL AND scryfall_id IS NOT NULL AND quantity > 0
+           LIMIT 1`
+        ) as { deck_id: number; oracle_id: string; scryfall_id: string } | undefined
+        if (anyDeckRow) {
+          db.run('UPDATE deck_cards SET label = ? WHERE deck_id = ? AND scryfall_id = ?', [
+            'Have it,#4CAF50',
+            anyDeckRow.deck_id,
+            anyDeckRow.scryfall_id
+          ])
+          recomputeLabelPossession({ '#4caf50': 'owned' })
+        }
+        const deckRow = db.get(
+          `SELECT deck_id, oracle_id FROM deck_cards
+           WHERE label_possession = 'owned' AND oracle_id IS NOT NULL AND quantity > 0
+           LIMIT 1`
+        ) as { deck_id: number; oracle_id: string } | undefined
+
+        if (deckRow) {
+          roundTrip('moving a card out of a deck (real scopes)', () =>
+            undoable('undo.moveToCollection', moveScopes(deckRow.deck_id), () =>
+              moveToCollection(deckRow.deck_id, deckRow.oracle_id, 1)
+            )
+          )
+
+          /*
+            Undoing a *validated pull* of a deck card — the case that was reported.
+
+            Validating takes the copies off the deck row, so `pickListScopes` has to
+            capture those rows. It did not, and undoing put the card back in the
+            collection while leaving the deck still missing it. Tested through the
+            real builder, because the builder is what was wrong.
+          */
+          /*
+            The list is created and staged *outside* the measured region. Only
+            validating is under test, and undoing it should not be expected to
+            un-create the list — the first version of this staged inside the
+            callback and failed on the extra pick_lists row, which was the test
+            being wrong rather than the code.
+          */
+          const deckPullList = createPickList('Deck pull undo')
+          addToPickList(
+            deckPullList,
+            {
+              kind: 'deck',
+              deckId: deckRow.deck_id,
+              oracleId: deckRow.oracle_id,
+              destination: 'collection'
+            },
+            1
+          )
+          // Built before the action, exactly as the handler builds them.
+          const deckPullScopes = pickListScopes(deckPullList)
+          roundTrip('undoing a validated deck pull (real scopes)', () =>
+            undoable('undo.validatePull', deckPullScopes, () => confirmPickList(deckPullList))
+          )
+          db.run("DELETE FROM pick_lists WHERE name = 'Deck pull undo'")
+          db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deckRow.deck_id])
+
+          // And the other direction, which creates a deck row rather than editing one.
+          const intoDeck = db.get(
+            `SELECT ci.id FROM collection_items ci WHERE ci.quantity > 0 LIMIT 1`
+          ) as { id: number } | undefined
+          if (intoDeck) {
+            roundTrip('moving a card into a deck (real scopes)', () =>
+              undoable('undo.moveToDeck', moveScopes(deckRow.deck_id), () =>
+                moveToDeck(deckRow.deck_id, intoDeck.id, 1)
+              )
+            )
+          } else {
+            skip('moving a card into a deck (real scopes)', 'no collection row to move')
+          }
+        } else {
+          skip('moving a card out of a deck (real scopes)', 'no owned deck row in the fixture')
+        }
+      }
+
+      roundTrip('validating a pick list (real scopes)', () =>
+        undoable('undo.validatePull', pickListScopes(list), () => confirmPickList(list))
+      )
+
+      // And the two neighbouring actions on the same scopes.
+      confirmPickList(list)
+      roundTrip('reverting a validated list (real scopes)', () =>
+        undoable('undo.revertPull', pickListScopes(list), () => revertPickList(list))
+      )
+      roundTrip('deleting a validated list (real scopes)', () =>
+        undoable('undo.deleteList', pickListScopes(list), () => {
+          deletePickList(list)
+          return true
+        })
+      )
+
+      db.run('DELETE FROM pick_lists WHERE id = ?', [list])
+      db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [spare.scryfall_id])
+      clearUndoHistory()
+    } else {
+      check('undo over the real handler scopes (fixture too thin)', false, 'no spare printing')
+    }
+  }
+
+  check(
+    'a sync throws the history away, since it can move rows out from under a step',
+    (() => {
+      clearUndoHistory()
+      return undoDepth().undo === 0 && undoDepth().redo === 0
+    })()
+  )
+
+  section('What a deck sync decides to touch')
+
+  /*
+    An unlisted deck is absent from a public profile listing, by definition. Two
+    things used to follow from that, both wrong: it was never re-synced, and it was
+    counted as private on every run. Tested through the pure planner rather than a
+    live sync, because reproducing it end to end needs an Archidekt account with an
+    unlisted deck — which is exactly why it went unnoticed.
+  */
+  {
+    // The reported case: profile lists two, you also hold one added by URL.
+    const p1 = planDeckSync(['10', '20'], ['10', '20', '99'], 3)
+    check(
+      'a deck you hold that the profile does not list is queued for sync',
+      p1.localOnly.length === 1 && p1.localOnly[0] === '99',
+      JSON.stringify(p1)
+    )
+    check(
+      'and it is not counted as private, because you plainly have it',
+      p1.hidden === 0,
+      `hidden ${p1.hidden}`
+    )
+
+    // A genuinely unreachable deck still gets reported.
+    const p2 = planDeckSync(['10'], ['10'], 3)
+    check(
+      'a deck Archidekt counts but neither lists nor you hold is still reported',
+      p2.hidden === 2 && p2.localOnly.length === 0,
+      JSON.stringify(p2)
+    )
+
+    // Everything listed: nothing extra, nothing hidden.
+    const p3 = planDeckSync(['1', '2', '3'], ['1', '2'], 3)
+    check(
+      'when the profile lists everything, nothing is queued or reported',
+      p3.localOnly.length === 0 && p3.hidden === 0,
+      JSON.stringify(p3)
+    )
+
+    /*
+      Archidekt's own count can lag its listing, which would make the difference
+      negative — and a negative would render as a warning about decks that do not
+      exist.
+    */
+    const p4 = planDeckSync(['1', '2', '3', '4'], [], 2)
+    check('a count that lags the listing never reports a negative', p4.hidden === 0, `hidden ${p4.hidden}`)
+  }
+
   section('Persistence')
   const countBefore = (db.get('SELECT COUNT(*) AS c FROM collection_items') as { c: number }).c
   closeDb()
@@ -3104,7 +4436,9 @@ async function main(): Promise<void> {
   rmSync(dir, { recursive: true, force: true })
 
   console.log(`\n${'='.repeat(52)}`)
-  console.log(`${passed} passed, ${failed} failed`)
+  console.log(
+    `${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ''}`
+  )
   if (failed > 0) {
     console.log('\nFailures:')
     for (const failure of failures) console.log(`  - ${failure}`)

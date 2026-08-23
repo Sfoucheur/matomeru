@@ -9,6 +9,15 @@ import type { Stats } from '@shared/types'
  * plus cards sleeved in decks under a label colour you have marked as owned.
  * Kept in step with `ROW_SOURCES` in collection.ts so the two never disagree.
  *
+ * That warning has already been earned twice. `proxied` was added to the row
+ * source here without reaching the sums, and when deck quantities were adjusted at
+ * read time this copy never learned about the adjustment — Stats reported a card
+ * and $485 more than the Collection. Both were caught by the check that compares
+ * the two paths, which is the only reason a duplicated query is tolerable at all.
+ *
+ * Moves are materialised into `deck_cards` now, so there is nothing left here to
+ * forget: the second failure is no longer possible to make.
+ *
  * With no colour mapped to `owned` the second branch is empty and every figure
  * matches a plain `collection_items` query.
  */
@@ -23,6 +32,9 @@ const ROWS = `
   ${DECK_OVERRIDE_JOIN}
   WHERE dc.label_possession = 'owned' AND ${DECK_PRINTING} IS NOT NULL
   GROUP BY ${DECK_PRINTING}, ${DECK_FINISH}
+  -- A slot whose copies have all been moved out is kept on the deck screen, so the
+  -- deck can say it is empty. It is not a holding, so it does not belong here.
+  HAVING SUM(dc.quantity) > 0
 `
 
 export function collectionStats(): Stats {

@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Rows3,
   Trash2,
+  Undo2,
   X
 } from 'lucide-react'
 import { foilTreatmentLabel } from '@shared/types'
@@ -305,6 +306,7 @@ function ListHeader({
   const t = useT()
   const toast = useApp((s) => s.toast)
   const [name, setName] = useState(list.name)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => setName(list.name), [list.name, list.id])
 
@@ -335,6 +337,29 @@ function ListHeader({
     const ok = await guard(() => window.api.pickLists.remove(list.id))
     if (ok) {
       toast('success', t('picks.deleted'))
+      onChanged()
+      await onReload()
+    }
+  }
+
+  /**
+   * Undoes a validated pull.
+   *
+   * Not the same thing as Ctrl+Z, which is session-only: this is here so a pull
+   * validated weeks ago can still be put back. It reports the two directions
+   * separately because they mean different things — cards restored to the
+   * collection left your possession, cards returned to decks never did.
+   */
+  const revert = async (): Promise<void> => {
+    const result = await guard(() => window.api.pickLists.revert(list.id))
+    if (result) {
+      toast(
+        'success',
+        t('picks.reverted', {
+          restored: result.cardsRestored,
+          returned: result.cardsReturnedToDecks
+        })
+      )
       onChanged()
       await onReload()
     }
@@ -443,9 +468,68 @@ function ListHeader({
             </Button>
           </>
         ) : (
-          <span className="text-[11px] text-ink-500">{t('picks.confirmedKept')}</span>
+          /*
+            A validated list used to offer nothing at all — just a line saying it
+            was kept as history. That left no way to undo a mistaken pull and no
+            way to clear one out, so they accumulated without limit.
+          */
+          <>
+            {/* Hooks so checks can find these without matching a label that
+                changes with the language. */}
+            <Button
+              size="sm"
+              icon={<Undo2 size={13} />}
+              data-action="revertPull"
+              onClick={() => void revert()}
+            >
+              {t('picks.revertPull')}
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={<Trash2 size={13} />}
+              data-action="deleteList"
+              onClick={() => setConfirmDelete(true)}
+            >
+              {t('picks.delete')}
+            </Button>
+            <span className="text-[11px] text-ink-500">{t('picks.confirmedKept')}</span>
+          </>
         )}
       </div>
+
+      {/*
+        Deleting a validated list is confirmed because it cannot be reconstructed:
+        the snapshot it carries is the only remaining record of what was pulled.
+        Any pull markers it produced deliberately survive it — the cards really
+        did leave their decks, and deleting the paperwork must not put them back.
+      */}
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title={t('picks.deleteTitle')}
+        width="max-w-md"
+      >
+        <div className="px-5 py-4">
+          <p className="text-[12px] leading-relaxed text-ink-300">{t('picks.deleteBody')}</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button size="sm" onClick={() => setConfirmDelete(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={<Trash2 size={13} />}
+              onClick={() => {
+                setConfirmDelete(false)
+                void remove()
+              }}
+            >
+              {t('picks.delete')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </header>
   )
 }
@@ -508,6 +592,18 @@ function PickRow({
         >
           <AlertTriangle size={9} />
           {t.p('picks.deckCount', item.decks.length)}
+          {/* Which way this one goes, when the list mixes the two. */}
+          {item.destination !== null && (
+            <span
+              className={`ml-1.5 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                item.destination === 'gone'
+                  ? 'bg-bad/20 text-bad'
+                  : 'bg-good/20 text-good'
+              }`}
+            >
+              {t(item.destination === 'gone' ? 'picks.destGone' : 'picks.destKeep')}
+            </span>
+          )}
         </button>
       )}
 
@@ -584,7 +680,7 @@ function PickGrid({
               {item.decks.length > 0 ? (
               <span
                 title={item.decks.map((d) => `${d.deck_name} (${d.match})`).join(', ')}
-                className="inline-flex items-center gap-0.5 rounded bg-warn/90 px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
+                className="inline-flex items-center gap-0.5 rounded bg-warn px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
               >
                   <AlertTriangle size={8} />
                   {item.decks.length}
@@ -596,7 +692,7 @@ function PickGrid({
             density === 'full' ? (
               <>
                 <LangChip lang={item.lang} />
-                <span className="numeric rounded bg-gold-500/85 px-1.5 text-[10px] font-semibold text-ink-950">
+                <span className="numeric rounded bg-gold-500 px-1.5 text-[10px] font-semibold text-ink-950">
                   {t('picks.picked', { count: item.quantity })}
                 </span>
                 <span className="numeric ml-auto text-[10px] text-gold-300">
@@ -607,7 +703,7 @@ function PickGrid({
                 </span>
               </>
             ) : (
-              <span className="numeric rounded bg-gold-500/85 px-1.5 text-[10px] font-semibold text-ink-950">
+              <span className="numeric rounded bg-gold-500 px-1.5 text-[10px] font-semibold text-ink-950">
                 {item.quantity}
               </span>
             )
@@ -652,7 +748,13 @@ function ConfirmDialog({
         'success',
         `${t.p('picks.pulled', result.cardsRemoved)}${
           result.rowsDeleted ? t('picks.pulledRows', { count: result.rowsDeleted }) : ''
-        }.`
+        }.${
+          // Said separately because it is a different fact: these copies moved
+          // out of a deck into your bulk, they did not leave your possession.
+          result.cardsFreedFromDecks
+            ? ` ${t('picks.freedFromDecks', { count: result.cardsFreedFromDecks })}`
+            : ''
+        }`
       )
       onDone()
     }

@@ -11,6 +11,7 @@ import {
   Link2,
   Lock,
   RefreshCw,
+  RotateCcw,
   Rows3,
   Sparkles,
   Tags,
@@ -25,6 +26,7 @@ import {
   foilTreatmentLabel,
   type DeckCardRow,
   type DeckFilters,
+  type PickDestination,
   type Finish
 } from '@shared/types'
 import { guard, useApp } from '../store/app'
@@ -34,7 +36,9 @@ import CardTile from '../components/CardTile'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
 import DeckToolbar from '../components/DeckToolbar'
 import DeckBulkBar from '../components/DeckBulkBar'
+import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
+import Popover from '../components/Popover'
 import { FINISH_LABEL } from '../lib/format'
 import { useT } from '../hooks/useT'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
@@ -178,7 +182,10 @@ export default function DecksView({ active }: ViewProps): React.ReactElement {
           'warn',
           t('decks.privateWarning', {
             reported: result.deckCountReported ?? 0,
-            shared: (result.deckCountReported ?? 0) - result.privateCount
+            // What the profile listed, reported by the sync itself. Deriving it as
+            // reported-minus-hidden was wrong once "hidden" stopped counting the
+            // decks you had already added by URL.
+            shared: result.listedCount
           })
         )
       }
@@ -390,6 +397,8 @@ function DeckDetail({
   const shown = sections.reduce((sum, section) => sum + section.cardCount, 0)
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  /** Open while the dialog is asking which list and what happens to the copies. */
+  const [listDialog, setListDialog] = useState(false)
   const [busy, setBusy] = useState(false)
   const lastPicked = useRef<number | null>(null)
 
@@ -463,6 +472,103 @@ function DeckDetail({
     const chosen = ordered.filter((card) => selected.has(card.id))
     return chosen.length > 0 && chosen.every((card) => card.proxied)
   }, [ordered, selected])
+
+  /**
+   * Stages the selected entries for pulling out of this deck.
+   *
+   * The deck is unambiguous here, which is why this is the simpler of the two
+   * entry points: the Collection has to ask which deck a grouped row leaves.
+   *
+   * Entries the pull refuses — a slot filled by a proxy, a label that is not
+   * "owned" — are reported rather than skipped silently, because a selection of
+   * twenty that stages fifteen needs to say why.
+   */
+  const stageForPull = async (
+    target: number | 'new',
+    destination: PickDestination
+  ): Promise<void> => {
+    const chosen = ordered.filter((card) => selected.has(card.id) && card.oracle_id)
+    if (!chosen.length) return
+    setBusy(true)
+    const listId =
+      target === 'new'
+        ? await guard(() => window.api.pickLists.create(t('picks.defaultName')))
+        : target
+    if (listId === null || listId === undefined) {
+      setBusy(false)
+      return
+    }
+
+    let added = 0
+    let refused = 0
+    for (const card of chosen) {
+      // One at a time: addMany would abort the whole batch on the first refusal,
+      // and a mixed selection is exactly when this is used.
+      const result = await window.api.pickLists
+        .add(
+          listId,
+          {
+            kind: 'deck',
+            deckId: deck.id,
+            oracleId: card.oracle_id as string,
+            destination
+          },
+          1
+        )
+        .catch(() => null)
+      if (result) added += result.added
+      else refused += 1
+    }
+    setBusy(false)
+
+    if (added > 0) {
+      toast(
+        'success',
+        `${t.p('coll.staged', added)}${
+          refused > 0 ? ` ${t.p('decks.pullRefused', refused)}` : ''
+        }`
+      )
+      invalidate()
+    } else {
+      toast('warn', t('decks.pullNothing'))
+    }
+  }
+
+  /**
+   * Moves the selected entries into the collection, with no list involved.
+   *
+   * The direct route, for when you are simply taking cards out of a deck and
+   * keeping them. A pick list is for a batch of jobs you will do later; this is the
+   * job itself.
+   */
+  const moveSelectedToCollection = async (): Promise<void> => {
+    const chosen = ordered.filter((card) => selected.has(card.id) && card.oracle_id)
+    if (!chosen.length) return
+    setBusy(true)
+    let moved = 0
+    let refused = 0
+    for (const card of chosen) {
+      // One at a time: a batch call would abort on the first refusal, and a mixed
+      // selection is exactly when this is used.
+      const result = await window.api.decks
+        .moveToCollection(deck.id, card.oracle_id as string, 1)
+        .catch(() => null)
+      if (result) moved += result.moved
+      else refused += 1
+    }
+    setBusy(false)
+    if (moved > 0) {
+      toast(
+        'success',
+        `${t('decks.movedToCollection', { count: moved })}${
+          refused > 0 ? ` ${t.p('decks.pullRefused', refused)}` : ''
+        }`
+      )
+      invalidate()
+    } else {
+      toast('warn', t('decks.pullNothing'))
+    }
+  }
 
   const setLanguage = async (lang: string): Promise<void> => {
     if (selectedOracleIds.length === 0) return
@@ -679,10 +785,25 @@ function DeckDetail({
             onSetProxied={(proxied) => void setProxied(proxied)}
             allProxied={allSelectedProxied}
             onClearOverrides={() => void clearOverrides()}
+            onAddToList={() => setListDialog(true)}
+            onMoveToCollection={() => void moveSelectedToCollection()}
             onClear={() => setSelected(new Set())}
           />
         )}
       </AnimatePresence>
+
+      {listDialog && (
+        <AddToListDialog
+          // Always offered here: everything selectable on this screen is a deck
+          // card, so the question always has two answers.
+          showDestination
+          onCancel={() => setListDialog(false)}
+          onConfirm={(target, destination) => {
+            setListDialog(false)
+            void stageForPull(target, destination)
+          }}
+        />
+      )}
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {sections.length === 0 ? (
@@ -906,6 +1027,9 @@ const DeckCardLine = memo(function DeckCardLine({
   return (
     <div
       onClick={onRowClick}
+      /* A stable hook for the live checks: selection here is ctrl+click, with no
+         checkbox to find, so a check that hunts for one selects nothing. */
+      data-deck-card={card.id}
       className={`group flex h-11 items-center gap-3 rounded-lg border px-3 ${
         selected ? 'border-gold-500/60 bg-gold-500/[0.08]' : 'border-ink-800 bg-ink-850'
       }`}
@@ -994,7 +1118,9 @@ const DeckCardLine = memo(function DeckCardLine({
           <span
             title={
               card.foil_treatment
-                ? `${foilTreatmentLabel(card.foil_treatment)}${card.treatment_forced ? ' (you set this)' : ''}`
+                ? `${foilTreatmentLabel(card.foil_treatment)}${
+                    card.treatment_forced ? ` ${t('decks.youSetThis')}` : ''
+                  }`
                 : FINISH_LABEL[card.finish]
             }
             className="inline-flex items-center gap-0.5 font-semibold uppercase text-gold-300"
@@ -1021,6 +1147,7 @@ const DeckCardLine = memo(function DeckCardLine({
       </span>
 
       <span className="flex w-40 shrink-0 justify-end gap-1">
+        {card.moved !== 0 && <PulledBadge card={card} />}
         {card.proxied && (
           <span
             title={t('proxy.deckSlot')}
@@ -1089,10 +1216,23 @@ const DeckGridTile = memo(function DeckGridTile({
       onSelect={(selectMode) => onSelect(card.id, selectMode)}
       badges={
         <>
+          {card.moved !== 0 && (
+            <span
+              title={t(
+                card.moved < 0 ? 'decks.movedOutHint' : 'decks.movedInHint',
+                { count: Math.abs(card.moved) }
+              )}
+              className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950 ${
+                card.moved < 0 ? 'bg-warn' : 'bg-good'
+              }`}
+            >
+              {t(card.moved < 0 ? 'decks.movedOutBadge' : 'decks.movedInBadge')}
+            </span>
+          )}
           {card.proxied && (
             <span
               title={t('proxy.deckSlot')}
-              className="rounded bg-ink-900/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-200 ring-1 ring-ink-500"
+              className="rounded bg-ink-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
             >
               {t('proxy.badge')}
             </span>
@@ -1108,7 +1248,7 @@ const DeckGridTile = memo(function DeckGridTile({
               title={t('decks.langUnavailableTile', {
                 lang: card.language_unavailable.toUpperCase()
               })}
-              className="rounded bg-warn/80 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
+              className="rounded bg-warn px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
             >
               no {card.language_unavailable}
             </span>
@@ -1116,7 +1256,7 @@ const DeckGridTile = memo(function DeckGridTile({
           {card.override_lang && (
             <span
               title={t('decks.langOverride', { lang: card.override_lang.toUpperCase() })}
-              className="rounded bg-gold-500/85 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
+              className="rounded bg-gold-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
             >
               {card.override_lang}
             </span>
@@ -1136,7 +1276,7 @@ const DeckGridTile = memo(function DeckGridTile({
             </span>
           )}
           {!card.in_maindeck && (
-            <span className="rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white/80">
+            <span className="rounded bg-ink-950 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-50">
               SB
             </span>
           )}
@@ -1146,7 +1286,7 @@ const DeckGridTile = memo(function DeckGridTile({
         density === 'full' ? (
           <>
             <LangChip lang={card.lang} />
-            <span className="numeric rounded bg-white/15 px-1.5 text-[10px] text-white">
+            <span className="numeric rounded bg-ink-950 px-1.5 text-[10px] text-ink-50">
               x{card.quantity}
             </span>
             <span className={`numeric ml-auto text-[10px] ${complete ? 'text-good' : 'text-bad'}`}>
@@ -1166,6 +1306,91 @@ const DeckGridTile = memo(function DeckGridTile({
     />
   )
 })
+
+/**
+ * Says a card has physically left this deck, and offers to put it back.
+ *
+ * The badge exists because nothing else can say this: Archidekt still lists the
+ * card, so the deck's own quantity is unchanged, and `held` is unchanged too —
+ * the pull moved the copy into the collection, so there is still nothing to buy.
+ * What changed is where the card physically is, and that is the one thing only
+ * this can report.
+ *
+ * Reverting is offered per pull rather than per card so a card pulled twice into
+ * two different lists can be put back one at a time.
+ */
+function PulledBadge({ card }: { card: DeckCardRow }): React.ReactElement {
+  const t = useT()
+  const toast = useApp((s) => s.toast)
+  // Straight from the store rather than a prop threaded down through DeckBody:
+  // the badge sits inside a virtualized row, and passing a callback through two
+  // components that have no other use for it would be noise.
+  const invalidate = useApp((s) => s.invalidate)
+  const [open, setOpen] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
+
+  const revert = async (moveId: number): Promise<void> => {
+    setOpen(false)
+    // guard() surfaces the refusal when the copies were sold on through another
+    // list — putting them back would be claiming a card that no longer exists.
+    const result = await guard(() => window.api.decks.revertMove(moveId))
+    if (result) {
+      toast('success', t('decks.moveReverted', { count: result.quantity }))
+      invalidate()
+    }
+  }
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        title={t(
+          card.moved < 0 ? 'decks.movedOutHint' : 'decks.movedInHint',
+          { count: Math.abs(card.moved) }
+        )}
+        className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase transition-colors ${
+          card.moved < 0
+            ? 'bg-warn/20 text-warn hover:bg-warn/30'
+            : 'bg-good/20 text-good hover:bg-good/30'
+        }`}
+      >
+        {t(card.moved < 0 ? 'decks.movedOutBadge' : 'decks.movedInBadge')}
+      </button>
+
+      <Popover open={open} onClose={() => setOpen(false)} trigger={trigger} width={252}>
+        <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
+          {t(card.moved < 0 ? 'decks.movedOutTitle' : 'decks.movedInTitle')}
+        </p>
+        <p className="px-2 pb-1.5 text-[11px] leading-relaxed text-ink-400">
+          {t('decks.movedExplain')}
+        </p>
+        {card.moves.map((move) => (
+          <button
+            key={move.id}
+            onClick={() => void revert(move.id)}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs
+              transition-colors hover:bg-ink-750"
+          >
+            <RotateCcw size={12} className="shrink-0 text-gold-300" />
+            <span className="min-w-0 flex-1 truncate text-ink-100">
+                {/* Which way it went, and how many. */}
+              {move.quantity < 0
+                ? t('decks.movedOut', { count: -move.quantity })
+                : t('decks.movedIn', { count: move.quantity })}
+            </span>
+            <span className="numeric shrink-0 text-[10px] text-ink-500">
+              {count(Math.abs(move.quantity))}
+            </span>
+          </button>
+        ))}
+      </Popover>
+    </>
+  )
+}
 
 /**
  * What a label colour says about this card.

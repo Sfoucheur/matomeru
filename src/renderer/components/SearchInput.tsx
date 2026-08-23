@@ -38,6 +38,7 @@ export default function SearchInput({
     <div className={`field flex items-center gap-2 py-1.5 ${className}`}>
       <Search size={14} className="shrink-0 text-ink-500" />
       <input
+        data-search
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         placeholder={placeholder ?? t('search.placeholder')}

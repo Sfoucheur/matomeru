@@ -1,4 +1,12 @@
 import { getDb, nowIso, transaction } from '../db/connection.js'
+import { t } from '@shared/i18n/index'
+import type { TranslationKey } from '@shared/types'
+import { getLocale } from '../db/repos/settings.js'
+
+/** Localised message, resolved at throw time from the stored locale. */
+function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
+  return t(getLocale(), key, vars)
+}
 
 /**
  * Scryfall's set list, kept for the symbols the set filters draw.
@@ -38,7 +46,7 @@ async function fetchSets(): Promise<number> {
   const response = await fetch(SETS_URL, {
     headers: { 'User-Agent': 'Matomeru/1.0 (local MTG collection manager)' }
   })
-  if (!response.ok) throw new Error(`Scryfall returned ${response.status} for the set list.`)
+  if (!response.ok) throw new Error(tr('err.setListFailed', { status: response.status }))
   const body = (await response.json()) as { data?: ScryfallSet[] }
   const sets = body.data ?? []
   const now = nowIso()

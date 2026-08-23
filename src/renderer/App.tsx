@@ -10,7 +10,7 @@ import {
   Settings as SettingsIcon,
   X
 } from 'lucide-react'
-import { useApp, type ViewName } from './store/app'
+import { guard, useApp, type ViewName } from './store/app'
 import CollectionView from './views/CollectionView'
 import AddCardsView from './views/AddCardsView'
 import PickListView from './views/PickListView'
@@ -58,6 +58,9 @@ export default function App(): React.ReactElement {
   const setProgress = useApp((s) => s.setProgress)
   const detailFor = useApp((s) => s.detailFor)
   const reduceMotion = useApp((s) => s.settings?.reduceMotion ?? false)
+  const toast = useApp((s) => s.toast)
+  const invalidate = useApp((s) => s.invalidate)
+  const t = useT()
 
   /**
    * Views are mounted on first visit and then kept mounted, hidden rather than
@@ -95,6 +98,49 @@ export default function App(): React.ReactElement {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [setView])
+
+  /*
+    Ctrl+Z and Ctrl+Y, for everything you change locally.
+
+    Skipped entirely while a text field has focus. Inside an input, Ctrl+Z means
+    "undo my typing" and the browser already does that well; stealing it to roll
+    back a database write would be both surprising and destructive — you would be
+    trying to fix a typo in the search box and lose your last bulk edit.
+
+    Ctrl+Shift+Z is accepted as well as Ctrl+Y, because both are in common use for
+    redo and there is no cost to honouring the two.
+  */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.ctrlKey && !e.metaKey) return
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+
+      const key = e.key.toLowerCase()
+      const isUndo = key === 'z' && !e.shiftKey
+      const isRedo = key === 'y' || (key === 'z' && e.shiftKey)
+      if (!isUndo && !isRedo) return
+      e.preventDefault()
+
+      void (async () => {
+        const step = await guard(() =>
+          isUndo ? window.api.undo.undo() : window.api.undo.redo()
+        )
+        // `null` means the stack was empty, which is not an error — say so rather
+        // than leaving the keypress looking broken.
+        if (step === null) {
+          toast('warn', t(isUndo ? 'undo.nothing' : 'undo.nothingRedo'))
+          return
+        }
+        if (step === undefined) return
+        toast('success', t(isUndo ? 'undo.done' : 'undo.redone', { label: step.label }))
+        invalidate()
+      })()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [invalidate, toast, t])
 
   return (
     /*
@@ -193,7 +239,7 @@ function Sidebar({
       </nav>
 
       <p className="px-4 py-3 text-[10px] leading-relaxed text-ink-600">
-        Card data from Scryfall. Decks from Archidekt.
+        {t('app.credits')}
       </p>
     </aside>
   )
@@ -235,11 +281,20 @@ function ProgressBar(): React.ReactElement {
   )
 }
 
+/*
+  Toast tones.
+
+  All four sit on the solid floating surface and carry their tone in the text and
+  the border, rather than in a 15% wash of the text's own colour — which is what
+  these were. Measured, such a fill resolves to alpha 38/255, so a message floating
+  over the card grid was read against whatever happened to be behind it. An error
+  is the one thing that must always be legible.
+*/
 const TOAST_TONE: Record<string, string> = {
-  info: 'border-ink-600 bg-ink-800 text-ink-100',
-  success: 'border-good/40 bg-good/15 text-good',
-  warn: 'border-warn/40 bg-warn/15 text-warn',
-  error: 'border-bad/40 bg-bad/15 text-bad'
+  info: 'border-surface-edge bg-surface text-ink-100',
+  success: 'border-good/70 bg-surface text-good',
+  warn: 'border-warn/70 bg-surface text-warn',
+  error: 'border-bad/70 bg-surface text-bad'
 }
 
 function Toasts(): React.ReactElement {

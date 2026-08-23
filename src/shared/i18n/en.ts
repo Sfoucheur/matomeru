@@ -22,7 +22,6 @@ export const en = {
   // -------------------------------------------------------------- common verbs
   'common.save': 'Save',
   'common.cancel': 'Cancel',
-  'common.remove': 'Remove',
   'common.close': 'Close',
   'common.clearAll': 'Clear all',
   'common.clearSelection': 'Clear selection',
@@ -37,12 +36,9 @@ export const en = {
   'common.deselect': 'Deselect {name}',
   'boosters.setCards': '{count} booster card(s) you own',
   'common.search': 'Search',
-  'common.loading': 'Loading…',
   'common.never': 'never',
-  'common.none': 'none',
   'common.of': '{shown} of {total}',
   'common.selected': '{count} selected',
-  'common.retry': 'Try again',
 
   // -------------------------------------------------------------- vocabulary
   'rarity.common': 'Common',
@@ -91,21 +87,11 @@ export const en = {
   'settings.title': 'Settings',
   'settings.archidekt': 'Archidekt',
   'settings.username': 'Username',
-  'settings.usernameHint':
-    'Public decks only. Private decks return 404 to anyone not logged in, so they cannot be synced — add them by URL if they are unlisted.',
   'settings.usernamePlaceholder': 'your-archidekt-username',
-  'settings.saveUsername': 'Save',
   'settings.syncNow': 'Sync now',
-  'settings.labels': 'What your deck labels mean',
-  'settings.pricesMatching': 'Prices & matching',
   'settings.currency': 'Currency',
   'settings.currencyHint':
     'Scryfall has no separate EUR price for etched foils, so those fall back to the regular foil price.',
-  'settings.currencySourceUsd': 'USD prices come from TCGplayer, via Scryfall.',
-  'settings.currencySourceEur': 'EUR prices come from Cardmarket, via Scryfall.',
-  'settings.exactPrinting': 'Require the exact printing for deck matches',
-  'settings.exactPrintingHint':
-    'With this on, owning the Japanese printing does not count as owning a card a deck lists in English.',
   'settings.appearance': 'Appearance',
   'settings.language': 'Language',
   'settings.languageHint':
@@ -123,12 +109,6 @@ export const en = {
   'settings.reduceMotion': 'Reduce motion',
   'settings.reduceMotionHint':
     'Stills the animations, including the ones drawn by JavaScript rather than CSS.',
-  'settings.data': 'Data',
-  'settings.dataHint':
-    'Everything lives in one SQLite file, plus a folder of cached card images. Copy it anywhere to move or back up your collection.',
-  'settings.savedUsername': 'Archidekt username set to {name}.',
-  'settings.clearedUsername': 'Username cleared.',
-  'settings.enterUsernameFirst': 'Enter your Archidekt username first.',
   'settings.languageChanged': 'The app is now in {language}.',
 
   // ------------------------------------------------------------------ filters
@@ -245,11 +225,6 @@ export const en = {
   'bulk.finishCleared': 'Returned {count} card(s) to Archidekt’s finish.',
   'bulk.clearOverride': 'Clear override',
   'bulk.languageHint': 'One lookup per card. Any card with no printing in that language keeps the one it has and is flagged.',
-  'bulk.converted': '{count} set to {lang}',
-  'bulk.viaSearch': '{count} found under another set',
-  'bulk.unavailable': '{count} have no {lang} printing',
-  'bulk.failed': '{count} failed',
-  'bulk.cleared': '{count} back to what Archidekt says',
 
   // ------------------------------------------------------------ booster odds
   'picks.title': 'Pick lists',
@@ -277,8 +252,17 @@ export const en = {
   'picks.validatePull': 'Validate pull',
   'picks.reopen': 'Reopen',
   'picks.delete': 'Delete',
+  'picks.revertPull': 'Put the cards back',
+  'picks.reverted':
+    'Put back {restored} card(s) into the collection and {returned} into their decks. The list is open again.',
+  'picks.deleteTitle': 'Delete this validated list?',
+  'picks.deleteBody':
+    'This list is the only record of what was pulled, and deleting it cannot be undone. Cards already pulled out of a deck stay marked as out of it — they really did leave, so deleting the record does not put them back. Use “Put the cards back” first if that is what you want.',
+  'picks.freedFromDecks': '{count} came out of a deck and are in your collection now.',
   'picks.confirmedKept': 'Confirmed lists are kept as history.',
   'picks.rowGone': '(row no longer in collection)',
+  'picks.destKeep': 'to collection',
+  'picks.destGone': 'out',
   'picks.deckCount_one': '{count} deck',
   'picks.deckCount_other': '{count} decks',
   'picks.removeItem': 'Remove from pick list',
@@ -438,7 +422,6 @@ export const en = {
   'add.allFilteredTitle': 'Every printing is filtered out',
   'add.allFilteredHint_one': 'This card has {count} printing, and the filters above hide all of them. Clear one to see them again.',
   'add.allFilteredHint_other': 'This card has {count} printings, and the filters above hide all of them. Clear one to see them again.',
-  'add.onlyFinish': '{name} comes in {finish} only — adds as {finish}',
   'add.addCard': 'Add {name}',
   'add.foilIs': 'This printing’s foil is {treatment}',
   'add.finishOnly': '{finish} only',
@@ -463,6 +446,46 @@ export const en = {
   'coll.noMatchTitle': 'No cards match these filters',
   'coll.emptyHint': 'Add cards from the Add cards tab, or bulk-load an existing list from Import / export.',
   'coll.noMatchHint': 'Try clearing a filter or two.',
+  'coll.sleevedNote': '({count} in decks - only pulling applies)',
+  'coll.whichDeckTitle': 'Which deck are these leaving?',
+  'coll.whichDeckHint':
+    'These cards sit in more than one deck, so the pull has to say which one each copy comes out of. Nothing is taken from a deck until you validate the pull.',
+  'coll.whichDeckConfirm': 'Stage these',
+  'coll.showingFirst':
+    'Showing the first {shown} of {total} rows — narrow the filters to see the rest.',
+  'add.cacheNote':
+    'Every printing is cached locally as you add it, so the card stays browsable offline.',
+  'app.credits': 'Card data from Scryfall. Decks from Archidekt.',
+  'decks.youSetThis': '(you set this)',
+  'coll.noDecks': 'No decks synced yet',
+  'coll.moveAvailable': 'up to {count} from each selected row',
+  'coll.moveRefused_one': '{count} row could not move (its copies are on an open list).',
+  'coll.moveRefused_other': '{count} rows could not move (their copies are on an open list).',
+  'coll.nothingToMove': 'Nothing could be moved.',
+  'coll.moveToDeck': 'Move to a deck',
+  'coll.moveTitle': 'Move to a deck',
+  'coll.moveHint':
+    'The copies leave your collection and go into the deck. Nothing is lost — the card is yours either way. If Archidekt has not caught up, the deck shows it as added until the next sync.',
+  'coll.moveHowMany': 'How many?',
+  'coll.moveWhichDeck': 'Which deck?',
+  'coll.moveConfirm': 'Move',
+  'coll.movedToDeck': 'Moved {count} into {deck}.',
+  'decks.movedToCollection': 'Moved {count} into the collection.',
+  'decks.moveToCollectionHint': 'Take these out of the deck and put them in your collection now.',
+  'decks.moveToCollection': 'Move to collection',
+  'decks.movedOutBadge': 'Out',
+  'decks.movedInBadge': 'Added',
+  'decks.movedOutHint':
+    '{count} copy/copies has left this deck. Archidekt still lists them, so the tag stays until the deck is updated there.',
+  'decks.movedInHint':
+    '{count} copy/copies was put into this deck from your collection. Archidekt does not list them yet.',
+  'decks.movedOutTitle': 'Out of this deck',
+  'decks.movedInTitle': 'Added to this deck',
+  'decks.movedExplain':
+    'The decklist on Archidekt and what this deck physically holds disagree, and these are the differences. Undoing one puts the copies back where they were. A sync that agrees with a difference clears it on its own.',
+  'decks.movedOut': '{count} taken out',
+  'decks.movedIn': '{count} put in',
+  'decks.moveReverted': 'Undone — {count} copy/copies put back.',
   'coll.nothingToPick': 'Nothing available to pick — those copies are already reserved.',
   'coll.staged_one': 'Staged {count} card',
   'coll.staged_other': 'Staged {count} cards',
@@ -481,6 +504,10 @@ export const en = {
   'coll.reservedBadge': '{count} reserved by an open pick list',
   'coll.rowRemoved': 'Row removed.',
   'coll.removeRow': 'Remove row',
+  'coll.alsoRemove': 'Also take them out of my collection',
+  'coll.alsoRemoveHint':
+    'Leave this off to pull them out of the deck and keep them. Tick it if they are leaving your collection for good — sold, traded or given away.',
+  'coll.zoomHint': 'Look at the artwork closely',
   'coll.chooseList': 'Which pick list?',
   'coll.newList': 'New list…',
   'coll.noOpenLists': 'No open list yet — one will be created.',
@@ -519,7 +546,8 @@ export const en = {
   'decks.syncSynced': '{count} synced',
   'decks.syncUnchanged': '{count} unchanged',
   'decks.syncUnavailable': '{count} unavailable',
-  'decks.privateWarning': 'Archidekt reports {reported} decks but only shared {shared}. Private decks cannot be read without logging in — add them by URL if they are unlisted.',
+  'decks.privateWarning':
+    'Archidekt says you have {reported} decks but lists {shared}. The rest are not on your public profile — unlisted or private. Unlisted ones can be added by URL, and once added they are kept in sync from then on.',
   'decks.added': 'Added “{name}”.',
   'decks.cardCount': '{count} cards',
   'decks.noneYet': 'No decks yet. Sync your Archidekt account, or paste a deck URL above.',
@@ -589,8 +617,73 @@ export const en = {
   'settings.dataTitle': 'Where your data lives',
   'settings.dataNote1': 'The collection database and the card image cache live in your Windows app-data folder, deliberately outside the application directory, so reinstalling or updating Matomeru never touches your collection.',
   'settings.dataNote2': 'Card data comes from Scryfall; deck data from Archidekt. Neither is affiliated with this app, and nothing is uploaded anywhere — every request is a read.',
-  'err.noDataDir': 'Data directory not configured — call setDataDir() at startup.',
   'err.reserved': 'Cannot delete: copies are reserved by an open pick list.',
+  'decks.pullRefused_one': '{count} entry could not be pulled (a proxy, or not marked as owned).',
+  'decks.pullRefused_other': '{count} entries could not be pulled (proxies, or not marked as owned).',
+  'decks.pullNothing': 'None of those can be pulled: they are proxies, or not marked as cards you own.',
+  'err.notConfirmed': 'Only a validated pick list can be reverted.',
+  // What Ctrl+Z would take back, named so the toast can say which action
+  // it was rather than just "undone".
+  'undo.moveToCollection': 'Move to the collection',
+  'undo.moveToDeck': 'Move to a deck',
+  'undo.revertMove': 'Undo a move',
+  'undo.addCard': 'Add cards',
+  'undo.setQuantity': 'Change a quantity',
+  'undo.editCopy': 'Edit a copy',
+  'undo.removeCopies': 'Remove copies',
+  'undo.bulkEdit': 'Bulk edit',
+  'undo.bulkRemove': 'Bulk remove',
+  'undo.setPrinting': 'Change a printing',
+  'undo.setLanguage': 'Change a language',
+  'undo.forceLanguage': 'Set a language by hand',
+  'undo.createList': 'Create a pick list',
+  'undo.renameList': 'Rename a pick list',
+  'undo.stage': 'Add to a pick list',
+  'undo.stageQuantity': 'Change a staged quantity',
+  'undo.unstage': 'Remove from a pick list',
+  'undo.validatePull': 'Validate a pull',
+  'undo.revertPull': 'Put pulled cards back',
+  'undo.cancelList': 'Cancel a pick list',
+  'undo.reopenList': 'Reopen a pick list',
+  'undo.deleteList': 'Delete a pick list',
+  'undo.setDeckLanguage': 'Set a deck card language',
+  'undo.clearDeckOverride': 'Clear a deck override',
+  'undo.setProxied': 'Change a proxy flag',
+  'undo.setDeckFinish': 'Set a deck card finish',
+  'undo.setDeckPrinting': 'Set a deck card printing',
+  'undo.deleteDeck': 'Delete a deck',
+  'undo.done': 'Undone: {label}',
+  'undo.redone': 'Redone: {label}',
+  'undo.nothing': 'Nothing left to undo.',
+  'undo.nothingRedo': 'Nothing left to redo.',
+  'err.pickShortfall':
+    'The pick list asks for {asked} copies of {name} but only {held} are held now — something changed since you staged it. Refresh and try again.',
+  'err.archidektNotFound': 'Not found on Archidekt.',
+  'err.deckUnreachable':
+    'Archidekt returned 404 for this deck — it is private, or it no longer exists.',
+  'err.setListFailed': 'Scryfall returned {status} for the set list.',
+  'err.quantityBelowReserved':
+    'Cannot set the quantity to {quantity}: {reserved} copies are reserved by an open pick list.',
+  'err.repointReserved':
+    'Cannot change the printing while copies are reserved by an open pick list. Cancel or validate it first.',
+  'err.scryfallUnreachable': 'Could not reach Scryfall: {message}',
+  'err.scryfallNotFound': 'Card not found on Scryfall.',
+  'err.scryfallStatus': 'Scryfall returned {status}{detail}',
+  'err.moveNotOwned':
+    'That deck entry is not marked as a card you own, so there is nothing to move. Map its label colour to owned first.',
+  'err.moveProxyMixes':
+    'That deck already holds copies of this card, and a proxy cannot be told apart from them there — the deck records one proxy flag per card. Move the real copies out first, or mark the deck entry as a proxy yourself.',
+  'err.moveProxy':
+    'That deck slot is filled by a proxy. Moving it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
+  'err.moveShortfall': 'Only {held} copies are available to move, and {asked} were asked for.',
+  'err.moveNotFound': 'That move is no longer recorded.',
+  'err.moveGone':
+    'Cannot undo that move: {count} copies are where it would take {needed} from. They have been moved or removed since.',
+  'err.deckNotFound': 'That deck no longer exists.',
+  'err.pickNotOwned':
+    'That deck entry is not marked as a card you own, so there is nothing to pull. Map its label colour to owned first.',
+  'err.pickProxy':
+    'That deck slot is filled by a proxy. Adding it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
   'err.itemNotFound': 'Collection item not found.',
   'err.notCached': 'That printing is not cached yet — look the card up first.',
   'err.noLangAnchor': 'That deck entry has no printing to anchor a language to.',
@@ -626,7 +719,6 @@ export const en = {
   'boosters.loadHint': 'Downloads this set’s booster recipes from MTGJSON (a few MB, once per set) and keeps only the odds.',
   'boosters.noData': 'MTGJSON lists no boosters for {set}. Cards from Commander decks, Secret Lairs and similar products are not sold in boosters at all.',
   'boosters.notInBooster': 'not in this booster',
-  'boosters.perPack': '{percent} per pack',
   'boosters.oneIn': 'about 1 in {count} packs',
   'boosters.expected': '{count} per pack on average',
   'boosters.cardsPerPack': '{count} cards per pack',
@@ -638,7 +730,6 @@ export const en = {
   'boosters.viaEnglish': 'Matched through the English printing, which is what the booster data names.',
   'boosters.loadAll': 'Get booster data for my collection',
   'boosters.loadAllHint': 'Fetches the sets you own booster cards from, skipping precon-only sets',
-  'boosters.loadAllRunning': 'Fetching {done} of {total}…',
   'boosters.loadAllDone': 'Loaded {sets} set(s); {skipped} already had data.',
   'boosters.loadAllFailed': 'Loaded {sets} set(s). MTGJSON has no data for {failed}.',
   'boosters.loadAllNothing': 'Every set you own booster cards from already has data.',
@@ -653,34 +744,6 @@ export const en = {
   'boosters.loaded': '{boosters} booster types, {cards} cards priced for {set}.',
 
   // ------------------------------------------------------------------- errors
-  'error.printingNotCached': 'That printing is not cached yet — look the card up first.',
-  'error.quantityAtLeastOne': 'Quantity must be at least 1.',
-  'error.noPrintingFound': 'No printing found for {set} #{number} in "{lang}".',
-  'error.noArchidektAccount': 'No Archidekt account found for "{name}".',
-  'error.deckPrivateOr404': 'Archidekt returned 404 — the deck is private or no longer exists.',
-  'error.notADeckUrl': 'That does not look like an Archidekt deck URL or id.',
-  'error.setUsernameFirst': 'Set your Archidekt username in Settings first.',
-  'error.pickListNotFound': 'Pick list not found.',
-  'error.pickListClosed': 'That pick list is already closed.',
-  'error.pickListConfirmed': 'A confirmed pick list is history and cannot be reopened.',
-  'error.collectionItemNotFound': 'Collection item not found.',
-  'error.pickItemNotFound': 'Pick list item not found.',
-  'error.onlyAvailable': 'Only {count} available to pick.',
-  'error.pickListShort':
-    'Pick list asks for {wanted} copies but only {held} are held. Refresh and try again.',
-  'error.reservedQuantity':
-    'Cannot set quantity to {quantity}: {reserved} copies are reserved by an open pick list.',
-  'error.reservedDelete': 'Cannot delete: copies are reserved by an open pick list.',
-  'error.reservedPrinting':
-    'Cannot change the printing: copies are reserved by an open pick list. Cancel or confirm it first.',
-  'error.noAnchorPrinting': 'That deck entry has no printing to anchor a language to.',
-  'error.archidektUnreachable': 'Could not reach Archidekt: {message}',
-  'error.archidektNotFound': 'Not found on Archidekt.',
-  'error.archidektStatus': 'Archidekt returned {status}',
-  'error.noSetNumber': 'This entry has no set and collector number to look up.',
-  'error.noOracleId': 'This entry has no oracle id, so it cannot be matched to another printing.',
 
   // ------------------------------------------------------- deck sync statuses
-  'sync.private': 'private — not synced',
-  'sync.notFound': 'not found on Archidekt'
 } as const

@@ -1,7 +1,12 @@
 import { useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { Copy, Eraser, Languages, Sparkles, X } from 'lucide-react'
-import { FINISHES, FOIL_TREATMENTS, LANGUAGES, type Finish } from '@shared/types'
+import { ArrowRightLeft, Copy, Eraser, Languages, ListChecks, Sparkles, X } from 'lucide-react'
+import {
+  FINISHES,
+  FOIL_TREATMENTS,
+  LANGUAGES,
+  type Finish
+} from '@shared/types'
 import { FINISH_LABEL, languageName } from '../lib/format'
 import { useT } from '../hooks/useT'
 import Popover from './Popover'
@@ -24,6 +29,8 @@ export default function DeckBulkBar({
   onSetProxied,
   allProxied,
   onClearOverrides,
+  onAddToList,
+  onMoveToCollection,
   onClear
 }: {
   count: number
@@ -37,6 +44,10 @@ export default function DeckBulkBar({
   /** True when every selected entry is already a proxy — flips the label. */
   allProxied: boolean
   onClearOverrides: () => void
+  /** Opens the dialog that asks which list, and what happens to the copies. */
+  onAddToList: () => void
+  /** Moves the selection into the collection at once, with no list involved. */
+  onMoveToCollection: () => void
   onClear: () => void
 }): React.ReactElement {
   const t = useT()
@@ -57,6 +68,35 @@ export default function DeckBulkBar({
         <span className="text-ink-300">
           {t('common.selected', { count })}
         </span>
+
+        {/*
+          Taking cards out of the deck comes first: everything else here corrects
+          what the deck *says* about a card, while these two change where it is.
+
+          The direct move and the pick list are both offered because they answer
+          different questions. Moving is the job itself, done now. A list is a batch
+          of jobs to do later — and then the destination matters, because pulling a
+          card to your box and pulling it to sell are not the same errand.
+        */}
+        <Button
+          size="sm"
+          icon={<ArrowRightLeft size={13} />}
+          onClick={onMoveToCollection}
+          disabled={busy}
+          title={t('decks.moveToCollectionHint')}
+        >
+          {t('decks.moveToCollection')}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<ListChecks size={13} />}
+          onClick={onAddToList}
+          disabled={busy}
+          data-action="addToList"
+        >
+          {t('coll.addToPickList')}
+        </Button>
 
         <button
           ref={triggerRef}

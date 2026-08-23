@@ -220,9 +220,16 @@ async function main() {
     '--color-gold-400',
     '--color-gold-300',
     '--color-mana-b',
+    '--color-mana-u',
     '--color-mana-g',
     '--color-rarity-mythic',
-    '--color-rarity-rare'
+    '--color-rarity-rare',
+    '--color-on-identity',
+    '--color-surface',
+    '--color-surface-edge',
+    '--color-good',
+    '--color-warn',
+    '--color-bad'
   ]
 
   /** Puts <html> in a given state and reads every token back. */
@@ -371,6 +378,178 @@ async function main() {
         `worst is ${wm.theme} at ${wm.mutedText.toFixed(2)}:1`
       )
     }
+  }
+
+  /* ------------------------------------------------------ floating surfaces */
+  section('Floating surfaces have an edge')
+
+  /*
+    A popover, a dialog and a toast all float over content, and all three used to
+    paint `ink-850` on an `ink-900` page: measured, 1.04 contrast, with a border at
+    1.21. Opaque, but with no discernible boundary — which is what "the popup has
+    no solid background" turned out to mean. The fill cannot carry that job in a
+    dark theme without ceasing to be dark, so the border does, and both are
+    asserted here rather than eyeballed.
+
+    Tone chips are checked in the same pass because they fail the opposite way: a
+    solid `warn` chip pairs with `text-ink-950`, and *both* invert between modes,
+    so a fixed label colour reads 8:1 in one mode and 2.4:1 in the other.
+  */
+  for (const dark of [true, false]) {
+    const rows = []
+    for (const theme of THEMES) {
+      const v = await measure(theme, dark, false)
+      const page = parseRgb(v['--color-ink-900'])
+      const surface = parseRgb(v['--color-surface'])
+      const edge = parseRgb(v['--color-surface-edge'])
+      const onTone = parseRgb(v['--color-ink-950'])
+      const body = parseRgb(v['--color-ink-100'])
+      if (!page || !surface || !edge || !onTone || !body) {
+        check(`${theme}: surface tokens resolved`, false, JSON.stringify(v))
+        continue
+      }
+      rows.push({
+        theme,
+        alpha: surface[3] === undefined ? 255 : surface[3],
+        // The boundary: a floating surface is told apart from the page by its
+        // border, so that is the pair that matters.
+        edgeOnPage: contrast(edge, page),
+        edgeOnSurface: contrast(edge, surface),
+        bodyOnSurface: contrast(body, surface),
+        // Each tone as text on the surface it lands on, and as a solid chip.
+        warnText: contrast(parseRgb(v['--color-warn']), surface),
+        badText: contrast(parseRgb(v['--color-bad']), surface),
+        goodText: contrast(parseRgb(v['--color-good']), surface),
+        warnChip: contrast(onTone, parseRgb(v['--color-warn'])),
+        badChip: contrast(onTone, parseRgb(v['--color-bad']))
+      })
+    }
+
+    section(`Surfaces and tones — ${dark ? 'dark' : 'light'}`)
+    for (const r of rows) {
+      console.log(
+        `        ${r.theme.padEnd(14)} edge/page ${r.edgeOnPage.toFixed(2).padStart(5)}` +
+          `  body/surf ${r.bodyOnSurface.toFixed(2).padStart(5)}` +
+          `  warn ${r.warnText.toFixed(2).padStart(5)}` +
+          `  bad ${r.badText.toFixed(2).padStart(5)}` +
+          `  warnChip ${r.warnChip.toFixed(2).padStart(5)}`
+      )
+    }
+
+    const worst = (key) => rows.reduce((a, b) => (b[key] < a[key] ? b : a))
+    check(
+      `a floating surface is fully opaque in every theme (${dark ? 'dark' : 'light'})`,
+      rows.every((r) => r.alpha === 255),
+      `alphas ${rows.map((r) => r.alpha).join(',')}`
+    )
+    const we = worst('edgeOnPage')
+    check(
+      `its border is visible against the page — was 1.21 (${dark ? 'dark' : 'light'})`,
+      we.edgeOnPage >= AA_LARGE / 2,
+      `worst is ${we.theme} at ${we.edgeOnPage.toFixed(2)}:1`
+    )
+    const wb = worst('bodyOnSurface')
+    check(
+      `body text on it clears ${AA_TEXT}:1 (${dark ? 'dark' : 'light'})`,
+      wb.bodyOnSurface >= AA_TEXT,
+      `worst is ${wb.theme} at ${wb.bodyOnSurface.toFixed(2)}:1`
+    )
+    for (const tone of ['warnText', 'badText', 'goodText']) {
+      const w = worst(tone)
+      check(
+        `${tone.replace('Text', '')} reads as text on a floating surface (${dark ? 'dark' : 'light'})`,
+        w[tone] >= AA_TEXT,
+        `worst is ${w.theme} at ${w[tone].toFixed(2)}:1`
+      )
+    }
+    for (const chip of ['warnChip', 'badChip']) {
+      const w = worst(chip)
+      check(
+        `a solid ${chip.replace('Chip', '')} chip's label is readable (${dark ? 'dark' : 'light'})`,
+        w[chip] >= AA_TEXT,
+        `worst is ${w.theme} at ${w[chip].toFixed(2)}:1`
+      )
+    }
+  }
+
+  /* ------------------------------------------------------ badges on artwork */
+  section('Badges over card artwork are readable')
+
+  /*
+    A badge on a card tile has no controlled background: whatever the art happens to
+    be is behind it. Several were a colour on a 25% wash of the same colour, and one
+    was white text on a 15% white wash — measured, that is a fill with alpha 38/255
+    and a label read against random artwork.
+
+    Measured in the running app rather than by reading classes, because what matters
+    is the resolved alpha and the resolved contrast, and both come out of the same
+    tokens the theme moves around.
+  */
+  for (const dark of [true, false]) {
+    const rows = []
+    for (const theme of THEMES) {
+      const v = await measure(theme, dark, false)
+      /*
+        Two label colours, because there are two kinds of chip. A semantic tone
+        inverts with the theme, so it pairs with the inverting ink; a card-identity
+        colour never moves, so it pairs with a fixed label. Getting that backwards
+        is what made the "in a deck" badge read at 2.70:1 in light mode.
+      */
+      const label = parseRgb(v['--color-ink-950'])
+      const fixedLabel = parseRgb(v['--color-on-identity'])
+      const pairs = {
+        warn: parseRgb(v['--color-warn']),
+        good: parseRgb(v['--color-good']),
+        bad: parseRgb(v['--color-bad']),
+        accent: parseRgb(v['--color-gold-500'])
+      }
+      const identityPairs = { manaU: parseRgb(v['--color-mana-u']) }
+      if (!label || !fixedLabel || Object.values(pairs).some((p) => !p)) {
+        // Name what is missing. Dumping the whole token map made a one-token
+        // omission unreadable across twelve themes.
+        const missing = [
+          ...(label ? [] : ['--color-ink-950']),
+          ...(fixedLabel ? [] : ['--color-on-identity']),
+          ...Object.entries(pairs).filter(([, p]) => !p).map(([n]) => n)
+        ]
+        check(`${theme}: badge tokens resolved`, false, `missing ${missing.join(', ')}`)
+        continue
+      }
+      // Plain JS: this file is .cjs, so `as const` and `!` are syntax errors, not
+      // type noise to be ignored.
+      const scored = [
+        ...Object.entries(pairs).map(([name, p]) => [name, contrast(label, p)]),
+        ...Object.entries(identityPairs).map(([name, p]) => [name, contrast(fixedLabel, p)])
+      ]
+      rows.push({
+        theme,
+        alphas: [...Object.values(pairs), ...Object.values(identityPairs)].map((p) =>
+          p[3] === undefined ? 255 : p[3]
+        ),
+        worst: Math.min(...scored.map(([, ratio]) => ratio)),
+        which: scored.reduce(
+          (a, [name, ratio]) => (ratio < a.ratio ? { name, ratio } : a),
+          { name: '', ratio: Infinity }
+        )
+      })
+    }
+
+    for (const r of rows) {
+      console.log(
+        `        ${r.theme.padEnd(14)} worst badge ${r.worst.toFixed(2).padStart(5)} (${r.which.name})`
+      )
+    }
+    check(
+      `every badge fill is opaque (${dark ? 'dark' : 'light'})`,
+      rows.every((r) => r.alphas.every((a) => a === 255)),
+      JSON.stringify(rows.map((r) => r.alphas))
+    )
+    const worst = rows.reduce((a, b) => (b.worst < a.worst ? b : a))
+    check(
+      `and its label clears ${AA_TEXT}:1 against it (${dark ? 'dark' : 'light'})`,
+      worst.worst >= AA_TEXT,
+      `worst is ${worst.theme} / ${worst.which.name} at ${worst.worst.toFixed(2)}:1`
+    )
   }
 
   /* ------------------------------------------------------ card colours */

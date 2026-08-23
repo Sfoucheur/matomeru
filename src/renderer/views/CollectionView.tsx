@@ -8,8 +8,8 @@ import {
   Download,
   LayoutGrid,
   Copy,
+  ArrowRightLeft,
   ListChecks,
-  Plus,
   MapPin,
   Rows3,
   Trash2
@@ -22,7 +22,9 @@ import type {
   Deck,
   FacetCounts,
   Finish,
-  PickList,
+  PickSource,
+  DeckSource,
+  PickDestination,
   SortField,
   TranslationKey
 } from '@shared/types'
@@ -38,9 +40,10 @@ import { useT } from '../hooks/useT'
 import type { ViewProps } from '../App'
 import FilterBar from '../components/FilterBar'
 import ColumnStepper from '../components/ColumnStepper'
+import CardZoom from '../components/CardZoom'
+import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import SetIcon from '../components/SetIcon'
-import Popover from '../components/Popover'
 import SortMenu from '../components/SortMenu'
 import GalleryGrid from '../components/GalleryGrid'
 import CardTile from '../components/CardTile'
@@ -50,6 +53,7 @@ import {
   ColorPips,
   EmptyState,
   LangChip,
+  Modal,
   QuantityStepper,
   RarityPip,
   Select
@@ -75,6 +79,18 @@ function collectionCardContext(row: CollectionRow): CardContext | undefined {
     itemId: row.id,
     forcedLang: row.language_forced ? row.printing.lang : null
   }
+}
+
+/**
+ * Whether a row can be put in a pick list.
+ *
+ * A real collection row always can. A derived deck row can too — pulling a card
+ * out of a deck is a job you might want on a list — as long as the deck still has
+ * a copy that nothing else has claimed. `available` is 0 for a deck row, so its
+ * quantity is what to look at.
+ */
+function stageable(row: CollectionRow): boolean {
+  return row.source === 'collection' ? row.available > 0 : row.quantity > 0
 }
 
 const PAGE_SIZE = 200
@@ -184,16 +200,48 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       const next = new Set(current)
       // Only real rows can be acted on, so a range never picks up deck copies.
       for (let i = start; i <= end; i += 1) {
-        if (rows[i].source === 'collection') next.add(rows[i].key)
+        if (stageable(rows[i])) next.add(rows[i].key)
       }
       return next
     })
     lastPicked.current = key
   }
 
-  // Derived deck rows are never selectable, so this is always real rows.
+  /*
+    Both kinds of row can be selected now. A derived deck row still has no id and
+    nothing that edits a collection row will touch it — `collectionCardContext`
+    keeps returning undefined for it — but it can be staged, because a card
+    sleeved in a deck is still a card you hold.
+  */
+  /*
+    A staging run waiting on the user to say which deck each ambiguous card
+    leaves. Holds the already-resolved entries too, so both halves are staged in
+    one call once the dialog is answered.
+  */
+  const [pendingPick, setPendingPick] = useState<{
+    target: number | 'new'
+    entries: { source: PickSource; quantity: number }[]
+    ambiguous: PendingChoice[]
+    destination: PickDestination
+  } | null>(null)
+
+  /** Open while the dialog is asking which list and what happens to the copies. */
+  const [listDialog, setListDialog] = useState(false)
+
+  /*
+    The card being looked at closely, from a list row.
+
+    Held here rather than in the row: rows are virtualized, so one can unmount
+    while its overlay is open — scrolling with the keyboard, or the list
+    re-querying underneath — and the overlay would vanish with it.
+  */
+  const [zoom, setZoom] = useState<{ scryfallId: string; title: string } | null>(null)
+
+  /** The rows waiting on a deck and a quantity before they move. */
+  const [pendingMove, setPendingMove] = useState<CollectionRow[] | null>(null)
+
   const selectedRows = useMemo(
-    () => rows.filter((row) => row.source === 'collection' && selected.has(row.key)),
+    () => rows.filter((row) => selected.has(row.key)),
     [rows, selected]
   )
 
@@ -205,15 +253,128 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
    * created last — the behaviour this control exists to replace. 'new' creates
    * one explicitly instead.
    */
-  const addSelectedToPickList = async (target: number | 'new'): Promise<void> => {
-    const entries = selectedRows
-      .filter((row) => row.id !== null && row.available > 0)
-      .map((row) => ({ itemId: row.id as number, quantity: row.available }))
-    if (!entries.length) {
+  const addSelectedToPickList = async (
+    target: number | 'new',
+    destination: PickDestination
+  ): Promise<void> => {
+    /*
+      The same predicate selection uses, not a restatement of it.
+
+      This read `row.available > 0`, which is 0 for a sleeved card by design — that
+      number means bulk stock free to stage — so every deck row was dropped and
+      confirming reported "nothing to pick". Selection said one thing and staging
+      said another; sharing the predicate is what stops them disagreeing again.
+    */
+    const staged = selectedRows.filter(stageable)
+    if (!staged.length) {
       toast('warn', t('coll.nothingToPick'))
       return
     }
 
+    /*
+      A collection row is its own address. A derived deck row is not: it groups a
+      card across every deck holding it, so the copy has to be told which deck it
+      is leaving before it can be staged. Decks are asked for on demand, and only
+      for the rows that need it.
+    */
+    const entries: { source: PickSource; quantity: number }[] = []
+    const ambiguous: PendingChoice[] = []
+
+    for (const row of staged) {
+      if (row.source === 'collection' && row.id !== null) {
+        entries.push({ source: { kind: 'collection', itemId: row.id }, quantity: row.available })
+        continue
+      }
+      const decks = await window.api.decks
+        .pullSources(row.scryfall_id, row.finish)
+        .catch(() => [] as DeckSource[])
+      if (decks.length === 1) {
+        entries.push({
+          source: {
+            kind: 'deck',
+            deckId: decks[0].deck_id,
+            oracleId: decks[0].oracle_id,
+            destination
+          },
+          quantity: Math.min(row.quantity, decks[0].quantity)
+        })
+      } else if (decks.length > 1) {
+        ambiguous.push({ row, decks })
+      }
+      // No pullable deck at all means every copy is spoken for already; the
+      // toast below reports the shortfall rather than staging nothing silently.
+    }
+
+    if (ambiguous.length) {
+      // Resolved by the dialog, which stages both halves together so a partial
+      // list is never left behind if the dialog is dismissed.
+      setPendingPick({ target, entries, ambiguous, destination })
+      return
+    }
+    if (!entries.length) {
+      toast('warn', t('coll.nothingToPick'))
+      return
+    }
+    await stageEntries(target, entries)
+  }
+
+  /**
+   * Moves the chosen copies out of the collection and into a deck.
+   *
+   * Direct and immediate — nothing is staged, because nothing is being decided
+   * later. A pick list is for cards leaving your possession; this only changes
+   * where a card of yours lives.
+   */
+  const moveToDeck = async (deckId: number, deckName: string, quantity: number): Promise<void> => {
+    const rows = pendingMove ?? []
+    setPendingMove(null)
+    let moved = 0
+    let refused = 0
+    for (const row of rows) {
+      if (row.id === null) continue
+      /*
+        Capped at what can actually move, not at what the row holds: copies
+        reserved by an open pick list are promised to leaving your possession, and
+        the repository refuses them. `available` is quantity less those.
+      */
+      const take = Math.min(quantity, row.available)
+      if (take <= 0) {
+        refused += 1
+        continue
+      }
+      const result = await window.api.decks
+        .moveToDeck(deckId, row.id, take)
+        .catch(() => null)
+      if (result) moved += result.moved
+      else refused += 1
+    }
+    if (moved > 0) {
+      // Refusals are counted and said out loud, as the Decks screen already does.
+      // Reporting only the total meant a partly-refused batch looked like a clean
+      // one, and there was no way to tell how many cards had not moved.
+      toast(
+        'success',
+        `${t('coll.movedToDeck', { count: moved, deck: deckName })}${
+          refused > 0 ? ` ${t.p('coll.moveRefused', refused)}` : ''
+        }`
+      )
+      invalidate()
+    } else {
+      toast('warn', t('coll.nothingToMove'))
+    }
+  }
+
+  /**
+   * Sends resolved entries to a list and reports where they landed.
+   *
+   * Split out because the which-deck dialog finishes the same job: both halves
+   * of a mixed selection have to be staged in one call, or dismissing the dialog
+   * would leave a half-filled list behind.
+   */
+  const stageEntries = async (
+    target: number | 'new',
+    entries: { source: PickSource; quantity: number }[]
+  ): Promise<void> => {
     const listId =
       target === 'new'
         ? await guard(() => window.api.pickLists.create(t('picks.defaultName')))
@@ -246,12 +407,61 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       />
       <FilterBar facets={facets} decks={decks} />
 
+      {zoom && (
+        <CardZoom
+          open
+          scryfallId={zoom.scryfallId}
+          title={zoom.title}
+          onClose={() => setZoom(null)}
+        />
+      )}
+
+      {listDialog && (
+        <AddToListDialog
+          /*
+            Only offered when the selection actually contains a sleeved card. A
+            collection row has one possible answer — it leaves your possession,
+            which is what a pick list is for.
+          */
+          showDestination={selectedRows.some((row) => row.source === 'deck')}
+          onCancel={() => setListDialog(false)}
+          onConfirm={(target, destination) => {
+            setListDialog(false)
+            void addSelectedToPickList(target, destination)
+          }}
+        />
+      )}
+
+      {pendingMove && (
+        <MoveToDeckDialog
+          rows={pendingMove}
+          onCancel={() => setPendingMove(null)}
+          onConfirm={(deckId, deckName, quantity) => void moveToDeck(deckId, deckName, quantity)}
+        />
+      )}
+
+      {pendingPick && (
+        <WhichDeckDialog
+          ambiguous={pendingPick.ambiguous}
+          destination={pendingPick.destination}
+          onCancel={() => setPendingPick(null)}
+          onConfirm={(chosen) => {
+            const pending = pendingPick
+            setPendingPick(null)
+            void stageEntries(pending.target, [...pending.entries, ...chosen])
+          }}
+        />
+      )}
+
       <AnimatePresence>
         {selectedRows.length > 0 && (
           <BulkBar
             rows={selectedRows}
             onClear={() => setSelected(new Set())}
-            onPick={(target) => void addSelectedToPickList(target)}
+            onAddToList={() => setListDialog(true)}
+            onMove={() =>
+            setPendingMove(selectedRows.filter((row) => row.id !== null && row.available > 0))
+          }
             onDone={invalidate}
           />
         )}
@@ -280,7 +490,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           selected={selected}
           onToggleRow={toggleRow}
           onToggleAll={() => {
-            const selectable = rows.filter((r) => r.source === 'collection')
+            const selectable = rows.filter(stageable)
             setSelected(
               selected.size === selectable.length
                 ? new Set()
@@ -291,6 +501,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           dir={filters.dir}
           onSort={toggleSort}
           onOpenCard={openCard}
+          onZoom={(scryfallId, title) => setZoom({ scryfallId, title })}
           onChanged={invalidate}
         />
       ) : (
@@ -305,8 +516,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
 
       {page && page.total > rows.length && (
         <div className="shrink-0 border-t border-ink-800 px-5 py-2 text-center text-[11px] text-ink-500">
-          Showing the first {count(rows.length)} of {count(page.total)} rows — narrow the filters to
-          see the rest.
+          {t('coll.showingFirst', { shown: count(rows.length), total: count(page.total) })}
         </div>
       )}
     </div>
@@ -393,6 +603,7 @@ function Header({
 
       <div className="flex items-center overflow-hidden rounded-lg border border-ink-700">
         <button
+          data-view="table"
           onClick={() => onMode('table')}
           className={`px-2.5 py-1.5 transition-colors ${
             mode === 'table' ? 'bg-ink-750 text-gold-400' : 'text-ink-400 hover:bg-ink-800'
@@ -403,6 +614,7 @@ function Header({
           <Rows3 size={15} />
         </button>
         <button
+          data-view="gallery"
           onClick={() => onMode('gallery')}
           className={`border-l border-ink-700 px-2.5 py-1.5 transition-colors ${
             mode === 'gallery' ? 'bg-ink-750 text-gold-400' : 'text-ink-400 hover:bg-ink-800'
@@ -456,15 +668,212 @@ function AnimatedValue({
   return <span className="numeric font-medium text-gold-400">{bigMoney(shown, currency)}</span>
 }
 
+/**
+ * Asks which deck the copies are going into, and how many.
+ *
+ * Both questions, one dialog. The quantity is capped at the smallest of the
+ * selected rows, so a mixed selection cannot ask for more than one of them holds —
+ * the move itself caps per row as well, but offering an impossible number and then
+ * quietly doing something else is worse than not offering it.
+ */
+function MoveToDeckDialog({
+  rows,
+  onCancel,
+  onConfirm
+}: {
+  rows: CollectionRow[]
+  onCancel: () => void
+  onConfirm: (deckId: number, deckName: string, quantity: number) => void
+}): React.ReactElement {
+  const t = useT()
+  const [decks, setDecks] = useState<{ deck_id: number; deck_name: string }[] | null>(null)
+  const [deckId, setDeckId] = useState<number | null>(null)
+  const [quantity, setQuantity] = useState(1)
+
+  /*
+    The smallest number any selected row can actually part with. `quantity` would be
+    wrong: a row with copies reserved by an open list can only move `available`, so
+    offering its full quantity meant the dialog proposed an amount the repository
+    would refuse and the view would then swallow.
+  */
+  const movable = rows.filter((row) => row.available > 0)
+  const most = Math.max(1, Math.min(...movable.map((row) => row.available)))
+
+  useEffect(() => {
+    void window.api.decks
+      .choices()
+      .then((all) => {
+        setDecks(all)
+        setDeckId(all[0]?.deck_id ?? null)
+      })
+      .catch(() => setDecks([]))
+  }, [])
+
+  return (
+    <Modal open onClose={onCancel} title={t('coll.moveTitle')} width="max-w-md">
+      <div className="px-5 py-4">
+        <p className="mb-3.5 text-[11px] leading-relaxed text-ink-400">{t('coll.moveHint')}</p>
+
+        <label className="mb-3 flex items-center justify-between gap-3">
+          <span className="text-sm text-ink-200">{t('coll.moveWhichDeck')}</span>
+          {decks === null ? (
+            <div className="skeleton h-8 w-52 rounded" />
+          ) : (
+            <Select
+              className="w-52"
+              value={deckId === null ? '' : String(deckId)}
+              onChange={(value) => setDeckId(value ? Number(value) : null)}
+              placeholder={decks.length ? undefined : t('coll.noDecks')}
+              options={decks.map((deck) => ({
+                value: String(deck.deck_id),
+                label: deck.deck_name
+              }))}
+            />
+          )}
+        </label>
+
+        <label className="flex items-center justify-between gap-3" data-field="moveHowMany">
+          <span className="text-sm text-ink-200">
+            {t('coll.moveHowMany')}
+            <span className="mt-0.5 block text-[11px] text-ink-500">
+              {t('coll.moveAvailable', { count: most })}
+            </span>
+          </span>
+          <QuantityStepper
+            value={quantity}
+            min={1}
+            max={most}
+            onChange={setQuantity}
+          />
+        </label>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button size="sm" onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={deckId === null}
+            onClick={() => {
+              const deck = decks?.find((d) => d.deck_id === deckId)
+              if (deck) onConfirm(deck.deck_id, deck.deck_name, quantity)
+            }}
+          >
+            {t('coll.moveConfirm')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** One selected card that sits in more than one deck, with the decks it is in. */
+interface PendingChoice {
+  row: CollectionRow
+  decks: DeckSource[]
+}
+
+/**
+ * Asks which deck each ambiguous copy is leaving.
+ *
+ * A derived collection row groups a card across every deck holding it, so it
+ * cannot say where a pulled copy comes from — and the pull has to know, or the
+ * "out of the deck" tag would land on the wrong deck. One dialog covers every
+ * ambiguous card in the selection rather than one prompt each, because a bulk
+ * stage of thirty rows would otherwise be thirty interruptions.
+ *
+ * Defaults to each card's first deck, so confirming without touching anything is
+ * still a sane answer rather than a no-op.
+ */
+function WhichDeckDialog({
+  ambiguous,
+  destination,
+  onCancel,
+  onConfirm
+}: {
+  ambiguous: PendingChoice[]
+  destination: PickDestination
+  onCancel: () => void
+  onConfirm: (entries: { source: PickSource; quantity: number }[]) => void
+}): React.ReactElement {
+  const t = useT()
+  const [choice, setChoice] = useState<Record<string, number>>(() =>
+    Object.fromEntries(ambiguous.map((a) => [a.row.key, a.decks[0].deck_id]))
+  )
+
+  const confirm = (): void => {
+    const entries: { source: PickSource; quantity: number }[] = []
+    for (const item of ambiguous) {
+      const deck = item.decks.find((d) => d.deck_id === choice[item.row.key])
+      if (!deck) continue
+      entries.push({
+        source: {
+          kind: 'deck',
+          deckId: deck.deck_id,
+          oracleId: deck.oracle_id,
+          destination
+        },
+        // Never offer more than the chosen deck actually has: the row's own
+        // figure is the total across every deck holding the card.
+        quantity: Math.min(item.row.quantity, deck.quantity)
+      })
+    }
+    onConfirm(entries)
+  }
+
+  return (
+    <Modal open onClose={onCancel} title={t('coll.whichDeckTitle')} width="max-w-lg">
+      <div className="px-5 py-4">
+        <p className="mb-3.5 text-[11px] leading-relaxed text-ink-400">
+          {t('coll.whichDeckHint')}
+        </p>
+        <div className="flex flex-col gap-2.5">
+          {ambiguous.map((item) => (
+            <label key={item.row.key} className="flex items-center justify-between gap-3">
+              <span className="min-w-0 flex-1 truncate text-sm text-ink-200">
+                {item.row.printing.printed_name ?? item.row.printing.name}
+              </span>
+              <Select
+                className="w-52 shrink-0"
+                value={String(choice[item.row.key])}
+                onChange={(value) =>
+                  setChoice((prev) => ({ ...prev, [item.row.key]: Number(value) }))
+                }
+                options={item.decks.map((deck) => ({
+                  value: String(deck.deck_id),
+                  label: `${deck.deck_name} (${count(deck.quantity)})`
+                }))}
+              />
+            </label>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button size="sm" onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button variant="primary" size="sm" onClick={confirm}>
+            {t('coll.whichDeckConfirm')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function BulkBar({
   rows,
+  onAddToList,
+  onMove,
   onClear,
-  onPick,
   onDone
 }: {
   rows: CollectionRow[]
+  /** Opens the dialog that asks which list, and what happens to the copies. */
+  onAddToList: () => void
+  /** Opens the dialog that moves the selection into a deck. */
+  onMove: () => void
   onClear: () => void
-  onPick: (target: number | 'new') => void
   /**
    * Refresh the data, keeping the selection.
    *
@@ -478,8 +887,15 @@ function BulkBar({
 }): React.ReactElement {
   const t = useT()
   const toast = useApp((s) => s.toast)
+  /*
+    Only real collection rows can be edited or removed. A selection can now mix
+    them with derived deck rows, which have no id and mirror Archidekt, so `ids`
+    is what the editing actions apply to and `sleeved` is what they cannot touch.
+  */
   const ids = rows.map((r) => r.id).filter((id): id is number => id !== null)
-  const allProxied = rows.length > 0 && rows.every((row) => row.proxied)
+  const sleeved = rows.length - ids.length
+  const ownRows = rows.filter((row) => row.id !== null)
+  const allProxied = ownRows.length > 0 && ownRows.every((row) => row.proxied)
 
   const applyFinish = async (finish: Finish): Promise<void> => {
     const ok = await guard(() => window.api.collection.bulkUpdate(ids, { finish }))
@@ -553,8 +969,46 @@ function BulkBar({
       <div className="flex flex-wrap items-center gap-2.5 px-5 py-2.5">
         <span className="text-xs text-ink-200">
           {t('common.selected', { count: rows.length })}
+          {sleeved > 0 && (
+            <span className="ml-1.5 text-[11px] text-ink-400">
+              {t('coll.sleevedNote', { count: sleeved })}
+            </span>
+          )}
         </span>
-        <PickListChooser onPick={onPick} />
+        {/*
+          One button for the whole decision. The destination used to be a dropdown
+          parked here beside a separate chooser — two controls for one act, and a
+          dropdown that sits there permanently reads as a setting rather than as
+          part of what you are about to do. Both questions live in the dialog now.
+        */}
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<ListChecks size={13} />}
+          onClick={onAddToList}
+          data-action="addToList"
+        >
+          {t('coll.addToPickList')}
+        </Button>
+        {/* Only real rows can go into a deck: a sleeved card is already in one. */}
+        {ids.length > 0 && (
+          <Button
+            size="sm"
+            icon={<ArrowRightLeft size={13} />}
+            onClick={onMove}
+            data-action="moveToDeck"
+          >
+            {t('coll.moveToDeck')}
+          </Button>
+        )}
+        {/*
+          Hidden rather than disabled when nothing editable is selected: these
+          controls change a collection row, and a derived deck row has none. The
+          Select primitive takes no disabled prop, and inventing one to grey out
+          a control that can never apply would say less than not offering it.
+        */}
+        {ids.length > 0 && (
+          <>
         <Select
           className="w-28"
           value={'' as Finish}
@@ -592,11 +1046,13 @@ function BulkBar({
         <Button variant="danger" size="sm" icon={<Trash2 size={13} />} onClick={removeAll}>
           {t('coll.remove')}
         </Button>
+          </>
+        )}
         <button
           onClick={onClear}
           className="ml-auto text-[11px] text-ink-400 transition-colors hover:text-ink-100"
         >
-          Clear selection
+          {t('common.clearSelection')}
         </button>
       </div>
     </motion.div>
@@ -633,6 +1089,7 @@ function TableView({
   dir,
   onSort,
   onOpenCard,
+  onZoom,
   onChanged
 }: {
   rows: CollectionRow[]
@@ -644,6 +1101,7 @@ function TableView({
   dir: 'asc' | 'desc'
   onSort: (field: SortField) => void
   onOpenCard: (scryfallId: string, context?: CardContext) => void
+  onZoom: (scryfallId: string, title: string) => void
   onChanged: () => void
 }): React.ReactElement {
   const t = useT()
@@ -715,6 +1173,12 @@ function TableView({
                   isSelected={selected.has(row.key)}
                   onToggle={() => onToggleRow(row.key)}
                   onOpenCard={() => onOpenCard(row.scryfall_id, collectionCardContext(row))}
+                  onZoom={() =>
+                    onZoom(
+                      row.scryfall_id,
+                      row.printing.printed_name ?? row.printing.name
+                    )
+                  }
                   onChanged={onChanged}
                 />
               </div>
@@ -732,6 +1196,7 @@ function CardRow({
   isSelected,
   onToggle,
   onOpenCard,
+  onZoom,
   onChanged
 }: {
   row: CollectionRow
@@ -739,6 +1204,7 @@ function CardRow({
   isSelected: boolean
   onToggle: () => void
   onOpenCard: () => void
+  onZoom: () => void
   onChanged: () => void
 }): React.ReactElement {
   const t = useT()
@@ -772,11 +1238,24 @@ function CardRow({
       )}
 
       <div className="flex min-w-52 flex-1 items-center gap-2.5 overflow-hidden">
-        <CardImage
-          scryfallId={row.scryfall_id}
-          className="h-9 w-7 shrink-0"
-          alt={printing.name}
-        />
+        {/*
+          The thumbnail opens the same closer look the detail dialog does. In list
+          mode it was the only place a card's art could not be seen properly — the
+          row is 36px tall. `zoom-in` is the cursor the detail artwork already uses,
+          so the affordance reads the same in both places.
+        */}
+        <button
+          onClick={onZoom}
+          title={t('coll.zoomHint')}
+          aria-label={t('coll.zoomHint')}
+          className="shrink-0 cursor-zoom-in rounded"
+        >
+          <CardImage
+            scryfallId={row.scryfall_id}
+            className="h-9 w-7 shrink-0"
+            alt={printing.name}
+          />
+        </button>
         <div className="min-w-0 leading-tight">
           <p className="truncate text-ink-100">
             <button
@@ -789,7 +1268,18 @@ function CardRow({
             {row.reserved > 0 && (
               <span
                 title={t('coll.reservedBadge', { count: row.reserved })}
-                className="ml-2 rounded bg-warn/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-warn"
+                /*
+                  Solid, not a 15% wash of the text's own colour: measured, the
+                  fill was alpha 38/255, so the label sat on whatever happened to
+                  be behind it.
+
+                  The rule this follows, since tinted chips elsewhere are fine: a
+                  chip on a panel may be a wash, because its text contrasts with
+                  the panel underneath. A chip over card artwork must be solid —
+                  nothing controls what is behind it, and `text-ink-950` on a solid
+                  tone reads at 8:1 in dark and 6:1 in light because both invert.
+                */
+                className="ml-2 rounded bg-warn px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-950"
               >
                 {row.reserved} held
               </span>
@@ -938,7 +1428,7 @@ function GalleryView({
             title={row.printing.printed_name ?? row.printing.name}
             density={density}
             selected={selected.has(row.key)}
-            selectable={row.source === 'collection'}
+            selectable={stageable(row)}
             onOpen={() => onOpenCard(row.scryfall_id, collectionCardContext(row))}
             onSelect={(mode) => onSelect(row.key, mode)}
             badges={
@@ -950,10 +1440,21 @@ function GalleryView({
                   forced={row.treatment_forced}
                   density={density}
                 />
+                {/*
+                  Badges here sit on card artwork, so they are solid.
+
+                  Nothing controls what is behind them: a translucent chip is read
+                  against whatever the art happens to be, and the worst of these put
+                  a colour on a 25% wash of the same colour. `text-ink-950` is the
+                  label throughout because it inverts opposite to the tone under it
+                  — near-black on a light tone in dark mode, white on a dark tone in
+                  light. A tinted chip is still fine on a panel, where its text
+                  contrasts with the panel behind it.
+                */}
                 {row.source === 'deck' && (
                   <span
                     title={t('coll.sleevedInShort', { decks: row.deck_names.join(', ') })}
-                    className="rounded bg-mana-u/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
+                    className="rounded bg-mana-u px-1.5 py-0.5 text-[9px] font-bold uppercase text-on-identity"
                   >
                     {t('coll.inDeckBadge')}
                   </span>
@@ -961,7 +1462,7 @@ function GalleryView({
                 {row.source === 'collection' && row.deck_count > 0 && (
                   <span
                     title={t('coll.inDeckCount', { count: row.deck_count })}
-                    className="inline-flex items-center gap-0.5 rounded bg-mana-u/85 px-1.5 py-0.5 text-[9px] font-bold text-white"
+                    className="inline-flex items-center gap-0.5 rounded bg-mana-u px-1.5 py-0.5 text-[9px] font-bold text-on-identity"
                   >
                     <MapPin size={8} />
                     {row.deck_count}
@@ -970,7 +1471,7 @@ function GalleryView({
                 {row.reserved > 0 && (
                   <span
                     title={t('coll.reservedBadge', { count: row.reserved })}
-                    className="rounded bg-warn/85 px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
+                    className="rounded bg-warn px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
                   >
                     {row.reserved}
                   </span>
@@ -981,7 +1482,7 @@ function GalleryView({
               density === 'full' ? (
                 <>
                   <LangChip lang={row.printing.lang} />
-                  <span className="numeric rounded bg-white/15 px-1.5 text-[10px] text-white">
+                  <span className="numeric rounded bg-ink-950 px-1.5 text-[10px] text-ink-50">
                     x{row.quantity}
                   </span>
                   <span className="numeric ml-auto text-[10px] text-gold-300">
@@ -991,7 +1492,7 @@ function GalleryView({
                   </span>
                 </>
               ) : (
-                <span className="numeric rounded bg-white/15 px-1.5 text-[10px] text-white">
+                <span className="numeric rounded bg-ink-950 px-1.5 text-[10px] text-ink-50">
                   x{row.quantity}
                 </span>
               )
@@ -1016,90 +1517,6 @@ function GalleryView({
  * query runs several sub-selects per list for its totals, and this bar
  * re-renders on every change of selection.
  */
-function PickListChooser({
-  onPick
-}: {
-  onPick: (target: number | 'new') => void
-}): React.ReactElement {
-  const t = useT()
-  const [open, setOpen] = useState(false)
-  const [lists, setLists] = useState<PickList[] | null>(null)
-  const trigger = useRef<HTMLButtonElement>(null)
-
-  const show = (): void => {
-    setOpen(true)
-    void window.api.pickLists
-      .list()
-      // Only open lists can receive cards — `addToPickList` refuses a confirmed
-      // or cancelled one — so offering them would be offering an error.
-      .then((all) => setLists(all.filter((list) => list.status === 'open')))
-      .catch(() => setLists([]))
-  }
-
-  const choose = (target: number | 'new'): void => {
-    setOpen(false)
-    onPick(target)
-  }
-
-  return (
-    <>
-      <Button
-        ref={trigger}
-        variant="primary"
-        size="sm"
-        icon={<ListChecks size={13} />}
-        onClick={() => (open ? setOpen(false) : show())}
-      >
-        {t('coll.addToPickList')}
-      </Button>
-
-      <Popover open={open} onClose={() => setOpen(false)} trigger={trigger} width={232}>
-        <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
-          {t('coll.chooseList')}
-        </p>
-
-        {lists === null ? (
-          <div className="space-y-1 p-1">
-            {Array.from({ length: 2 }).map((_, index) => (
-              <div key={index} className="skeleton h-6 rounded" />
-            ))}
-          </div>
-        ) : (
-          <>
-            {lists.length === 0 && (
-              <p className="px-2 pb-1 text-[11px] leading-relaxed text-ink-500">
-                {t('coll.noOpenLists')}
-              </p>
-            )}
-            {lists.map((list) => (
-              <button
-                key={list.id}
-                onClick={() => choose(list.id)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm
-                  transition-colors hover:bg-ink-750"
-              >
-                <span className="min-w-0 flex-1 truncate text-ink-100">{list.name}</span>
-                <span className="numeric shrink-0 text-[10px] text-ink-500">
-                  {t('coll.listCards', { count: count(list.cardCount) })}
-                </span>
-              </button>
-            ))}
-          </>
-        )}
-
-        <button
-          onClick={() => choose('new')}
-          className="mt-1 flex w-full items-center gap-1.5 rounded border-t border-ink-800 px-2
-            py-1.5 text-left text-xs text-gold-300 transition-colors hover:bg-ink-750"
-        >
-          <Plus size={12} />
-          {t('coll.newList')}
-        </button>
-      </Popover>
-    </>
-  )
-}
-
 /**
  * Marks a copy as a proxy.
  *
@@ -1114,7 +1531,7 @@ function ProxyChip({ tile = false }: { tile?: boolean }): React.ReactElement {
       title={t('proxy.hint')}
       className={
         tile
-          ? 'rounded bg-ink-900/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-200 ring-1 ring-ink-500'
+          ? 'rounded bg-ink-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950'
           : 'rounded bg-ink-750 px-1 py-0.5 text-[9px] font-semibold uppercase text-ink-400'
       }
     >

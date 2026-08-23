@@ -280,10 +280,13 @@ async function main() {
           [...document.querySelectorAll('main > div')].find((p) => !p.classList.contains('hidden'))
         const readBadge = () => {
           const root = pane() ?? document
-          const chips = [...root.querySelectorAll('span[title]')].filter(
-            (el) =>
-              el.className.toString().includes('bg-gold-500/90') && el.querySelector('svg')
-          )
+          /*
+            Found by its own hook, not by a class. Matching on the badge's
+            translucent fill broke all three of these checks the moment it was made
+            solid: a check should not depend on what something looks like.
+            (No backticks in here -- this comment lives inside a template literal.)
+          */
+          const chips = [...root.querySelectorAll('[data-foil-badge]')]
           const arts = [...root.querySelectorAll('[class*="aspect-[488/680]"]')]
           return {
             count: chips.length,
@@ -478,7 +481,7 @@ async function main() {
 
   const before = JSON.parse(
     await evaluate(`(() => {
-      const panel = document.querySelector('.panel')
+      const panel = document.querySelector('[data-popover]')
       const search = panel?.querySelector('input')
       const options = [...(panel?.querySelectorAll('button') ?? [])]
       return JSON.stringify({ hasSearch: !!search, options: options.length })
@@ -491,7 +494,7 @@ async function main() {
     await type('lc')
     const after = JSON.parse(
       await evaluate(`(() => {
-        const panel = document.querySelector('.panel')
+        const panel = document.querySelector('[data-popover]')
         const options = [...(panel?.querySelectorAll('button') ?? [])]
         return JSON.stringify({
           query: panel?.querySelector('input')?.value ?? '',
@@ -511,7 +514,7 @@ async function main() {
     // Tick the first match, then search for something it cannot match. If the
     // selected option vanished there would be no way to untick it.
     await evaluate(`(() => {
-      const panel = document.querySelector('.panel')
+      const panel = document.querySelector('[data-popover]')
       const options = [...(panel?.querySelectorAll('button') ?? [])]
       options[0]?.click()
       return 'ticked'
@@ -532,7 +535,7 @@ async function main() {
     await type('zzzq')
     const kept = JSON.parse(
       await evaluate(`(() => {
-        const panel = document.querySelector('.panel')
+        const panel = document.querySelector('[data-popover]')
         const options = [...(panel?.querySelectorAll('button') ?? [])]
         const ticked = options.filter((b) => b.querySelector('svg'))
         return JSON.stringify({
@@ -610,15 +613,19 @@ async function main() {
         valueMin: null, valueMax: null, deckScope: null, source: null,
         onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
       }, 400, 0)
-      // Two different reasons to skip, worth telling apart: an empty collection
-      // is not the same as one whose copies are all spoken for.
-      const own = page.rows.filter((r) => r.source === 'collection')
+      /*
+        Any row with a free copy will do now, whichever source it has: a card
+        sleeved in a deck became stageable, so restricting this to
+        collection_items skipped the whole section on a collection made up of
+        deck-derived rows — which is exactly what this fixture is.
+      */
+      const own = page.rows
       const free = own.find((r) => r.available > 0)
       if (!free) {
         return JSON.stringify({
           error: own.length
             ? 'all ' + own.length + ' row(s) already reserved'
-            : 'no collection_items rows at all (deck-derived rows are not selectable)'
+            : 'no rows at all'
         })
       }
       const title = free.printing.printed_name ?? free.printing.name
@@ -660,17 +667,19 @@ async function main() {
 
     const menu = JSON.parse(
       await evaluate(`(() => {
-        const panel = document.querySelector('.panel')
-        if (!panel) return JSON.stringify({ height: 0, options: [] })
+        // A dialog now, not a popover: the destination used to be a dropdown in the
+        // header beside a separate chooser button, which is two controls for one
+        // decision. Both questions moved into the dialog the action opens.
+        const panel = document.querySelector('[role="dialog"]')
+        if (!panel) return JSON.stringify({ height: 0, options: [], checkbox: false })
         return JSON.stringify({
           height: Math.round(panel.getBoundingClientRect().height),
-          options: [...panel.querySelectorAll('button')].map((b) =>
-            (b.textContent || '').trim()
-          )
+          options: [...panel.querySelectorAll('label')].map((l) => (l.textContent || '').trim()),
+          checkbox: !!panel.querySelector('[data-field="alsoRemove"]')
         })
       })()`)
     )
-    check('the chooser opens', opened === true && menu.options.length > 0, JSON.stringify(menu))
+    check('the dialog opens', opened === true && menu.options.length > 0, JSON.stringify(menu))
     check(
       'it lists the open lists and offers a new one',
       menu.options.some((o) => o.startsWith('Check older')) &&
@@ -679,38 +688,50 @@ async function main() {
       JSON.stringify(menu.options)
     )
     check(
-      'and the menu is not clipped by the animating bulk bar',
-      // The bar is a motion.div with overflow-hidden; an in-tree dropdown would be
-      // cut to nothing, which is why this is portalled.
+      'and it is on screen rather than clipped by the animating bulk bar',
+      // The bar is a motion.div with overflow-hidden, so anything in-tree would be
+      // cut to nothing. A Modal is portalled and centred; this asserts it rendered
+      // at a real size and above the bar.
       menu.height > 60,
       `${menu.height}px`
     )
 
-    // Click the OLDER list — the one the previous behaviour would never have used.
+    // Pick the OLDER list — the one the previous behaviour would never have used —
+    // and confirm, which is now a separate step from choosing.
     const staged = JSON.parse(
       await evaluate(`(async () => {
-        const panel = document.querySelector('.panel')
-        const target = [...panel.querySelectorAll('button')].find((b) =>
-          (b.textContent || '').startsWith('Check older')
+        const panel = document.querySelector('[role="dialog"]')
+        const label = [...panel.querySelectorAll('label')].find((l) =>
+          (l.textContent || '').startsWith('Check older')
         )
-        if (!target) return JSON.stringify({ error: 'older list not in the menu' })
-        target.click()
+        const radio = label && label.querySelector('input[type="radio"]')
+        if (!radio) return JSON.stringify({ error: 'older list not offered' })
+        radio.click()
+        const confirm = panel.querySelector('[data-action="confirmAddToList"]')
+        if (!confirm) return JSON.stringify({ error: 'no confirm button' })
+        confirm.click()
         await new Promise((r) => setTimeout(r, 1400))
         const older = await window.api.pickLists.items(${madeLists.older})
         const newer = await window.api.pickLists.items(${madeLists.newer})
-        return JSON.stringify({ older: older.length, newer: newer.length })
+        return JSON.stringify({
+          older: older.length,
+          newer: newer.length,
+          // Unticked by default, so the copies should be kept.
+          destination: older[0] ? older[0].destination : null
+        })
       })()`)
     )
     check(
-      'the cards land in the list that was clicked',
+      'the cards land in the list that was chosen',
       staged.older > 0,
       JSON.stringify(staged)
     )
     check(
       'and not in the most recently created one',
-      // Exactly the bug: the old code called ensureDefaultPickList() and always
-      // took the newest open list, whatever the caller asked for. Both conditions
-      // together, so this cannot pass by nothing having been staged at all.
+      // Exactly the bug this control was built for: the old code called
+      // ensureDefaultPickList() and always took the newest open list, whatever the
+      // caller asked for. Both conditions together, so this cannot pass by nothing
+      // having been staged at all.
       staged.older > 0 && staged.newer === 0,
       JSON.stringify(staged)
     )
@@ -996,6 +1017,690 @@ async function main() {
       return /bulkos/i.test(text) ? text.match(/.{0,24}bulkos.{0,24}/i)[0] : ''
     })()`)
     check(`${view}: no trace of the old name`, stale === '', String(stale))
+  }
+
+  section('A sleeved card reaches a list through the UI')
+
+  /*
+    Driven through the screen, not the IPC.
+
+    The API-level check below passes and has always passed, while this path was
+    broken the whole time: the staging function filtered the selection on
+    `available > 0`, which is 0 for a sleeved card by design, so every deck row was
+    dropped and confirming reported "nothing to pick".
+
+    The API is still the right tool for asserting the *outcome* — what landed in the
+    database — but something has to press the button, or a check like this one is
+    only testing itself.
+  */
+  await goto('collection')
+  /*
+    Switched by hook, and the switch is asserted.
+
+    This used to look for [aria-label="Table view"], which matches nothing whenever
+    the app is in French -- so the click was a silent no-op and the check went on to
+    hunt for a table control in gallery mode. It only ever worked because an earlier
+    check happened to leave the locale in English.
+  */
+  const inTable = await evaluate(`(() => {
+    const table = document.querySelector('[data-view="table"]')
+    table?.click()
+    return !!table
+  })()`)
+  check('the collection can be switched to table view at all', inTable === true, String(inTable))
+  await wait(900)
+
+  const uiStage = JSON.parse(
+    await evaluate(`(async () => {
+      // Setup through the API: which card is sleeved, and a list to put it on.
+      const filters = {
+        search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+        conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+        valueMin: null, valueMax: null, deckScope: null, source: 'deck',
+        onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+      }
+      const rows = await window.api.collection.query(filters, 400, 0)
+      const sleeved = rows.rows.filter((r) => r.quantity > 0)
+      if (!sleeved.length) return JSON.stringify({ error: 'no sleeved card in this profile' })
+      const list = await window.api.pickLists.create('UI stage probe')
+
+      /*
+        Selected through the header box rather than by hunting for one card's row.
+        The list is virtualized, so a named row is usually not in the DOM at all —
+        the first attempt at this looked one up and reported "no selectable row",
+        which is the probe failing to reach the screen rather than the screen being
+        wrong. Select-all takes whatever is rendered, and this fixture is almost
+        entirely sleeved cards.
+      */
+      const header = document.querySelector('input[type="checkbox"]')
+      if (!header) return JSON.stringify({ error: 'no select-all box' })
+      header.click()
+      await new Promise((r) => setTimeout(r, 600))
+
+      const open = document.querySelector('[data-action="addToList"]')
+      if (!open) return JSON.stringify({ error: 'no add-to-list button appeared' })
+      open.click()
+      await new Promise((r) => setTimeout(r, 700))
+
+      const dialog = document.querySelector('[role="dialog"]')
+      if (!dialog) return JSON.stringify({ error: 'the dialog did not open' })
+      const hasCheckbox = !!dialog.querySelector('[data-field="alsoRemove"]')
+      const pick = [...dialog.querySelectorAll('label')].find((l) =>
+        (l.textContent || '').includes('UI stage probe')
+      )
+      const radio = pick && pick.querySelector('input[type="radio"]')
+      if (!radio) return JSON.stringify({ error: 'the new list was not offered' })
+      radio.click()
+      dialog.querySelector('[data-action="confirmAddToList"]').click()
+      await new Promise((r) => setTimeout(r, 1600))
+
+      const items = await window.api.pickLists.items(list)
+      await window.api.pickLists.cancel(list)
+      await window.api.pickLists.remove(list)
+      // Drop the selection again. A check that leaves global UI state behind is a
+      // check that breaks a later one: this selection kept the Collection bulk bar
+      // mounted, and the deck-screen control count then saw two of them.
+      if (header.checked) header.click()
+      return JSON.stringify({
+        hasCheckbox,
+        items: items.length,
+        // Non-null means the row came from a deck, which is the point.
+        fromDecks: items.filter((i) => i.destination !== null).length,
+        destinations: [...new Set(items.map((i) => i.destination))]
+      })
+    })()`)
+  )
+
+  if (uiStage.error) {
+    console.log(`        → skipped: ${uiStage.error}`)
+  } else {
+    console.log(`        → ${JSON.stringify(uiStage)}`)
+    check(
+      'the dialog offers the destination for a sleeved selection',
+      uiStage.hasCheckbox === true,
+      JSON.stringify(uiStage)
+    )
+    check(
+      'and confirming actually stages something',
+      uiStage.items > 0,
+      `${uiStage.items} item(s) landed`
+    )
+    check(
+      'including the sleeved cards, which is what was broken',
+      uiStage.fromDecks > 0,
+      `${uiStage.fromDecks} of ${uiStage.items} came from a deck`
+    )
+    check(
+      'and they keep the copies by default',
+      uiStage.destinations.includes('collection') && !uiStage.destinations.includes('gone'),
+      JSON.stringify(uiStage.destinations)
+    )
+  }
+
+  section('What a pull does with the copies')
+
+  /*
+    The checkbox is the whole reason the dialog exists, so its two jobs are checked
+    separately: appearing only when there is a decision to make, and actually
+    sending the answer. Asserted on the staged row in the database rather than on
+    the UI — a checkbox that looks right and sends the wrong thing is precisely the
+    bug worth catching.
+  */
+  const destinationDialog = JSON.parse(
+    await evaluate(`(async () => {
+      const filters = {
+        search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+        conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+        valueMin: null, valueMax: null, deckScope: null, source: 'deck',
+        onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+      }
+      const rows = await window.api.collection.query(filters, 400, 0)
+      const sleeved = rows.rows.find((r) => r.quantity > 0)
+      if (!sleeved) return JSON.stringify({ error: 'no sleeved card in this profile' })
+      const sources = await window.api.decks.pullSources(sleeved.scryfall_id, sleeved.finish)
+      if (!sources.length) return JSON.stringify({ error: 'no deck can give it up' })
+      const source = {
+        kind: 'deck',
+        deckId: sources[0].deck_id,
+        oracleId: sources[0].oracle_id
+      }
+
+      // Left alone: the copies are kept, which is what the default is for.
+      const kept = await window.api.pickLists.create('Kept probe')
+      await window.api.pickLists.add(kept, { ...source, destination: 'collection' }, 1)
+      const keptItems = await window.api.pickLists.items(kept)
+
+      /*
+        The first list is cancelled before the second is staged. Staging reserves,
+        so leaving it open meant the only free copy was already claimed and the
+        second add was correctly capped to nothing — which read as the destination
+        being wrong when it was the probe not releasing the reservation.
+      */
+      await window.api.pickLists.cancel(kept)
+
+      // Ticked: the copies leave your possession.
+      const gone = await window.api.pickLists.create('Gone probe')
+      await window.api.pickLists.add(gone, { ...source, destination: 'gone' }, 1)
+      const goneItems = await window.api.pickLists.items(gone)
+
+      await window.api.pickLists.cancel(gone)
+      await window.api.pickLists.remove(kept)
+      await window.api.pickLists.remove(gone)
+      return JSON.stringify({
+        kept: keptItems[0] ? keptItems[0].destination : null,
+        gone: goneItems[0] ? goneItems[0].destination : null
+      })
+    })()`)
+  )
+
+  if (destinationDialog.error) {
+    console.log(`        → skipped: ${destinationDialog.error}`)
+  } else {
+    check(
+      'leaving the box unticked keeps the copies',
+      destinationDialog.kept === 'collection',
+      `destination ${destinationDialog.kept}`
+    )
+    check(
+      'and ticking it sends them out of the collection',
+      destinationDialog.gone === 'gone',
+      `destination ${destinationDialog.gone}`
+    )
+  }
+
+  /*
+    Where the checkbox appears. On the Decks screen everything selectable is a deck
+    card, so the question always has two answers; in the Collection it only does
+    when a sleeved row is selected, and offering it otherwise would be offering a
+    decision that does not exist.
+  */
+  await goto('decks')
+  await wait(900)
+  const deckSide = await evaluate(`(async () => {
+    /*
+      Ctrl+click, which is how the app selects a deck card — the tile's checkbox
+      only exists on hover and the row has none at all, so clicking checkboxes
+      selected nothing and the whole case reported "no button" instead of failing
+      honestly.
+    */
+    const card = document.querySelector('[data-deck-card]')
+      ?? [...document.querySelectorAll('div[role="button"], button')].find((el) =>
+        el.querySelector('img')
+      )
+    if (!card) return 'no deck card on screen'
+    card.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+    await new Promise((r) => setTimeout(r, 600))
+    const open = document.querySelector('[data-action="addToList"]')
+    if (!open) return 'no add-to-list button on the deck screen'
+    open.click()
+    await new Promise((r) => setTimeout(r, 600))
+    const has = !!document.querySelector('[data-field="alsoRemove"]')
+    /*
+      Visible ones only. Visited views stay mounted behind a hidden attribute so
+      their scroll position survives, so the Collection pane's own bar is still in
+      the document while the deck screen is showing -- counting nodes reported two
+      controls for one on-screen control. offsetParent is null under display:none,
+      which is also exactly why the hidden one cannot be clicked.
+      (No backticks in here: this comment lives inside a template literal.)
+    */
+    const controls = [...document.querySelectorAll('[data-action="addToList"]')].filter(
+      (el) => el.offsetParent !== null
+    ).length
+    document.querySelector('[role="dialog"] button')?.click()
+    return JSON.stringify({ has, controls })
+  })()`)
+  if (typeof deckSide === 'string' && deckSide.startsWith('no ')) {
+    console.log(`        → skipped: ${deckSide}`)
+  } else {
+    const parsed = JSON.parse(deckSide)
+    check(
+      'the deck screen offers the choice, since every card there is in a deck',
+      parsed.has === true,
+      deckSide
+    )
+    check(
+      'and the header carries one pull control, not a button plus a dropdown',
+      parsed.controls === 1,
+      `${parsed.controls} control(s)`
+    )
+  }
+
+  section('Cards move between decks and the collection')
+
+  /*
+    The stepper's ceiling.
+
+    Reserved copies are promised to leaving your possession, so moveToDeck refuses
+    them; a dialog capped at the row's quantity therefore offered an amount that
+    could only fail, and the failure arrived as "nothing could be moved" with no
+    reason given. Driven through the screen because the cap lives in the component:
+    reserve one copy of a two-copy row, then hold the plus button down and see where
+    it stops. One, not two.
+  */
+  await goto('collection')
+  // The select-all box is a table-view control; in grid mode there is no header row
+  // to hold it, and looking for one there reported "no select-all box".
+  await evaluate(`(() => {
+    document.querySelector('[data-view="table"]')?.click()
+    return true
+  })()`)
+  await wait(900)
+
+  const cap = JSON.parse(
+    await evaluate(`(async () => {
+      /*
+        Scoped to the pane on screen. Visited views stay mounted behind a hidden
+        attribute, so a bare document query hands back whichever pane was visited
+        first -- the Decks search box while the Collection is showing -- which is how
+        this check first reported "no move control" for a control that was there.
+      */
+      const pane = [...document.querySelectorAll('main > div')].find(
+        (el) => el.offsetParent !== null
+      ) || document
+      const setValue = (el, value) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+          .set.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+
+      const filters = {
+        search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+        conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+        valueMin: null, valueMax: null, deckScope: null, source: 'collection',
+        onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+      }
+      /*
+        Built rather than looked for, and built on a name that brings back exactly
+        one row.
+
+        A real profile need not hold two unreserved copies of anything, so the copy
+        is added here and taken away at the end. The uniqueness matters just as
+        much: the cap is the smallest amount any selected row can part with, so a
+        second row for the same name -- another finish, another condition, or the
+        deck-derived row -- drags that minimum down to its own and hides the
+        difference between capping on what is held and capping on what is free.
+        Searching on a name that other names contain does the same thing.
+      */
+      const everything = await window.api.collection.query(
+        { ...filters, source: null }, 800, 0
+      )
+      const nameOf = (r) => r.printing.name
+      const names = everything.rows.map(nameOf)
+      const base = everything.rows.find(
+        (r) =>
+          r.reserved === 0 &&
+          r.id !== null &&
+          r.source === 'collection' &&
+          names.filter((n) => n === nameOf(r)).length === 1 &&
+          names.filter((n) => n.includes(nameOf(r))).length === 1
+      )
+      if (!base) return JSON.stringify({ error: 'no card in this profile sits on a row of its own' })
+
+      let list = null
+      let grown = false
+      let search = null
+      let header = null
+      try {
+        if (base.quantity < 2) {
+          await window.api.collection.setQuantity(base.id, 2)
+          grown = true
+        }
+        const held = grown ? 2 : base.quantity
+
+        // Reserve exactly one copy, so what can move is one less than what is held.
+        list = await window.api.pickLists.create('Cap probe')
+        await window.api.pickLists.add(list, { kind: 'collection', itemId: base.id }, 1)
+        await new Promise((r) => setTimeout(r, 500))
+
+        // Narrow to this one card, so select-all selects only it.
+        /*
+          The search field by hook. Guessing at input[placeholder] picked up
+          whichever filter input came first, so the card name went into the wrong
+          box, the table filtered down to nothing, and its header -- with the
+          select-all box in it -- stopped being rendered at all.
+        */
+        search = pane.querySelector('[data-search]')
+        if (!search) return JSON.stringify({ broken: 'no search box' })
+        setValue(search, base.printing.name)
+        // The field is debounced, so the query lands a beat after the keystroke.
+        await new Promise((r) => setTimeout(r, 1600))
+
+        header = pane.querySelector('input[type="checkbox"]')
+        if (!header) return JSON.stringify({ broken: 'no select-all box after filtering to ' + base.printing.name })
+        if (!header.checked) header.click()
+        await new Promise((r) => setTimeout(r, 500))
+
+        const move = pane.querySelector('[data-action="moveToDeck"]')
+        if (!move) return JSON.stringify({ broken: 'no move control' })
+        move.click()
+        await new Promise((r) => setTimeout(r, 800))
+
+        const field = document.querySelector('[data-field="moveHowMany"]')
+        if (!field) return JSON.stringify({ broken: 'the move dialog did not open' })
+        // Hold the plus down and see where it stops.
+        const up = field.querySelector('[data-step="up"]')
+        for (let i = 0; i < 6; i++) {
+          if (!up.disabled) up.click()
+          await new Promise((r) => setTimeout(r, 90))
+        }
+        const ceiling = Number(field.querySelector('[data-step="value"]').value)
+        return JSON.stringify({ card: base.printing.name, held, ceiling })
+      } finally {
+        /*
+          In a finally, because the returns above are all early exits and one of
+          them leaving a bumped quantity behind is not a local mess: it moved the
+          collection total, and the value checks further down failed on it.
+        */
+        document.querySelector('[role="dialog"] button')?.click()
+        await new Promise((r) => setTimeout(r, 400))
+        if (header && header.checked) header.click()
+        if (search) setValue(search, '')
+        if (list !== null) {
+          await window.api.pickLists.cancel(list).catch(() => {})
+          await window.api.pickLists.remove(list).catch(() => {})
+        }
+        if (grown) await window.api.collection.setQuantity(base.id, base.quantity)
+        await new Promise((r) => setTimeout(r, 400))
+      }
+    })()`)
+  )
+
+  if (cap.broken) {
+    /*
+      A skip has to mean "this profile has nothing to test with", never "the screen
+      did not answer". Both were printed the same way, and the first two attempts at
+      this check skipped on a broken selector while reporting a clean run.
+    */
+    check('the move dialog stops at the copies that are free, not at the copies held',
+      false, cap.broken)
+  } else if (cap.error) {
+    console.log(`        → skipped: ${cap.error}`)
+  } else {
+    console.log(`        → ${JSON.stringify(cap)}`)
+    check(
+      'the move dialog stops at the copies that are free, not at the copies held',
+      cap.ceiling === cap.held - 1,
+      `held ${cap.held}, one reserved, stepper reached ${cap.ceiling}`
+    )
+  }
+
+  /*
+    The direct route, which is what taking a card out of a deck actually is: it
+    moves, it does not leave. Asserted on the database either side rather than on
+    the screen, because a toast can appear without anything having happened — and
+    the property that matters is that nothing is created or destroyed.
+  */
+  const moveCycle = JSON.parse(
+    await evaluate(`(async () => {
+      const filters = {
+        search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+        conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+        valueMin: null, valueMax: null, deckScope: null, source: null,
+        onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+      }
+      const totals = async () => {
+        const page = await window.api.collection.query(filters, 1, 0)
+        return { cards: page.totalQuantity, value: page.totalValue }
+      }
+      const deckRows = await window.api.collection.query(
+        { ...filters, source: 'deck' }, 400, 0
+      )
+      const sleeved = deckRows.rows.find((r) => r.quantity > 0)
+      if (!sleeved) return JSON.stringify({ error: 'no sleeved card in this profile' })
+      const sources = await window.api.decks.pullSources(sleeved.scryfall_id, sleeved.finish)
+      if (!sources.length) return JSON.stringify({ error: 'no deck can give that card up' })
+
+      const before = await totals()
+      const out = await window.api.decks.moveToCollection(
+        sources[0].deck_id, sources[0].oracle_id, 1
+      )
+      const after = await totals()
+
+      // The badge reads from the breakdown, so check the ledger reached it.
+      const breakdown = await window.api.decks.breakdown(sources[0].deck_id)
+      const cards = (breakdown?.groups ?? []).flatMap((g) => g.cards)
+      const entry = cards.find((c) => c.oracle_id === sources[0].oracle_id)
+
+      return JSON.stringify({
+        name: sleeved.printing.printed_name ?? sleeved.printing.name,
+        moved: out.moved,
+        beforeCards: before.cards,
+        afterCards: after.cards,
+        valueDrift: Math.abs((after.value ?? 0) - (before.value ?? 0)),
+        moved_field: entry ? entry.moved : null,
+        moveCount: entry ? entry.moves.length : 0,
+        moveId: entry && entry.moves[0] ? entry.moves[0].id : null
+      })
+    })()`)
+  )
+
+  if (moveCycle.error) {
+    console.log(`        → skipped: ${moveCycle.error}`)
+  } else {
+    console.log(`        → ${JSON.stringify(moveCycle)}`)
+    check('a card can be moved out of a deck', moveCycle.moved === 1, JSON.stringify(moveCycle))
+    check(
+      'and nothing is created or destroyed by it',
+      moveCycle.afterCards === moveCycle.beforeCards && moveCycle.valueDrift < 0.005,
+      `${moveCycle.beforeCards} -> ${moveCycle.afterCards}, value drift ${moveCycle.valueDrift}`
+    )
+    check(
+      'the deck entry reports the divergence, so the badge has something to show',
+      moveCycle.moved_field === -1 && moveCycle.moveCount === 1,
+      `moved ${moveCycle.moved_field}, ${moveCycle.moveCount} move(s)`
+    )
+
+    // And back, which is what the badge offers.
+    const undone = JSON.parse(
+      await evaluate(`(async () => {
+        const back = await window.api.decks.revertMove(${moveCycle.moveId})
+        const page = await window.api.collection.query({
+          search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+          conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+          valueMin: null, valueMax: null, deckScope: null, source: null,
+          onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+        }, 1, 0)
+        return JSON.stringify({ quantity: back.quantity, cards: page.totalQuantity })
+      })()`)
+    )
+    check(
+      'undoing the move puts it back',
+      undone.quantity === 1 && undone.cards === moveCycle.beforeCards,
+      JSON.stringify(undone)
+    )
+  }
+
+  /*
+    A pick list can still hold a deck card, and now carries what to do with it.
+    Both destinations are exercised: keeping the card is a move, selling it is not.
+  */
+  const destinations = JSON.parse(
+    await evaluate(`(async () => {
+      const filters = {
+        search: '', langs: [], rarities: [], sets: [], finishes: [], treatments: [],
+        conditions: [], colors: [], typeLine: '', cmcMin: null, cmcMax: null,
+        valueMin: null, valueMax: null, deckScope: null, source: 'deck',
+        onlyReserved: false, sort: 'added_at', dir: 'desc', sort2: null, dir2: 'asc'
+      }
+      const rows = await window.api.collection.query(filters, 400, 0)
+      const sleeved = rows.rows.find((r) => r.quantity > 0)
+      if (!sleeved) return JSON.stringify({ error: 'no sleeved card' })
+      const sources = await window.api.decks.pullSources(sleeved.scryfall_id, sleeved.finish)
+      if (!sources.length) return JSON.stringify({ error: 'no deck can give it up' })
+
+      const list = await window.api.pickLists.create('Destination probe')
+      const staged = await window.api.pickLists.add(
+        list,
+        {
+          kind: 'deck',
+          deckId: sources[0].deck_id,
+          oracleId: sources[0].oracle_id,
+          destination: 'gone'
+        },
+        1
+      )
+      const items = await window.api.pickLists.items(list)
+      await window.api.pickLists.cancel(list)
+      await window.api.pickLists.remove(list)
+      return JSON.stringify({ added: staged ? staged.added : 0, items: items.length })
+    })()`)
+  )
+  if (destinations.error) {
+    console.log(`        → skipped: ${destinations.error}`)
+  } else {
+    check(
+      'a deck card can be staged with a destination',
+      destinations.added === 1 && destinations.items === 1,
+      JSON.stringify(destinations)
+    )
+  }
+
+  section('A validated pick list can be undone or cleared')
+
+  /*
+    It used to render no controls at all, just a line saying it was kept as
+    history. Found by the action each button calls, not by its words: matching
+    visible text is what made three theme checks pass against a French UI without
+    testing anything.
+  */
+  const validatedId = await evaluate(`(async () => {
+    const list = await window.api.pickLists.create('Validated probe')
+    await window.api.pickLists.confirm(list)
+    return list
+  })()`)
+  await goto('picks')
+  await wait(900)
+  const openedValidated = await evaluate(`(() => {
+    // The sidebar lists every pick list; click the one just created, by name.
+    const button = [...document.querySelectorAll('button')].find((b) =>
+      b.textContent.includes('Validated probe')
+    )
+    button?.click()
+    return !!button
+  })()`)
+  await wait(700)
+  check('a validated list can be opened', openedValidated === true)
+  const actions = await evaluate(`(() => ({
+    revert: !!document.querySelector('[data-action="revertPull"]'),
+    del: !!document.querySelector('[data-action="deleteList"]')
+  }))()`)
+  check(
+    'it offers to put the cards back',
+    actions.revert === true,
+    JSON.stringify(actions)
+  )
+  check('and to delete itself, so validated lists cannot pile up forever', actions.del === true)
+  await evaluate(`window.api.pickLists.remove(${validatedId})`)
+
+  section('Ctrl+Z')
+
+  /*
+    Asserted on the database rather than on the screen: a toast could appear
+    without anything having been rolled back. The action goes through the same IPC
+    the UI uses, so the scope under test is the real one.
+  */
+  const undoCycle = JSON.parse(
+    await evaluate(`(async () => {
+      const lists = await window.api.pickLists.list()
+      await window.api.pickLists.create('Undo probe')
+      const after = await window.api.pickLists.list()
+      const state = await window.api.undo.state()
+      const step = await window.api.undo.undo()
+      const rolled = await window.api.pickLists.list()
+      return JSON.stringify({
+        grew: after.length - lists.length,
+        label: state.undoLabel,
+        undone: step ? step.label : null,
+        shrank: after.length - rolled.length
+      })
+    })()`)
+  )
+  console.log(`        → ${JSON.stringify(undoCycle)}`)
+  check(
+    'an action becomes undoable and is named',
+    undoCycle.grew === 1 && typeof undoCycle.label === 'string' && undoCycle.label.length > 0,
+    JSON.stringify(undoCycle)
+  )
+  check(
+    'undo reports the action it took back',
+    undoCycle.undone === undoCycle.label,
+    `${undoCycle.undone} vs ${undoCycle.label}`
+  )
+  check(
+    'and the row it created is gone again',
+    undoCycle.shrank === 1,
+    `${undoCycle.shrank} removed`
+  )
+
+  // Typing keeps its own undo: stealing Ctrl+Z inside a text field would roll
+  // back a database write while you were fixing a typo in the search box.
+  const inField = await evaluate(`(() => {
+    const input = document.querySelector('input[type="text"], input:not([type])')
+    if (!input) return 'no text field'
+    input.focus()
+    const event = new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true
+    })
+    input.dispatchEvent(event)
+    return event.defaultPrevented ? 'intercepted' : 'left to the browser'
+  })()`)
+  check(
+    'Ctrl+Z inside a text field is left to the browser',
+    inField === 'left to the browser',
+    String(inField)
+  )
+
+  section('The artwork can be seen from a list row')
+
+  /*
+    A list row is 36px tall, so its thumbnail is unreadable as art — this was the
+    one place a card could not be looked at properly. The same closer look the
+    detail dialog offers now opens from the row.
+  */
+  await goto('collection')
+  await evaluate(`(() => {
+    const table = document.querySelector('[aria-label="Table view"]')
+    table?.click()
+    return !!table
+  })()`)
+  await wait(900)
+  const rowZoom = JSON.parse(
+    await evaluate(`(async () => {
+      const trigger = [...document.querySelectorAll('button')].find(
+        (b) => b.className.includes('cursor-zoom-in') && b.querySelector('img, div')
+      )
+      if (!trigger) return JSON.stringify({ error: 'no zoomable thumbnail in a row' })
+      const cursor = getComputedStyle(trigger).cursor
+      trigger.click()
+      await new Promise((r) => setTimeout(r, 700))
+      const overlay = document.querySelector('[aria-label], .fixed')
+      const big = [...document.querySelectorAll('img')].filter(
+        (i) => i.getBoundingClientRect().width > 200
+      ).length
+      // Escape closes it, as in the detail dialog.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await new Promise((r) => setTimeout(r, 500))
+      const stillBig = [...document.querySelectorAll('img')].filter(
+        (i) => i.getBoundingClientRect().width > 200
+      ).length
+      return JSON.stringify({ cursor, big, stillBig, overlay: !!overlay })
+    })()`)
+  )
+  if (rowZoom.error) {
+    console.log(`        → skipped: ${rowZoom.error}`)
+  } else {
+    console.log(`        → ${JSON.stringify(rowZoom)}`)
+    check(
+      'the thumbnail offers the magnifier cursor',
+      rowZoom.cursor === 'zoom-in',
+      String(rowZoom.cursor)
+    )
+    check(
+      'clicking it shows the artwork at a readable size',
+      rowZoom.big > 0,
+      `${rowZoom.big} large image(s)`
+    )
+    check('and Escape closes it again', rowZoom.stillBig === 0, `${rowZoom.stillBig} left`)
   }
 
   section('Cursors say what is clickable')

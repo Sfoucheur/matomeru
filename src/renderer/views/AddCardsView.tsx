@@ -42,7 +42,7 @@ export default function AddCardsView({ active }: ViewProps): React.ReactElement 
       <header className="shrink-0 px-5 pb-3 pt-4">
         <h1 className="text-lg font-semibold tracking-tight text-ink-50">{t('add.title')}</h1>
         <p className="mt-0.5 text-xs text-ink-400">
-          Every printing is cached locally as you add it, so the card stays browsable offline.
+          {t('add.cacheNote')}
         </p>
       </header>
 
@@ -428,7 +428,7 @@ function PrintingTile({
       </div>
 
       {printing.owned > 0 && (
-        <span className="numeric absolute left-1.5 top-1.5 rounded bg-good/85 px-1.5 py-0.5 text-[9px] font-bold text-ink-950">
+        <span className="numeric absolute left-1.5 top-1.5 rounded bg-good px-1.5 py-0.5 text-[9px] font-bold text-ink-950">
           {t('add.owned', { count: printing.owned })}
         </span>
       )}
