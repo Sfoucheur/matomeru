@@ -1,0 +1,9 @@
+
+node_modules/
+out/
+dist/
+.verify.cjs
+.seed.cjs
+.probe.cjs
+*.log
+.DS_Store

@@ -1,0 +1,264 @@
+@import 'tailwindcss';
+
+/*
+  Tailwind v4 keeps design tokens in CSS rather than a config file. Everything
+  below becomes a utility: `--color-ink-800` gives `bg-ink-800`, `text-ink-800`,
+  `border-ink-800`, and so on.
+*/
+@theme {
+  /* Neutral shell — dark-first, cool slate rather than pure grey. */
+  --color-ink-950: #07090d;
+  --color-ink-900: #0b0d12;
+  --color-ink-850: #10131a;
+  --color-ink-800: #151922;
+  --color-ink-750: #1b202b;
+  --color-ink-700: #232935;
+  --color-ink-600: #313947;
+  --color-ink-500: #4a5464;
+  --color-ink-400: #6b7688;
+  --color-ink-300: #9aa4b4;
+  --color-ink-200: #c3cad6;
+  --color-ink-100: #e4e8ef;
+  --color-ink-50: #f4f6fa;
+
+  /* Accent — warm gold, the one colour that carries brand weight. */
+  --color-gold-600: #b8873a;
+  --color-gold-500: #d1a24b;
+  --color-gold-400: #e0b768;
+  --color-gold-300: #edd08f;
+
+  /* MTG mana colours, for colour-identity pips and filters. */
+  --color-mana-w: #f8f2dc;
+  --color-mana-u: #4a90d9;
+  --color-mana-b: #7a6b8f;
+  --color-mana-r: #e0655a;
+  --color-mana-g: #58a55c;
+  --color-mana-c: #a8a5a0;
+
+  /* Rarity — matches the pip colours players already recognise. */
+  --color-rarity-common: #a8adb8;
+  --color-rarity-uncommon: #9fb4c4;
+  --color-rarity-rare: #d4b158;
+  --color-rarity-mythic: #e07a3c;
+  --color-rarity-special: #b072c9;
+
+  /* Semantic */
+  --color-good: #4ba872;
+  --color-warn: #d99a3c;
+  --color-bad: #d4574e;
+
+  /*
+    Segoe UI carries no Japanese glyphs, and this app shows plenty: the ま in the
+    sidebar mark, and the names of every `ja` printing in the collection. Naming
+    the fallback makes that deliberate instead of leaving it to per-character
+    substitution, which varies by machine.
+  */
+  --font-sans: 'Segoe UI', 'Yu Gothic UI', Meiryo, system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+
+  --radius-card: 0.625rem;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/*
+  Light theme. Tokens are redefined rather than restyled per component, so every
+  utility follows automatically.
+*/
+:root:not(.dark) {
+  --color-ink-950: #ffffff;
+  --color-ink-900: #f7f8fb;
+  --color-ink-850: #f1f3f8;
+  --color-ink-800: #e9ecf3;
+  --color-ink-750: #dfe4ed;
+  --color-ink-700: #d2d8e4;
+  --color-ink-600: #b8c0d0;
+  --color-ink-500: #8b95a8;
+  --color-ink-400: #6c7688;
+  --color-ink-300: #4d566a;
+  --color-ink-200: #333c4d;
+  --color-ink-100: #1d2532;
+  --color-ink-50: #0d1218;
+  --color-gold-500: #9a6f22;
+  --color-gold-400: #b8873a;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-ink-700);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-ink-900);
+    color: var(--color-ink-100);
+    font-family: var(--font-sans);
+    /* This is a desktop app, not a document — the page itself never scrolls. */
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Slim scrollbars that match the shell instead of the OS default. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-ink-700);
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-600);
+    background-clip: content-box;
+  }
+
+  /* Keep focus visible for keyboard users without ringing every mouse click. */
+  :focus-visible {
+    outline: 2px solid var(--color-gold-500);
+    outline-offset: 2px;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Number inputs: the spinners fight the custom steppers. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+}
+
+/*
+  Layer scale. Keep these in one place: the reason dropdowns once rendered behind
+  the card list is that a z-index was chosen locally, inside an ancestor whose
+  `backdrop-filter` had created its own stacking context and trapped it.
+
+    content              auto
+    sticky bars          z-10
+    popovers/dropdowns   45   (portalled to <body> — see components/Popover.tsx)
+    modal                50
+    popovers in a modal  55   (Popover reads this off [role="dialog"] itself)
+    toasts               60
+
+  Anything floating must be portalled AND take its z-index from this scale.
+*/
+/*
+  Cursors. Tailwind v4's preflight sets none — it has no `cursor: pointer` rule at
+  all — so every button in the app hovered with the plain arrow and nothing
+  looked clickable. Declared here rather than as 75 sprinkled `cursor-pointer`
+  classes, so the next control added is right without anyone remembering.
+
+  `label:has()` is deliberate: many labels here wrap a text input, which must keep
+  its I-beam, so a blanket rule on `label` would be wrong.
+
+  The two cursors that are not `pointer` live with the components that own them —
+  `zoom-in` on the card artwork, `zoom-out` on the closer-look backdrop.
+*/
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  select:not(:disabled),
+  input[type='checkbox']:not(:disabled),
+  input[type='radio']:not(:disabled),
+  label:has(input[type='checkbox']:not(:disabled)),
+  label:has(input[type='radio']:not(:disabled)) {
+    cursor: pointer;
+  }
+
+  :disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  .panel {
+    background-color: var(--color-ink-850);
+    border: 1px solid var(--color-ink-700);
+    border-radius: var(--radius-card);
+  }
+
+  .field {
+    background-color: var(--color-ink-800);
+    border: 1px solid var(--color-ink-700);
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.65rem;
+    transition: border-color 140ms var(--ease-out-quart);
+  }
+  .field:hover {
+    border-color: var(--color-ink-600);
+  }
+  .field:focus,
+  .field:focus-within {
+    border-color: var(--color-gold-500);
+  }
+
+  /* The shimmer used while Scryfall requests are in flight. */
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--color-ink-800);
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--color-ink-600) 55%, transparent),
+      transparent
+    );
+    transform: translateX(-100%);
+    animation: shimmer 1.4s infinite;
+  }
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  /* Tabular figures keep value columns from jittering as numbers change. */
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+  Respect the OS setting. The in-app toggle adds `.reduce-motion` to <html>,
+  which is handled the same way.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}

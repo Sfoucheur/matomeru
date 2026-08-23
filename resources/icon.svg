@@ -1,0 +1,31 @@
+<!--
+  Matomeru's launcher icon: the same roundel as Tadami, with ま for タ.
+
+  Geometry decoded from Tadami's ic_launcher_round.png (144x144) rather than
+  eyeballed, then scaled x7.111 to 1024:
+
+    blue disc   #2E83BE  r 66   -> 469
+    red ring    #CC2E2E  r 40.5..49.5 -> a r-320 circle stroked 64 wide
+    white disc  #FDFDFD  r 40   -> 288
+    glyph       black, ~26% of the canvas in ink -> ~270
+
+  The blue disc sits on transparency with a small margin, as the original does,
+  so Windows can round or mask it without clipping the artwork.
+
+  Rasterised by scripts/make-icon.cjs — keep this file as the source of truth.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <circle cx="512" cy="512" r="469" fill="#2E83BE" />
+  <circle cx="512" cy="512" r="288" fill="#FDFDFD" />
+  <circle cx="512" cy="512" r="320" fill="none" stroke="#CC2E2E" stroke-width="64" />
+  <text
+    x="512"
+    y="512"
+    text-anchor="middle"
+    dominant-baseline="central"
+    font-family="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', Meiryo, 'MS Gothic', sans-serif"
+    font-weight="900"
+    font-size="360"
+    fill="#000000"
+  >ま</text>
+</svg>

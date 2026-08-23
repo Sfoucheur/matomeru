@@ -1,0 +1,23 @@
+appId: com.sebas.matomeru
+productName: Matomeru
+directories:
+  buildResources: resources
+  output: dist
+files:
+  - out/**
+  - package.json
+  - '!**/.vite/**'
+asarUnpack:
+  # node-sqlite3-wasm loads its .wasm from disk at runtime; it cannot live inside the asar.
+  - '**/node_modules/node-sqlite3-wasm/**'
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Matomeru
