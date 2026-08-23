@@ -354,47 +354,37 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
  * download would add anything.
  */
 /**
- * Setting up the Drive connection, and the two actions that use it.
+ * The Drive connection, and the three things you can do with it.
  *
- * The credentials are the user's own OAuth client: nothing is compiled into this
- * app, so there is no shared secret and no account of ours in the path. That is the
- * trade this panel embodies — a one-time visit to Google Cloud, in exchange for the
- * app never holding anyone else's credential and never needing a desktop sync
- * client installed.
+ * Connect, name the folder, back up now, restore. Nothing to configure: the OAuth
+ * client is compiled into the build, so the panel asks for no credential and cannot
+ * display one — `backup:status` returns none by construction.
  *
- * The secret field writes but never reads: `backup:status` returns no credential at
- * all, so there is nothing to populate it with, and an empty box is the honest
- * representation of a value this screen cannot see.
+ * The folder is named rather than browsed to. Browsing needs either Google's Picker,
+ * with a second credential and a window of its own, or the full `drive` scope, which
+ * is restricted and would have the consent screen announce that this app can read
+ * everything in your Drive. Naming it costs a text field and keeps the narrow scope.
  */
 function BackupPanel(): React.ReactElement {
   const t = useT()
   const toast = useApp((s) => s.toast)
   const openBackup = useApp((s) => s.openBackup)
   const [status, setStatus] = useState<BackupStatus | null>(null)
-  const [clientId, setClientId] = useState('')
-  const [clientSecret, setClientSecret] = useState('')
+  const [folder, setFolder] = useState('')
   const [busy, setBusy] = useState(false)
 
   const refresh = async (): Promise<void> => {
     const next = await guard(() => window.api.backup.status())
-    if (next) setStatus(next)
+    if (!next) return
+    setStatus(next)
+    // The field follows the stored name, so it never shows something that is not
+    // what the next backup will actually use.
+    setFolder(next.folderName)
   }
 
   useEffect(() => {
     void refresh()
   }, [])
-
-  const saveCreds = async (): Promise<void> => {
-    const ok = await guard(() =>
-      window.api.backup.setCredentials(clientId.trim(), clientSecret.trim())
-    )
-    if (!ok) return
-    // Cleared once stored: it is sealed with safeStorage from here on, and leaving
-    // it sitting in a form field would be the one place it stayed readable.
-    setClientSecret('')
-    toast('success', t('settings.backupCredsSaved'))
-    void refresh()
-  }
 
   const connect = async (): Promise<void> => {
     setBusy(true)
@@ -412,17 +402,13 @@ function BackupPanel(): React.ReactElement {
     void refresh()
   }
 
-  const chooseFolder = async (): Promise<void> => {
-    setBusy(true)
-    const result = await guard(() => window.api.backup.pickFolder())
-    setBusy(false)
-    if (!result) return
-    // Cancelling is not a failure, and should not be reported as one.
-    if (result.cancelled || !result.folder) {
-      toast('info', t('backup.pickKept'))
-      return
-    }
-    toast('success', t('backup.folderChosen', { name: result.folder.name }))
+  const saveFolder = async (): Promise<void> => {
+    const saved = await guard(() => window.api.backup.setFolderName(folder))
+    if (saved === undefined) return
+    // Echoed back from the main process rather than assumed: a blank entry falls back
+    // to the default there, and the field should show what was actually stored.
+    setFolder(saved)
+    toast('success', t('settings.backupFolderSaved', { name: saved }))
     void refresh()
   }
 
@@ -451,7 +437,8 @@ function BackupPanel(): React.ReactElement {
       {/* Only a build with no client of its own has to explain itself. When one is
           compiled in there is nothing to set up, and saying so would be noise. */}
       {status !== null && !status.bundled && (
-        <p className="mt-2 text-[11px] leading-relaxed text-warn">
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-warn">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
           {t('settings.backupNoClient')}
         </p>
       )}
@@ -502,22 +489,39 @@ function BackupPanel(): React.ReactElement {
 
       {/* Where the snapshot lands. Named even before a choice is made, because
           "somewhere in your Drive" is not something a backup should leave vague. */}
-      <div className="mt-3 flex items-start justify-between gap-3" data-field="backupFolder">
-        <span className="text-[11px] text-ink-400">
-          {t('settings.backupFolder')}
-          <span className="mt-0.5 block text-sm text-ink-200">
-            {status?.folderName ?? t('settings.backupFolderOwn')}
-          </span>
+      {/*
+        Editable whether or not you are connected: a folder name needs no token, and a
+        control greyed out for reasons it does not explain is worse than no control.
+      */}
+      <label
+        className="mt-3 flex flex-col gap-1.5 text-[11px] text-ink-400"
+        data-field="backupFolder"
+      >
+        {t('settings.backupFolder')}
+        <div className="flex gap-2">
+          <input
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void saveFolder()
+            }}
+            placeholder={t('settings.backupFolderPlaceholder')}
+            spellCheck={false}
+            className="field min-w-0 flex-1 text-sm outline-none placeholder:text-ink-600"
+            data-field="backupFolderName"
+          />
+          <Button
+            icon={<FolderOpen size={13} />}
+            onClick={() => void saveFolder()}
+            data-action="backupSaveFolder"
+          >
+            {t('common.save')}
+          </Button>
+        </div>
+        <span className="text-[11px] leading-relaxed text-ink-500">
+          {t('settings.backupFolderHint')}
         </span>
-        <Button
-          icon={<FolderOpen size={13} />}
-          onClick={() => void chooseFolder()}
-          disabled={busy || status?.connected !== true || status?.canPickFolder !== true}
-          data-action="backupChooseFolder"
-        >
-          {t('settings.backupChooseFolder')}
-        </Button>
-      </div>
+      </label>
 
       <p className="mt-3 text-[11px] text-ink-500">
         {status?.lastBackupAt
@@ -525,51 +529,6 @@ function BackupPanel(): React.ReactElement {
           : t('backup.never')}
       </p>
 
-      {/*
-        The credentials, folded away.
-
-        They are the escape hatch — a build with no client of its own, or someone who
-        would rather authorise against their own Google project than the one this app
-        was built with. Kept out of the way rather than removed, because the path is
-        real and is what the checks exercise.
-      */}
-      <details className="mt-3 group" data-field="backupOwnClient">
-        <summary className="cursor-pointer text-[11px] text-ink-500 transition-colors
-          hover:text-ink-300">
-          {t('settings.backupOwnClient')}
-        </summary>
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
-          {t('settings.backupSetup')}
-        </p>
-        <div className="mt-2 grid gap-2">
-          <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
-            {t('settings.backupClientId')}
-            <input
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              spellCheck={false}
-              className="field min-w-0 text-sm outline-none placeholder:text-ink-600"
-              data-field="backupClientId"
-            />
-          </label>
-          <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
-            {t('settings.backupClientSecret')}
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={clientSecret}
-                onChange={(e) => setClientSecret(e.target.value)}
-                spellCheck={false}
-                className="field min-w-0 flex-1 text-sm outline-none placeholder:text-ink-600"
-                data-field="backupClientSecret"
-              />
-              <Button icon={<Save size={13} />} onClick={() => void saveCreds()}>
-                {t('common.save')}
-              </Button>
-            </div>
-          </label>
-        </div>
-      </details>
     </section>
   )
 }

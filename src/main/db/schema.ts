@@ -591,5 +591,26 @@ export const MIGRATIONS: Migration[] = [
       -- Its own migration rather than an edit to 13, because 13 has already run.
       ALTER TABLE deck_card_moves ADD COLUMN foil_treatment TEXT;
     `
+  },
+  {
+    version: 15,
+    name: 'drop_user_oauth_client',
+    sql: `
+      -- The app used to let you paste your own Google OAuth client into Settings.
+      -- It carries one of its own now, so those rows are orphans, and a client secret
+      -- outliving the feature that used it is worth deleting rather than keeping.
+      --
+      -- The refresh token goes too, but only if one of those rows was actually there.
+      -- A token issued to the user's own client cannot be refreshed with a different
+      -- client's credentials -- Google answers invalid_grant -- so it has to go with
+      -- the client it belonged to. A token issued to the compiled-in client is still
+      -- perfectly good, and dropping it would sign the user out for nothing. Hence the
+      -- EXISTS, and hence it runs before the row it tests is deleted.
+      DELETE FROM settings
+      WHERE key = 'backup.refreshToken'
+        AND EXISTS (SELECT 1 FROM settings WHERE key = 'backup.clientId');
+
+      DELETE FROM settings WHERE key IN ('backup.clientId', 'backup.clientSecret');
+    `
   }
 ]

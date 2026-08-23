@@ -113,20 +113,14 @@ import {
   saveToRemote,
   snapshot
 } from '../services/backup.js'
-import { chosenFolder, driveStore, setChosenFolder } from '../services/googleDrive.js'
+import { driveStore, folderName, setFolderName } from '../services/googleDrive.js'
 import {
-  accessToken,
   connect as connectDrive,
   disconnect as disconnectDrive,
   hasBundledClient,
   hasRefreshToken,
-  isConfigured,
-  pickerConfig,
-  setCredentials
+  isConfigured
 } from '../services/googleAuth.js'
-import { loopbackOnce, whenListening } from '../services/loopback.js'
-import { parsePicked, pickerPage, PICKED_PATH } from '../services/picker.js'
-import { callbackPage } from '../services/oauth.js'
 import { hostname } from 'node:os'
 
 /** Localised message, resolved at throw time from the stored locale. */
@@ -611,15 +605,13 @@ export function registerHandlers(): void {
     const configured = isConfigured()
     const connected = configured && hasRefreshToken()
     const lastBackupAt = getRawSetting(KEY_LAST_AT)
-    const picker = pickerConfig()
-    const folder = chosenFolder()
+    const folder = folderName()
     const base: BackupStatus = {
       configured,
       bundled: hasBundledClient(),
-      folderName: folder?.name ?? null,
-      canPickFolder: picker.apiKey !== '' && picker.appId !== '',
+      folderName: folder,
       connected,
-      label: folder?.name ?? 'Matomeru',
+      label: folder,
       lastBackupAt,
       remote: null,
       remoteIsNewer: false,
@@ -651,11 +643,6 @@ export function registerHandlers(): void {
     }
   })
 
-  handle('backup:setCredentials', (clientId: string, clientSecret: string) => {
-    setCredentials(clientId, clientSecret)
-    return true
-  })
-
   handle('backup:connect', async () => {
     await connectDrive()
     return true
@@ -667,74 +654,17 @@ export function registerHandlers(): void {
   })
 
   /**
-   * Choosing the folder, through Google's own Picker.
+   * Naming the folder backups go into.
    *
-   * The Picker rather than a folder tree of our own, because listing a whole Drive
-   * needs the full `drive` scope — restricted, verification-gated, and it would make
-   * the consent screen say this app can read everything you own. Picking is itself
-   * what grants access to the chosen folder, so `drive.file` stays sufficient and the
-   * promise that Matomeru sees only what it created stays true.
-   *
-   * Served over loopback because the Picker refuses a `file://` origin. The window is
-   * a plain one with no preload: it runs Google's script and nothing of ours, and it
-   * cannot reach the app's IPC.
+   * A name rather than a folder browsed to in Drive. Browsing would mean either
+   * Google's Picker — which needs a second credential and its own window — or the
+   * full `drive` scope, which is restricted, verification-gated, and would make the
+   * consent screen say this app can read everything you own. Under `drive.file` the
+   * app can create and reuse a folder of its own perfectly well; what it cannot do is
+   * list the ones it did not create. So: you name it, the app makes it, and you can
+   * drag it anywhere in Drive afterwards because it is tracked by id.
    */
-  handle('backup:pickFolder', async () => {
-    if (!isConfigured()) throw new Error(tr('err.backupNotConfigured'))
-    if (!hasRefreshToken()) throw new Error(tr('err.backupNotConnected'))
-    const { apiKey, appId } = pickerConfig()
-    if (!apiKey || !appId) throw new Error(tr('err.backupNoPickerKey'))
-
-    const token = await accessToken()
-    const page = pickerPage({
-      accessToken: token,
-      apiKey,
-      appId,
-      title: tr('backup.pickerTitle'),
-      waiting: tr('backup.pickerWaiting')
-    })
-
-    const loopback = loopbackOnce({
-      callbackPath: PICKED_PATH,
-      timeoutMs: 5 * 60 * 1000,
-      onTimeout: () => new Error(tr('err.backupPickerTimeout')),
-      serve: (path) => (path === '/picker' ? page : null),
-      done: () => callbackPage(tr('backup.pickerTitle'), tr('backup.browserDoneHint'))
-    })
-
-    const origin = await whenListening(loopback)
-    const window = new BrowserWindow({
-      width: 980,
-      height: 680,
-      parent: BrowserWindow.getAllWindows()[0],
-      title: tr('backup.pickerTitle'),
-      backgroundColor: '#0b0d12',
-      autoHideMenuBar: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false }
-    })
-
-    /*
-      Closing the window is a cancel, and has to be handled: without this the promise
-      would sit unresolved for the full five minutes while the user waited for a
-      dialog that had already gone.
-    */
-    const closed = new Promise<'closed'>((resolve) => window.on('closed', () => resolve('closed')))
-
-    try {
-      await window.loadURL(`${origin}/picker`)
-      const outcome = await Promise.race([loopback.landed, closed])
-      if (outcome === 'closed') return { cancelled: true, folder: null }
-
-      const picked = parsePicked(outcome)
-      if ('cancelled' in picked) return { cancelled: true, folder: null }
-      if ('error' in picked) throw new Error(tr('err.backupPickerFailed', { reason: picked.error }))
-      setChosenFolder(picked.folder)
-      return { cancelled: false, folder: picked.folder }
-    } finally {
-      loopback.stop()
-      if (!window.isDestroyed()) window.destroy()
-    }
-  })
+  handle('backup:setFolderName', (name: string) => setFolderName(name))
 
   handle('backup:save', async (force = false) => {
     if (!isConfigured()) throw new Error(tr('err.backupNotConfigured'))

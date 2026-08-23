@@ -3,8 +3,10 @@
  *
  * One folder, one current snapshot, and up to `HISTORY_KEPT` previous ones beside
  * it. Everything this app can see in the Drive it created itself — that is what the
- * `drive.file` scope means — so the folder is found by asking for files this client
- * owns, never by searching the user's Drive.
+ * `drive.file` scope means — so the folder is found among files this client owns,
+ * never by searching the user's Drive. That is also why the folder is *named* rather
+ * than browsed to: the scope that keeps the rest of the Drive invisible is the same
+ * scope that cannot list it.
  *
  * The manifest rides on the file as Drive `appProperties` rather than as a second
  * file. One metadata request then answers everything the dialog needs to say —
@@ -26,8 +28,9 @@ function tr(key: TranslationKey, vars?: Record<string, string | number>): string
   return t(getLocale(), key, vars)
 }
 
-const FOLDER_NAME = 'Matomeru'
-const CURRENT_NAME = 'matomeru.db'
+/** Used when nothing has been set, and when a saved name is blanked out again. */
+export const DEFAULT_FOLDER_NAME = 'Matomeru'
+const CURRENT_NAME = 'matomeru.db.gz'
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 const API = 'https://www.googleapis.com/drive/v3'
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3'
@@ -36,21 +39,30 @@ const KEY_FOLDER_ID = 'backup.folderId'
 const KEY_FOLDER_NAME = 'backup.folderName'
 
 /**
- * The folder the user chose in the Picker, if they chose one.
+ * The name of the folder backups go into.
  *
- * The name is stored beside the id so the status read can say where the backup goes
- * without a network call — the dialog opening should not depend on Drive answering.
+ * Read from settings without touching the network, so the dialog and the settings
+ * panel can say where backups go even offline, or before the app has ever connected.
  */
-export function chosenFolder(): { id: string; name: string } | null {
-  const id = getRawSetting(KEY_FOLDER_ID)
-  if (!id) return null
-  return { id, name: getRawSetting(KEY_FOLDER_NAME) ?? FOLDER_NAME }
+export function folderName(): string {
+  const stored = getRawSetting(KEY_FOLDER_NAME)?.trim()
+  return stored && stored.length > 0 ? stored : DEFAULT_FOLDER_NAME
 }
 
-/** Records what the Picker returned. Clearing it falls back to the app's own folder. */
-export function setChosenFolder(folder: { id: string; name: string } | null): void {
-  setRawSetting(KEY_FOLDER_ID, folder?.id ?? null)
-  setRawSetting(KEY_FOLDER_NAME, folder?.name ?? null)
+/**
+ * Renames the target folder, and forgets the cached id.
+ *
+ * Dropping the id is the load-bearing half: it is the thing `ensureFolder` trusts, so
+ * leaving it behind would have the next backup write into the *old* folder while the
+ * screen showed the new name. Existing snapshots stay where they are — this points
+ * future ones somewhere else, it does not move anything.
+ */
+export function setFolderName(name: string): string {
+  const trimmed = name.trim()
+  const next = trimmed.length > 0 ? trimmed : DEFAULT_FOLDER_NAME
+  if (next !== folderName()) setRawSetting(KEY_FOLDER_ID, null)
+  setRawSetting(KEY_FOLDER_NAME, next === DEFAULT_FOLDER_NAME ? null : next)
+  return next
 }
 
 /**
@@ -97,6 +109,8 @@ function toProperties(manifest: BackupManifest): Record<string, string> {
     schemaVersion: String(manifest.schemaVersion),
     appVersion: manifest.appVersion,
     sha256: manifest.sha256,
+    bytes: String(manifest.bytes),
+    uncompressedBytes: String(manifest.uncompressedBytes),
     machine: manifest.machine,
     cards: String(manifest.cards),
     decks: String(manifest.decks),
@@ -115,6 +129,13 @@ function fromProperties(props: Record<string, string> | undefined): BackupManife
     schemaVersion: number(props.schemaVersion),
     appVersion: props.appVersion ?? 'unknown',
     sha256: props.sha256,
+    bytes: number(props.bytes),
+    /*
+      Falls back to the compressed size when absent, which is what a backup written
+      before compression existed looks like: for those the two really were the same
+      number, so the fallback is the truth rather than a guess.
+    */
+    uncompressedBytes: number(props.uncompressedBytes) || number(props.bytes),
     machine: props.machine ?? 'unknown',
     cards: number(props.cards),
     decks: number(props.decks),
@@ -133,6 +154,7 @@ interface DriveFile {
 export function driveStore(): RemoteStore {
   let folderId: string | null = getRawSetting(KEY_FOLDER_ID)
   let currentId: string | null = null
+  let currentIsCompressed = true
 
   /**
    * Where the snapshot goes: the folder the user picked, or one the app makes.
@@ -154,29 +176,35 @@ export function driveStore(): RemoteStore {
         if (!file.trashed && file.mimeType === FOLDER_MIME) return folderId
       }
       folderId = null
-      setChosenFolder(null)
+      setRawSetting(KEY_FOLDER_ID, null)
     }
 
+    /*
+      Single quotes inside the name would end the query string and change what it
+      matches, so they are doubled as Drive's query syntax requires. A folder called
+      "Seb's cards" is an ordinary thing to want.
+    */
+    const wanted = folderName().replace(/'/g, "\\'")
     const query = encodeURIComponent(
-      `name = '${FOLDER_NAME}' and mimeType = '${FOLDER_MIME}' and trashed = false`
+      `name = '${wanted}' and mimeType = '${FOLDER_MIME}' and trashed = false`
     )
     const found = await authorized(`${API}/files?q=${query}&fields=files(id)&pageSize=1`)
     if (!found.ok) await fail(found)
     const list = (await found.json()) as { files: DriveFile[] }
     if (list.files[0]) {
       folderId = list.files[0].id
-      setChosenFolder({ id: folderId, name: FOLDER_NAME })
+      setRawSetting(KEY_FOLDER_ID, folderId)
       return folderId
     }
 
     const created = await authorized(`${API}/files?fields=id`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: FOLDER_NAME, mimeType: FOLDER_MIME })
+      body: JSON.stringify({ name: folderName(), mimeType: FOLDER_MIME })
     })
     if (!created.ok) await fail(created)
     folderId = ((await created.json()) as { id: string }).id
-    setChosenFolder({ id: folderId, name: FOLDER_NAME })
+    setRawSetting(KEY_FOLDER_ID, folderId)
     return folderId
   }
 
@@ -193,8 +221,14 @@ export function driveStore(): RemoteStore {
 
   const findCurrent = async (): Promise<DriveFile | null> => {
     const files = await listFolder()
-    const current = files.find((file) => file.name === CURRENT_NAME) ?? null
+    // The compressed name first, then the old uncompressed one, so a Drive holding
+    // both prefers the format this version writes.
+    const current =
+      files.find((file) => file.name === CURRENT_NAME) ??
+      files.find((file) => file.name === 'matomeru.db') ??
+      null
     currentId = current?.id ?? null
+    currentIsCompressed = current === null ? true : current.name.endsWith('.gz')
     return current
   }
 
@@ -227,7 +261,7 @@ export function driveStore(): RemoteStore {
         method: existing ? 'PATCH' : 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-upload-content-type': 'application/x-sqlite3',
+          'x-upload-content-type': 'application/gzip',
           'x-upload-content-length': String(total)
         },
         body: JSON.stringify(metadata)
@@ -268,7 +302,15 @@ export function driveStore(): RemoteStore {
   }
 
   return {
-    label: () => chosenFolder()?.name ?? FOLDER_NAME,
+    label: () => folderName(),
+
+    /*
+      Whatever is actually up there. A backup written before compression existed has a
+      name without the suffix, and must still restore — so this is read off the file,
+      not assumed from the current version's habits.
+    */
+    isCompressed: () => currentIsCompressed,
+
 
     stat: async (): Promise<RemoteSnapshot | null> => {
       const current = await findCurrent()
@@ -294,7 +336,7 @@ export function driveStore(): RemoteStore {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            name: `matomeru-${suffix || 'previous'}.db`,
+            name: `matomeru-${suffix || 'previous'}.db.gz`,
             parents: [parent],
             appProperties: current.appProperties ?? {}
           })
@@ -331,7 +373,7 @@ export function driveStore(): RemoteStore {
     rotate: async (keep) => {
       const files = await listFolder()
       const history = files
-        .filter((file) => file.name.startsWith('matomeru-') && file.name.endsWith('.db'))
+        .filter((file) => file.name.startsWith('matomeru-') && file.name.includes('.db'))
         .sort((a, b) => b.name.localeCompare(a.name))
       const doomed = history.slice(keep)
       for (const file of doomed) {

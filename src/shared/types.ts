@@ -1173,8 +1173,15 @@ export interface BackupManifest {
   /** The highest migration the writing app had applied. Restore refuses a higher one. */
   schemaVersion: number
   appVersion: string
-  /** SHA-256 of the snapshot file, so a truncated download is caught before it is used. */
+  /**
+   * SHA-256 of the bytes actually uploaded — the compressed file, not the database
+   * inside it. That is what makes it able to prove a download arrived intact.
+   */
   sha256: string
+  /** Size of the uploaded, compressed file. */
+  bytes: number
+  /** Size of the database inside it, so the saving can be reported rather than implied. */
+  uncompressedBytes: number
   /** Hostname of the machine that wrote it, which is what makes a clobber detectable. */
   machine: string
   cards: number
@@ -1192,10 +1199,8 @@ export interface BackupStatus {
    * way in, and Settings says so rather than offering a button that cannot work.
    */
   bundled: boolean
-  /** Where backups go: the folder picked in Drive, or null for the app's own. */
-  folderName: string | null
-  /** Whether the Picker can be offered at all — it needs an API key and a project number. */
-  canPickFolder: boolean
+  /** The Drive folder backups go into, by name. Never null; defaults to 'Matomeru'. */
+  folderName: string
   /** Those credentials have been exchanged for a refresh token that still works. */
   connected: boolean
   /** Where the snapshot lives, for messages: the Drive folder name. */
@@ -1217,9 +1222,12 @@ export interface BackupStatus {
 }
 
 export interface BackupResult {
-  /** False when the snapshot already matched the remote and nothing was sent. */
+  /** False when nothing had been written since the last backup, so nothing was sent. */
   uploaded: boolean
+  /** What went over the wire, compressed. */
   bytes: number
+  /** What it was before compression, for a message that shows the saving. */
+  uncompressedBytes: number
   at: string
   /** How many history copies were dropped by rotation. */
   pruned: number

@@ -255,18 +255,13 @@ const api = {
   backup: {
     /** Never returns a credential — only what the dialog needs to describe things. */
     status: () => call<BackupStatus>('backup:status'),
-    setCredentials: (clientId: string, clientSecret: string) =>
-      call<boolean>('backup:setCredentials', clientId, clientSecret),
     connect: () => call<boolean>('backup:connect'),
     disconnect: () => call<boolean>('backup:disconnect'),
     /** `force` carries the user's acknowledgement that a newer remote may be replaced. */
     save: (force = false) => call<BackupResult>('backup:save', force),
     restore: () => call<RestoreResult>('backup:restore'),
-    /** Opens Google's Picker. `cancelled` when the user closed it without choosing. */
-    pickFolder: () =>
-      call<{ cancelled: boolean; folder: { id: string; name: string } | null }>(
-        'backup:pickFolder'
-      ),
+    /** Names the Drive folder backups go into. Blank falls back to the default. */
+    setFolderName: (name: string) => call<string>('backup:setFolderName', name),
     snapshotSize: () => call<number>('backup:snapshotSize')
   },
 

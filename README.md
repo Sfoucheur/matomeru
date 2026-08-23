@@ -359,9 +359,9 @@ database. Restore is offered from the same dialog and from Settings.
 **No desktop sync client, and one click to connect.** Settings offers "Connect with
 Google Drive"; the browser opens Google's consent page, you approve, and that is the
 whole flow. The OAuth client is compiled in from a gitignored `.env` — see
-`.env.example` for the one-time Google Cloud setup — so there is nothing to paste. The
-two credential fields remain, folded away under "use my own Google client", for a
-build with no client baked in.
+`.env.example` for the one-time Google Cloud setup — so there is nothing to paste and
+nothing to configure. A build made without a `.env` says so rather than offering a
+button that cannot work.
 
 The consent page cannot exist without a `client_id`: it is a required parameter of that
 page's URL, and there is no anonymous way to ask Google for access. So the credential
@@ -376,20 +376,37 @@ enforced on Google's side rather than promised on ours. Set the consent screen's
 publishing status to **In production**, or refresh tokens expire every seven days and
 the connection dies weekly.
 
-**Choosing the folder** goes through Google's own Picker, opened in its own window and
-served over loopback because the Picker refuses a `file://` origin. Picking is itself
-what grants access to that folder, which is why `drive.file` stays sufficient — a
-folder tree of our own would need the full `drive` scope, which is *restricted*:
-publishing it requires Google verification, and not publishing means re-authorising
-weekly. Until a folder is picked the app creates and uses `Matomeru` at the top of
-your Drive, and a stored folder that has been deleted or trashed falls back to that
-rather than failing every save.
+**The folder is named, not browsed to.** Settings holds a text field — `Matomeru` by
+default — and the app creates or reuses a folder of that name at the top of your
+Drive. That is a deliberate limit rather than a shortcut: `drive.file` lets the app
+create and reuse its own folders but not *list* yours, and the two ways to browse both
+cost more than they are worth. Google's Picker needs a second credential and a window
+of its own; a folder tree of ours would need the full `drive` scope, which is
+*restricted* — publishing it requires Google verification, and not publishing means
+re-authorising weekly. So the scope that keeps the rest of your Drive invisible is the
+same scope that cannot show it to you, and a name is the honest interface to that.
 
-The client secret and refresh token are sealed with Electron's `safeStorage` (DPAPI
-on Windows) and stored under `backup.*` keys that are deliberately **not** part of
-`AppSettings` — that type is handed to the renderer wholesale, and a credential has
-no business crossing into a window. What the renderer gets is a derived
-`BackupStatus`, and a check asserts it carries those fields and nothing else.
+Renaming points future backups elsewhere and leaves existing ones where they are; the
+cached folder id is dropped on rename, so the next backup resolves the new name rather
+than writing into the old folder by id. A folder that has been deleted or trashed is
+recreated rather than failing every save.
+
+**The snapshot travels gzipped** — 30 MB of database becomes about 4 MB, since a card
+collection is mostly repetitive text. `zlib` is built into Node, so this costs no
+dependency. The manifest's sha256 covers the *compressed* bytes, so it still proves a
+download arrived intact, and `integrity_check` runs after decompressing, so it still
+proves those bytes are a database: two checks, two jobs. A backup written before
+compression existed has no `.gz` suffix and is restored directly, so it never becomes
+unreadable.
+
+The refresh token is sealed with Electron's `safeStorage` (DPAPI on Windows) and
+stored under a `backup.*` key that is deliberately **not** part of `AppSettings` —
+that type is handed to the renderer wholesale, and a credential has no business
+crossing into a window. What the renderer gets is a derived `BackupStatus`, and a
+check asserts it carries those fields and nothing else. Migration 15 deletes the rows
+from when the client could be pasted in, the refresh token among them: a token issued
+to a different client cannot be refreshed with this one, so keeping it would only
+produce an error nobody could act on.
 
 The snapshot is `VACUUM INTO`, not a file copy: copying is only safe when nothing is
 mid-write, and nothing can promise that while a price refresh might be running.

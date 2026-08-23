@@ -2081,29 +2081,18 @@ async function main() {
       const restore = section.querySelector('[data-action="backupRestore"]')
       const now = section.querySelector('[data-action="backupNow"]')
       const connect = section.querySelector('[data-action="backupConnect"]')
-      const pick = section.querySelector('[data-action="backupChooseFolder"]')
-      const details = section.querySelector('[data-field="backupOwnClient"]')
-      /*
-        checkVisibility, not offsetParent.
-
-        A closed details element in this Chromium hides its content with
-        content-visibility, not display:none -- measured, because offsetParent said
-        "visible" either way, and so did getClientRects, computed display and
-        offsetHeight. Only checkVisibility tells the two apart. (offsetParent is
-        still the right test for the hidden view panes elsewhere in this file: those
-        really are display:none.)
-        No backticks in here: this comment sits inside a template literal.
-      */
-      const secret = section.querySelector('[data-field="backupClientSecret"]')
+      const name = section.querySelector('[data-field="backupFolderName"]')
       return JSON.stringify({
         missing: false,
         bundled: status.bundled,
-        clientId: !!section.querySelector('[data-field="backupClientId"]'),
-        secretIsMasked: secret?.type === 'password',
-        fieldsHidden: secret ? !secret.checkVisibility({ contentVisibilityAuto: true, checkVisibilityCSS: true }) : null,
-        disclosureOpen: details ? details.open : null,
-        folderRow: !!section.querySelector('[data-field="backupFolder"]'),
-        pickDisabled: pick ? pick.disabled : null,
+        folderName: status.folderName,
+        // The credential fields are gone entirely, not merely hidden.
+        credentialFields:
+          section.querySelectorAll('[data-field="backupClientId"], ' +
+            '[data-field="backupClientSecret"], [data-field="backupOwnClient"]').length,
+        nameField: !!name,
+        nameValue: name ? name.value : null,
+        nameDisabled: name ? name.disabled : null,
         restoreDisabled: restore ? restore.disabled : null,
         backUpDisabled: now ? now.disabled : null,
         connectDisabled: connect ? connect.disabled : null
@@ -2113,134 +2102,60 @@ async function main() {
   console.log(`        → ${JSON.stringify(panel)}`)
   check('Settings carries a backup panel', panel.missing === false, JSON.stringify(panel))
   check(
-    'the client secret is a password field, not plain text on screen',
-    panel.secretIsMasked === true,
-    JSON.stringify(panel)
+    'the panel asks for no Google credentials at all',
+    panel.credentialFields === 0,
+    `${panel.credentialFields} credential field(s) still present`
   )
   check(
-    'restoring is unreachable until the app is connected',
+    'restoring and backing up are unreachable until the app is connected',
     panel.restoreDisabled === true && panel.backUpDisabled === true,
     JSON.stringify(panel)
   )
   check(
     panel.bundled
       ? 'connecting is offered straight away, because the build carries its own client'
-      : 'connecting is unreachable until credentials are entered',
+      : 'connecting is unreachable without a compiled-in client',
     panel.connectDisabled === (panel.bundled ? false : true),
     JSON.stringify(panel)
   )
-  check(
-    'the credential fields are folded away rather than the first thing you see',
-    panel.fieldsHidden === true && panel.disclosureOpen === false,
-    JSON.stringify(panel)
-  )
-  check(
-    'the panel says where backups will go',
-    panel.folderRow === true,
-    JSON.stringify(panel)
-  )
-  check(
-    'and choosing a folder is unreachable until connected',
-    panel.pickDisabled === true,
-    JSON.stringify(panel)
-  )
-
-  // Opening the disclosure is what brings the fields out.
-  const opened = JSON.parse(
-    await evaluate(`(async () => {
-      const details = document.querySelector('[data-field="backupOwnClient"]')
-      if (!details) return JSON.stringify({ missing: true })
-      details.open = true
-      await new Promise((r) => setTimeout(r, 300))
-      const secret = document.querySelector('[data-field="backupClientSecret"]')
-      const shown = secret ? secret.checkVisibility({ contentVisibilityAuto: true, checkVisibilityCSS: true }) : false
-      details.open = false
-      return JSON.stringify({ missing: false, shown })
-    })()`)
-  )
-  check(
-    'and opening it brings them out',
-    opened.missing === false && opened.shown === true,
-    JSON.stringify(opened)
-  )
-
   /*
-    The credentials round-trip, and the secret does not come back.
-
-    Entering them is the one part of the flow that needs no Google at all, and it is
-    worth driving because the panel deliberately cannot read what it wrote: status
-    carries no credential, so if `configured` did not flip after saving there would
-    be no way to tell from the screen that anything had been stored.
+    The folder name is editable whether or not the app is connected. It was a button
+    that needed both a token and a second Google credential, so it sat greyed out
+    explaining nothing; a name needs neither.
   */
-  const creds = JSON.parse(
-    await evaluate(`(async () => {
-      const before = await window.api.backup.status()
-      await window.api.backup.setCredentials('probe.apps.googleusercontent.com', 'probe-secret')
-      const after = await window.api.backup.status()
-      await window.api.backup.setCredentials('', '')
-      const cleared = await window.api.backup.status()
-      /*
-        Checked structurally, not by searching for the string that was typed in.
+  check(
+    'the folder name is a field, editable without a connection',
+    panel.nameField === true && panel.nameDisabled === false,
+    JSON.stringify(panel)
+  )
+  check(
+    'and it shows the folder the status reports',
+    panel.nameValue === panel.folderName,
+    `field ${panel.nameValue} vs status ${panel.folderName}`
+  )
 
-        Looking for 'probe-secret' proved nothing: the secret is sealed before it is
-        stored, so a handler that leaked it would leak the ciphertext and the search
-        would come back clean — which is exactly what happened when this was
-        sabotaged on purpose. What the status may contain is a closed list, so that
-        is what gets asserted: these fields and no others, and no value anywhere in
-        it that looks like a stored credential.
-      */
-      const serialized = JSON.stringify(after)
-      return JSON.stringify({
-        before: before.configured,
-        after: after.configured,
-        cleared: cleared.configured,
-        connected: after.connected,
-        bundled: after.bundled,
-        fields: Object.keys(after).sort().join(','),
-        leaks:
-          serialized.includes('probe-secret') ||
-          serialized.includes('enc:') ||
-          serialized.includes('plain:')
-      })
+  // The name round-trips through the database and back out of status.
+  const renamed = JSON.parse(
+    await evaluate(`(async () => {
+      const before = (await window.api.backup.status()).folderName
+      const saved = await window.api.backup.setFolderName('Probe folder')
+      const after = (await window.api.backup.status()).folderName
+      const blanked = await window.api.backup.setFolderName('   ')
+      const fallback = (await window.api.backup.status()).folderName
+      await window.api.backup.setFolderName(before)
+      return JSON.stringify({ before, saved, after, blanked, fallback })
     })()`)
   )
-  console.log(`        → ${JSON.stringify(creds)}`)
-  if (creds.bundled) {
-    /*
-      A skip, and an honest one: with a client compiled in, `configured` is true
-      before and after and clearing the stored pair changes nothing. There is no
-      transition left to observe, so observing one is not possible rather than
-      merely unnecessary.
-    */
-    console.log('        → skipped: this build has its own client, so stored ones change nothing')
-  } else {
-    check(
-      'entering credentials makes the app configured',
-      creds.before === false && creds.after === true,
-      JSON.stringify(creds)
-    )
-    check(
-      'clearing them makes it unconfigured again',
-      creds.cleared === false,
-      JSON.stringify(creds)
-    )
-  }
+  console.log(`        → ${JSON.stringify(renamed)}`)
   check(
-    'the status never carries the secret back to the screen',
-    creds.leaks === false,
-    `something credential-shaped came back over IPC: ${creds.fields}`
+    'naming the backup folder sticks',
+    renamed.saved === 'Probe folder' && renamed.after === 'Probe folder',
+    JSON.stringify(renamed)
   )
   check(
-    'and carries nothing beyond the fields it is meant to',
-    creds.fields ===
-      'bundled,canPickFolder,configured,connected,error,folderName,label,lastBackupAt,' +
-      'remote,remoteIsNewer,upToDate',
-    creds.fields
-  )
-  check(
-    'and credentials alone are not a connection',
-    creds.connected === false,
-    JSON.stringify(creds)
+    'and blanking it falls back to the default rather than an empty name',
+    renamed.blanked === 'Matomeru' && renamed.fallback === 'Matomeru',
+    JSON.stringify(renamed)
   )
 
   // Leave the probe app as it was found.

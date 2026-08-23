@@ -3,9 +3,9 @@
  *
  * One click, from the user's side: Settings offers "Connect with Google Drive", the
  * browser opens Google's consent page, they approve, and that is the whole flow.
- * There is nothing to paste, because the OAuth client is compiled into the build from
- * a gitignored `.env` — see BUNDLED below for what that means and does not mean. The
- * two fields in Settings remain as an override for a build with no client baked in.
+ * There is nothing to paste and nothing to configure: the OAuth client is compiled
+ * into the build from a gitignored `.env` — see BUNDLED below for what that means and
+ * does not mean.
  *
  * The only scope requested is `drive.file`, which Google limits to files this app
  * itself created or the user explicitly picked: Matomeru cannot see the rest of the
@@ -29,7 +29,6 @@ import {
   pkcePair,
   randomState,
   refreshBody,
-  resolveCredentials,
   TOKEN_ENDPOINT,
   tokenExchangeBody
 } from './oauth.js'
@@ -39,8 +38,6 @@ function tr(key: TranslationKey, vars?: Record<string, string | number>): string
   return t(getLocale(), key, vars)
 }
 
-const KEY_CLIENT_ID = 'backup.clientId'
-const KEY_CLIENT_SECRET = 'backup.clientSecret'
 const KEY_REFRESH = 'backup.refreshToken'
 
 /** How long to wait for the user to finish in their browser. */
@@ -93,33 +90,26 @@ function unseal(stored: string | null): string | null {
  * generated per attempt and never leaves this process, so an intercepted redirect is
  * not redeemable by whoever intercepted it.
  */
-const BUNDLED = {
+const BUNDLED: Credentials = {
   clientId: import.meta.env.MAIN_VITE_GOOGLE_CLIENT_ID ?? '',
-  clientSecret: import.meta.env.MAIN_VITE_GOOGLE_CLIENT_SECRET ?? '',
-  apiKey: import.meta.env.MAIN_VITE_GOOGLE_API_KEY ?? '',
-  appId: import.meta.env.MAIN_VITE_GOOGLE_PROJECT_NUMBER ?? ''
+  clientSecret: import.meta.env.MAIN_VITE_GOOGLE_CLIENT_SECRET ?? ''
 }
 
-/** True when this build carries its own client, so Settings can ask for nothing. */
+/** True when this build carries a client. False is a build-time omission, not a setting. */
 export function hasBundledClient(): boolean {
   return BUNDLED.clientId !== '' && BUNDLED.clientSecret !== ''
 }
 
-/** What the Picker needs beyond a token. Empty when this build has no client. */
-export function pickerConfig(): { apiKey: string; appId: string } {
-  return { apiKey: BUNDLED.apiKey, appId: BUNDLED.appId }
-}
-
+/**
+ * The one OAuth client, or null when this build was made without one.
+ *
+ * There used to be a second source — a client the user pasted into Settings — and a
+ * precedence rule between them. Both are gone: with a client compiled in, the fields
+ * were an escape hatch nobody would take, and they kept a secret-handling path alive
+ * for no benefit.
+ */
 export function getCredentials(): Credentials | null {
-  return resolveCredentials(BUNDLED, {
-    clientId: getRawSetting(KEY_CLIENT_ID) ?? '',
-    clientSecret: unseal(getRawSetting(KEY_CLIENT_SECRET)) ?? ''
-  })
-}
-
-export function setCredentials(clientId: string, clientSecret: string): void {
-  setRawSetting(KEY_CLIENT_ID, clientId.trim() || null)
-  setRawSetting(KEY_CLIENT_SECRET, clientSecret.trim() ? seal(clientSecret.trim()) : null)
+  return hasBundledClient() ? BUNDLED : null
 }
 
 export function isConfigured(): boolean {

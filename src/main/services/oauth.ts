@@ -25,32 +25,6 @@ export interface Credentials {
   clientSecret: string
 }
 
-/**
- * Which OAuth client to use: the one compiled into this build, or the one the user
- * entered.
- *
- * Compiled-in wins. That is the whole point of bundling it — the user clicks Connect
- * and a browser opens, with nothing to paste — and the fields in Settings stay as the
- * escape hatch for a build with no credentials baked in, or for someone who would
- * rather use their own Google project than the one this app was built with.
- *
- * A pure function, and separate from `googleAuth.ts`, because that module reads
- * `import.meta.env` and imports Electron: neither survives the CommonJS bundle the
- * verification suite builds. The precedence is the part worth asserting, so the
- * precedence is the part that lives somewhere assertable.
- */
-export function resolveCredentials(
-  bundled: Partial<Credentials> | null,
-  stored: Partial<Credentials> | null
-): Credentials | null {
-  const pick = (source: Partial<Credentials> | null): Credentials | null => {
-    const id = source?.clientId?.trim()
-    const secret = source?.clientSecret?.trim()
-    return id && secret ? { clientId: id, clientSecret: secret } : null
-  }
-  return pick(bundled) ?? pick(stored)
-}
-
 export interface Pkce {
   verifier: string
   challenge: string

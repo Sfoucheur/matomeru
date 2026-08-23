@@ -9,6 +9,9 @@
  * with no credentials and no Drive.
  */
 import { createHash } from 'node:crypto'
+import { createGzip, createGunzip } from 'node:zlib'
+import { pipeline } from 'node:stream/promises'
+import { createWriteStream } from 'node:fs'
 import {
   copyFileSync,
   createReadStream,
@@ -91,6 +94,13 @@ export interface RemoteStore {
   rotate(keep: number): Promise<number>
   /** Where the snapshot lives, for messages. Never a credential. */
   label(): string
+  /**
+   * Whether the file up there is gzipped.
+   *
+   * Asked rather than assumed, because a backup taken before compression existed is
+   * still a valid backup and must still restore.
+   */
+  isCompressed(): boolean
 }
 
 export function schemaVersion(): number {
@@ -146,11 +156,36 @@ export async function snapshot(): Promise<{ path: string; manifest: BackupManife
       snapshotAt: at,
       schemaVersion: schemaVersion(),
       appVersion: APP_VERSION,
-      sha256: await sha256File(path),
+      // Filled in by the caller once the file is compressed: the hash has to describe
+      // the bytes that travel, or it cannot verify a download.
+      sha256: '',
+      bytes: 0,
+      uncompressedBytes: bytes,
       machine: hostname(),
       ...counts
     }
   }
+}
+
+/**
+ * gzip, into a sibling file.
+ *
+ * A card database is mostly repetitive text, so this is the difference between moving
+ * tens of megabytes on every save and moving a handful. gzip rather than a zip
+ * container because `zlib` is built into Node — no dependency for a project that has
+ * two — and Windows unpacks `.gz` without help.
+ */
+export async function compress(path: string): Promise<{ path: string; bytes: number }> {
+  const target = `${path}.gz`
+  if (existsSync(target)) unlinkSync(target)
+  await pipeline(createReadStream(path), createGzip(), createWriteStream(target))
+  return { path: target, bytes: statSync(target).size }
+}
+
+/** The other direction, for a restore. */
+export async function decompress(source: string, target: string): Promise<void> {
+  if (existsSync(target)) unlinkSync(target)
+  await pipeline(createReadStream(source), createGunzip(), createWriteStream(target))
 }
 
 /**
@@ -259,32 +294,61 @@ export async function saveToRemote(
   const existing = await store.stat()
   if (existing?.manifest && !localTouchedSince(lastBackupAt)) {
     emit('Done', 1, 1, { finished: true })
-    return { uploaded: false, bytes: existing.bytes, at: existing.manifest.snapshotAt, pruned: 0 }
+    return {
+      uploaded: false,
+      bytes: existing.bytes,
+      uncompressedBytes: existing.manifest.uncompressedBytes,
+      at: existing.manifest.snapshotAt,
+      pruned: 0
+    }
   }
 
-  emit('Snapshotting', 0, 3)
+  emit('Snapshotting', 0, 4)
   const { path, manifest, bytes } = await snapshot()
+  let packed: string | null = null
 
   try {
-    emit('Verifying', 1, 3)
+    emit('Verifying', 1, 4)
     const intact = verifySnapshot(path)
     if (!intact.ok) throw new Error(tr('err.backupSnapshotBad', { reason: intact.reason }))
 
-    emit('Uploading', 2, 3, { message: `0 / ${Math.round(bytes / 1_048_576)} MB` })
-    await store.put(path, manifest, (sent, total) => {
-      emit('Uploading', 2, 3, {
+    emit('Compressing', 2, 4)
+    const gz = await compress(path)
+    packed = gz.path
+    /*
+      The hash describes the compressed file, because that is what gets uploaded and
+      what a download has to be checked against. The database inside is verified
+      separately, by SQLite, after a restore decompresses it — two checks with two
+      different jobs.
+    */
+    const stamped: BackupManifest = {
+      ...manifest,
+      sha256: await sha256File(gz.path),
+      bytes: gz.bytes
+    }
+
+    emit('Uploading', 3, 4, { message: `0 / ${Math.round(gz.bytes / 1_048_576)} MB` })
+    await store.put(gz.path, stamped, (sent, total) => {
+      emit('Uploading', 3, 4, {
         message: `${Math.round(sent / 1_048_576)} / ${Math.round(total / 1_048_576)} MB`
       })
     })
 
     const pruned = await store.rotate(HISTORY_KEPT)
-    emit('Done', 3, 3, { finished: true })
-    return { uploaded: true, bytes, at: manifest.snapshotAt, pruned }
+    emit('Done', 4, 4, { finished: true })
+    return {
+      uploaded: true,
+      bytes: gz.bytes,
+      uncompressedBytes: bytes,
+      at: stamped.snapshotAt,
+      pruned
+    }
   } catch (err) {
-    emit('Failed', 3, 3, { finished: true, error: (err as Error).message })
+    emit('Failed', 4, 4, { finished: true, error: (err as Error).message })
     throw err
   } finally {
     if (existsSync(path)) unlinkSync(path)
+    if (packed !== null && existsSync(packed)) unlinkSync(packed)
   }
 }
 
@@ -321,7 +385,8 @@ export async function restoreFromRemote(
     )
   }
 
-  const staged = join(tempDir(), 'restore.db')
+  const compressed = store.isCompressed()
+  const staged = join(tempDir(), compressed ? 'restore.db.gz' : 'restore.db')
   if (existsSync(staged)) unlinkSync(staged)
 
   try {
@@ -337,11 +402,30 @@ export async function restoreFromRemote(
     if (digest !== manifest.sha256) {
       throw new Error(tr('err.backupHashMismatch'))
     }
-    const intact = verifySnapshot(staged)
+
+    /*
+      Unpacked only after the checksum passes, and into a second file.
+
+      A backup written before compression existed has no `.gz` on its name, and is
+      used as it is — an old backup should not become unreadable because the format
+      moved on. `gunzip` on a plain database would fail with a stream error, which is
+      why the branch exists rather than a try-and-see.
+    */
+    let usable = staged
+    if (compressed) {
+      usable = join(tempDir(), 'restore-unpacked.db')
+      try {
+        await decompress(staged, usable)
+      } catch (err) {
+        throw new Error(tr('err.backupCorrupt', { reason: (err as Error).message }))
+      }
+    }
+
+    const intact = verifySnapshot(usable)
     if (!intact.ok) throw new Error(tr('err.backupCorrupt', { reason: intact.reason }))
     // Belt and braces: the manifest is metadata anyone could have written, so the
     // schema check is repeated against the file that actually arrived.
-    const arrived = schemaVersionOf(staged)
+    const arrived = schemaVersionOf(usable)
     if (arrived > local) {
       throw new Error(tr('err.backupNewerSchema', { remote: arrived, local }))
     }
@@ -354,7 +438,8 @@ export async function restoreFromRemote(
     closeDb()
     const live = join(getDataDir(), 'matomeru.db')
     if (existsSync(live)) unlinkSync(live)
-    renameSync(staged, live)
+    renameSync(usable, live)
+    if (usable !== staged && existsSync(staged)) unlinkSync(staged)
 
     emit('Done', 3, 3, { finished: true })
     return { bytes: remote.bytes, safetyCopy, manifest }

@@ -38,6 +38,8 @@ import {
 import { moveToCollection, moveToDeck, revertMove } from '../src/main/db/repos/moves.js'
 import {
   HISTORY_KEPT,
+  compress,
+  decompress,
   localTouchedSince,
   restoreFromRemote,
   saveToRemote,
@@ -50,11 +52,9 @@ import {
   consentUrl,
   DRIVE_SCOPE,
   parseCallback,
-  pkcePair,
-  resolveCredentials
+  pkcePair
 } from '../src/main/services/oauth.js'
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
-import { parsePicked, pickerPage } from '../src/main/services/picker.js'
 import {
   deckBreakdown,
   deckMoves,
@@ -3178,6 +3178,8 @@ async function main(): Promise<void> {
       'finishPicker.finish', 'bulk.setFinish', 'add.finish',
       // French players say 'proxy' and 'proxies', like 'foil'.
       'proxy.badge', 'proxy.filter',
+      // The default backup folder is the app's own name, which does not translate.
+      'settings.backupFolderPlaceholder',
       // French players say 'deck', and pluralise it the same way.
       'picks.deckCount_one', 'picks.deckCount_other',
       // 'Import / export', 'Export' and 'Finish / foil' read the same in French.
@@ -4467,6 +4469,9 @@ async function main(): Promise<void> {
       let current: { data: Buffer; manifest: BackupManifest | null } | null = null
       const history: { data: Buffer; manifest: BackupManifest | null }[] = []
       let writes = 0
+      // Whatever the last upload actually was, so restore takes the same path the
+      // real store would take rather than a path the test chose for it.
+      let compressedRemote = true
       return {
         writes: () => writes,
         history: () => history.length,
@@ -4484,10 +4489,12 @@ async function main(): Promise<void> {
         },
         store: {
           label: () => 'FakeDrive',
+          isCompressed: () => compressedRemote,
           stat: async () =>
             current === null ? null : { bytes: current.data.byteLength, manifest: current.manifest },
           put: async (path, manifest, onProgress) => {
             if (current) history.unshift(current)
+            compressedRemote = path.endsWith('.gz')
             const data = readFileSync(path)
             current = { data, manifest }
             writes += 1
@@ -4540,6 +4547,36 @@ async function main(): Promise<void> {
     await restoreFromRemote(remote.store, quiet)
     check('restoring puts the whole database back, every table of it',
       wholeDb() === before, 'the restored database differs')
+
+    /*
+      ---- the snapshot travels compressed
+
+      Two things worth asserting separately: that the payload really is smaller (a
+      compression step that quietly did nothing would otherwise pass every other
+      check), and that what comes back out is byte-identical to what went in. The
+      round-trip above already proves the restore path end to end; this proves it is
+      doing so through gzip.
+    */
+    {
+      const taken = await snapshot()
+      const packed = await compress(taken.path)
+      check('the uploaded snapshot is materially smaller than the database',
+        packed.bytes < taken.bytes * 0.8,
+        `${taken.bytes} -> ${packed.bytes} bytes`)
+
+      const roundTripped = join(dir, 'backup-tmp', 'unpacked-check.db')
+      await decompress(packed.path, roundTripped)
+      check('and unpacks to exactly the database that was packed',
+        readFileSync(roundTripped).equals(readFileSync(taken.path)),
+        'the unpacked file differs from the original')
+
+      check('the remote holds the compressed form',
+        (await remote.store.isCompressed()) === true, 'the remote is not compressed')
+
+      rmSync(taken.path, { force: true })
+      rmSync(packed.path, { force: true })
+      rmSync(roundTripped, { force: true })
+    }
 
     /*
       ---- nothing written, nothing sent
@@ -4768,86 +4805,6 @@ async function main(): Promise<void> {
     patient.stop()
     check('a flow nobody completes times out instead of hanging',
       verdict === 'nobody came', verdict)
-  }
-
-  {
-    /*
-      The picker page. Asserted on its text because the Picker's own failures are
-      badly timed: a page missing its appId opens and looks right, and the folder it
-      returns is then one the app cannot write to. That surfaces as a permission
-      error on the next backup, a long way from the cause.
-    */
-    const page = pickerPage({
-      accessToken: 'tok-123',
-      apiKey: 'key-456',
-      appId: '789',
-      title: 'Choose a folder',
-      waiting: 'Opening…'
-    })
-    check('the picker page carries the access token', page.includes('"tok-123"'), 'no token')
-    check('and the developer key', page.includes('"key-456"'), 'no key')
-    check('and the appId, which is what makes a picked folder writable at all',
-      page.includes('setAppId') && page.includes('"789"'), 'no appId')
-    check('and asks for folders that can be selected',
-      page.includes('setSelectFolderEnabled(true)') &&
-        page.includes('application/vnd.google-apps.folder'),
-      'folders are not selectable')
-    check('and loads the Picker from Google rather than bundling it',
-      page.includes('https://apis.google.com/js/api.js'), 'no api.js')
-
-    // Values are injected as JSON, so a quote in a token cannot end the string.
-    const nasty = pickerPage({
-      accessToken: 'a"; alert(1); var x="b',
-      apiKey: 'k',
-      appId: '1',
-      title: '<script>bad()</script>',
-      waiting: 'x'
-    })
-    check('a quote in an injected value cannot break out of its string',
-      nasty.includes(JSON.stringify('a"; alert(1); var x="b')), 'the token was not escaped')
-    check('and a title is escaped where it lands in markup',
-      !nasty.includes('<script>bad()</script>'), 'the title was not escaped')
-
-    // ---- what comes back
-    const picked = parsePicked(new URLSearchParams('id=folder-1&name=Backups'))
-    check('a picked folder is read back with its id and name',
-      'folder' in picked && picked.folder.id === 'folder-1' && picked.folder.name === 'Backups',
-      JSON.stringify(picked))
-    const cancelled = parsePicked(new URLSearchParams('cancel=1'))
-    check('cancelling is not an error — nothing should change and nothing should be said',
-      'cancelled' in cancelled, JSON.stringify(cancelled))
-    const broken = parsePicked(new URLSearchParams('error=Google+could+not+be+reached'))
-    check('and a failure is reported as one',
-      'error' in broken && broken.error.includes('Google'), JSON.stringify(broken))
-    const empty = parsePicked(new URLSearchParams(''))
-    check('a reply with no folder in it is a failure, not a silent success',
-      'error' in empty, JSON.stringify(empty))
-  }
-
-  {
-    /*
-      Which OAuth client wins.
-
-      The point of compiling one in is that the user pastes nothing; the point of
-      keeping the fields is that a build without one still works. Both halves are
-      easy to get backwards, and getting them backwards means either a build that
-      ignores its own credentials or one that ignores the user's.
-    */
-    const bundled = { clientId: 'bundled-id', clientSecret: 'bundled-secret' }
-    const stored = { clientId: 'stored-id', clientSecret: 'stored-secret' }
-    check('a compiled-in client is used in preference to a stored one',
-      resolveCredentials(bundled, stored)?.clientId === 'bundled-id',
-      JSON.stringify(resolveCredentials(bundled, stored)))
-    check('a stored client is used when the build carries none',
-      resolveCredentials({ clientId: '', clientSecret: '' }, stored)?.clientId === 'stored-id',
-      JSON.stringify(resolveCredentials(null, stored)))
-    check('neither means not configured, rather than half a client',
-      resolveCredentials(null, null) === null &&
-        resolveCredentials({ clientId: 'id-only' }, null) === null,
-      'a half-filled client was accepted')
-    check('and whitespace is not a credential',
-      resolveCredentials({ clientId: '  ', clientSecret: '  ' }, stored)?.clientId === 'stored-id',
-      'blank strings counted as a client')
   }
 
   // ---------------------------------------------------------------- oauth
