@@ -23,7 +23,7 @@ import { guard, useApp } from '../store/app'
 import type { ViewProps } from '../App'
 import { Button, Select } from '../components/primitives'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
-import type { BackupStatus } from '@shared/types'
+import type { BackupStatus, UpdateState } from '@shared/types'
 import { count, megabytes, relativeTime } from '../lib/format'
 
 export default function SettingsView(_props: ViewProps): React.ReactElement {
@@ -331,6 +331,8 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
 
           <BackupPanel />
 
+          <UpdatePanel />
+
           <section className="panel p-4 text-[11px] leading-relaxed text-ink-500">
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">
               {t('settings.dataTitle')}
@@ -353,6 +355,161 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
  * left out, because Scryfall's booster flag already answers those offline and no
  * download would add anything.
  */
+/**
+ * Updating, in whichever of its three forms this build supports.
+ *
+ * One state shape covers all of them, so this renders a single line of status and
+ * whichever single action makes sense — rather than a matrix of buttons most of which
+ * cannot work. A portable build cannot replace itself and says so; a build running
+ * from source has no update feed at all and says that.
+ */
+function UpdatePanel(): React.ReactElement {
+  const t = useT()
+  const toast = useApp((s) => s.toast)
+  const settings = useApp((s) => s.settings)
+  const updateSettings = useApp((s) => s.updateSettings)
+  const [state, setState] = useState<UpdateState | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const read = async (): Promise<void> => {
+    const next = await guard(() => window.api.updates.state())
+    if (next) setState(next)
+  }
+
+  useEffect(() => {
+    void read()
+  }, [])
+
+  const check = async (): Promise<void> => {
+    setBusy(true)
+    const next = await guard(() => window.api.updates.check())
+    setBusy(false)
+    if (!next) return
+    setState(next)
+    // Said out loud, because this one was asked for. The launch check stays silent.
+    if (next.error !== null) toast('error', next.error)
+    else if (next.available === null) toast('info', t('updates.upToDate'))
+    else toast('success', t('updates.available', { version: next.available.version }))
+  }
+
+  const download = async (): Promise<void> => {
+    setBusy(true)
+    const next = await guard(() => window.api.updates.download())
+    setBusy(false)
+    if (next) setState(next)
+  }
+
+  const install = async (): Promise<void> => {
+    // Nothing to report afterwards: this quits the app.
+    await guard(() => window.api.updates.install())
+  }
+
+  const mode = state?.mode ?? 'disabled'
+  const available = state?.available ?? null
+
+  return (
+    <section className="panel p-4" data-setting="updates">
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+        {t('updates.title')}
+      </h2>
+
+      <p className="numeric text-sm text-ink-200" data-field="currentVersion">
+        {t('updates.current', { version: state?.current ?? '—' })}
+      </p>
+
+      {/* What this build can do about it, stated before any button is offered. */}
+      {mode === 'disabled' && (
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">{t('updates.disabled')}</p>
+      )}
+      {mode === 'notify' && (
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">{t('updates.portable')}</p>
+      )}
+
+      <p className="mt-2 text-[11px] leading-relaxed text-ink-400" data-field="updateStatus">
+        {state === null
+          ? t('updates.checking')
+          : state.error !== null
+            ? state.error
+            : state.downloaded && available !== null
+              ? t('updates.ready', { version: available.version })
+              : available !== null
+                ? t('updates.available', { version: available.version })
+                : state.checkedAt === null
+                  ? t('updates.never')
+                  : t('updates.upToDate')}
+      </p>
+
+      {state?.checkedAt !== null && state?.checkedAt !== undefined && (
+        <p className="mt-1 text-[11px] text-ink-600">
+          {t('updates.checkedAt', { when: relativeTime(state.checkedAt) })}
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          icon={<RefreshCw size={13} className={busy ? 'animate-spin' : ''} />}
+          onClick={() => void check()}
+          disabled={busy || mode === 'disabled'}
+          data-action="checkUpdates"
+        >
+          {busy ? t('updates.checking') : t('updates.check')}
+        </Button>
+
+        {/* One action at a time, and only the one that applies. */}
+        {mode === 'auto' && available !== null && !state?.downloaded && (
+          <Button
+            variant="primary"
+            icon={<Download size={13} />}
+            onClick={() => void download()}
+            disabled={busy || state?.downloading === true}
+            data-action="downloadUpdate"
+          >
+            {state?.downloading === true ? t('updates.downloading') : t('updates.download')}
+          </Button>
+        )}
+        {mode === 'auto' && state?.downloaded === true && (
+          <Button
+            variant="primary"
+            icon={<RefreshCw size={13} />}
+            onClick={() => void install()}
+            data-action="installUpdate"
+          >
+            {t('updates.install')}
+          </Button>
+        )}
+        {mode === 'notify' && available !== null && (
+          <Button
+            variant="primary"
+            icon={<ExternalLink size={13} />}
+            onClick={() => void guard(() => window.api.updates.openRelease())}
+            data-action="openRelease"
+          >
+            {t('updates.openPage')}
+          </Button>
+        )}
+      </div>
+
+      {settings && (
+        <label className="mt-3 flex items-start justify-between gap-4">
+          <span className="text-sm text-ink-200">
+            {t('updates.onLaunch')}
+            <span className="mt-0.5 block text-[11px] text-ink-500">
+              {t('updates.onLaunchHint')}
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.checkUpdatesOnLaunch}
+            onChange={(e) => void updateSettings({ checkUpdatesOnLaunch: e.target.checked })}
+            className="mt-1 shrink-0 accent-gold-500"
+            data-field="checkUpdatesOnLaunch"
+          />
+        </label>
+      )}
+    </section>
+  )
+}
+
 /**
  * The Drive connection, and the three things you can do with it.
  *

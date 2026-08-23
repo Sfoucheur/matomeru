@@ -743,6 +743,24 @@ export const fr: Record<keyof typeof en, string> = {
 	"boosters.refresh": "Actualiser",
 	"boosters.loaded": "{boosters} types de booster, {cards} cartes calculées pour {set}.",
 
+	// ----------------------------------------------------------------- updates
+	"updates.title": "Mises à jour",
+	"updates.current": "Version {version}",
+	"updates.check": "Rechercher des mises à jour",
+	"updates.checking": "Recherche…",
+	"updates.upToDate": "Vous avez la dernière version.",
+	"updates.never": "Pas encore vérifié.",
+	"updates.checkedAt": "Dernière vérification {when}.",
+	"updates.available": "La version {version} est disponible.",
+	"updates.download": "Télécharger la mise à jour",
+	"updates.downloading": "Téléchargement…",
+	"updates.ready": "La version {version} est prête à être installée.",
+	"updates.install": "Redémarrer et installer",
+	"updates.openPage": "Ouvrir la page de la version",
+	"updates.portable": "Ceci est la version portable : elle ne peut pas se remplacer elle-même. Les mises à jour s’ouvrent donc dans votre navigateur.",
+	"updates.disabled": "Les mises à jour ne sont disponibles que dans une version installée. Celle-ci est exécutée depuis les sources.",
+	"updates.onLaunch": "Rechercher des mises à jour au démarrage",
+	"updates.onLaunchHint": "Une vérification discrète quelques secondes après l’ouverture. Elle ne dit rien s’il n’y a rien de plus récent.",
 	// ------------------------------------------------------------------ backup
 	"backup.title": "Sauvegarder sur Google Drive",
 	"backup.local": "Sur cette machine",
@@ -790,6 +808,11 @@ export const fr: Record<keyof typeof en, string> = {
 
 	// ------------------------------------------------------------------- errors
 
+	"err.updateUnavailable": "Les mises à jour ne fonctionnent que dans une version installée, pas lors d’une exécution depuis les sources.",
+	"err.updateCheckFailed": "GitHub a renvoyé {status} à la demande de la dernière version.",
+	"err.updateNotInstallable": "Cette version ne peut pas installer les mises à jour elle-même.",
+	"err.updateNothingToGet": "Aucune mise à jour à télécharger.",
+	"err.updateNotDownloaded": "La mise à jour n’a pas fini de se télécharger.",
 	"err.backupNotConfigured": "Saisissez d’abord votre identifiant et votre secret client Google dans les réglages.",
 	"err.backupNotConnected": "Connectez-vous d’abord à Google Drive dans les réglages.",
 	"err.backupAuthDenied": "Google n’a pas accordé l’accès : {reason}",

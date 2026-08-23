@@ -5,6 +5,7 @@ import type {
   AppSettings,
   BackupResult,
   BackupStatus,
+  UpdateState,
   RestoreResult,
   CardLocations,
   CollectionFilters,
@@ -252,6 +253,15 @@ const api = {
     redo: () => call<{ label: string } | null>('undo:redo'),
     state: () => call<UndoState>('undo:state')
   },
+  updates: {
+    state: () => call<UpdateState>('updates:state'),
+    check: () => call<UpdateState>('updates:check'),
+    download: () => call<UpdateState>('updates:download'),
+    /** Quits and hands over to the installer, so nothing comes back. */
+    install: () => call<void>('updates:install'),
+    openRelease: () => call<void>('updates:openRelease')
+  },
+
   backup: {
     /** Never returns a credential — only what the dialog needs to describe things. */
     status: () => call<BackupStatus>('backup:status'),

@@ -55,6 +55,7 @@ import {
   pkcePair
 } from '../src/main/services/oauth.js'
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
+import { isNewerVersion, updateMode } from '../src/main/services/updateCheck.js'
 import {
   deckBreakdown,
   deckMoves,
@@ -3180,6 +3181,8 @@ async function main(): Promise<void> {
       'proxy.badge', 'proxy.filter',
       // The default backup folder is the app's own name, which does not translate.
       'settings.backupFolderPlaceholder',
+      // 'Version' is the same word in French, and the number is interpolated.
+      'updates.current',
       // French players say 'deck', and pluralise it the same way.
       'picks.deckCount_one', 'picks.deckCount_other',
       // 'Import / export', 'Export' and 'Finish / foil' read the same in French.
@@ -4722,6 +4725,51 @@ async function main(): Promise<void> {
     check(`the remote keeps ${HISTORY_KEPT} previous snapshots and no more`,
       rotating.history() === HISTORY_KEPT, `${rotating.history()} kept`)
     getDb().run("DELETE FROM settings WHERE key = 'backup.probe'")
+  }
+
+  // ---------------------------------------------------------------- updates
+  {
+    /*
+      Which build may update itself.
+
+      The whole feature hangs off this: `auto` in a portable build downloads an
+      installer it can never install, and `auto` in a dev build throws on the first
+      call because there is no app-update.yml to read. Neither failure is visible from
+      reading the code, and both are one boolean away.
+    */
+    check('an installed build updates itself',
+      updateMode({ packaged: true, portableDir: undefined }) === 'auto',
+      updateMode({ packaged: true, portableDir: undefined }))
+    check('a portable build only reports, because nothing can be installed over it',
+      updateMode({ packaged: true, portableDir: 'C:/somewhere' }) === 'notify',
+      updateMode({ packaged: true, portableDir: 'C:/somewhere' }))
+    check('and an empty portable path is not a portable build',
+      updateMode({ packaged: true, portableDir: '' }) === 'auto',
+      updateMode({ packaged: true, portableDir: '' }))
+    check('running from source does nothing at all',
+      updateMode({ packaged: false, portableDir: undefined }) === 'disabled',
+      updateMode({ packaged: false, portableDir: undefined }))
+
+    /*
+      And whether a release is newer.
+
+      Compared as numbers, because the string comparison that looks right stops
+      offering updates at the tenth minor release -- '0.10.0' < '0.9.0' as text. A tag
+      carries a `v` and the app's own version does not, so both spellings have to mean
+      the same thing.
+    */
+    check('a later patch is newer', isNewerVersion('0.1.1', '0.1.0'))
+    check('a v prefix on the tag makes no difference', isNewerVersion('v0.2.0', '0.1.9'))
+    check('0.10.0 beats 0.9.0, which string comparison gets backwards',
+      isNewerVersion('0.10.0', '0.9.0'))
+    check('the same version is not newer', !isNewerVersion('0.1.0', '0.1.0'))
+    check('an older version is not newer', !isNewerVersion('0.1.0', '0.2.0'))
+    check('a shorter version is compared by segment, not by length',
+      isNewerVersion('1.0', '0.9.9') && !isNewerVersion('1.0', '1.0.1'))
+    check('and nonsense never triggers an update prompt',
+      !isNewerVersion('nightly', '0.1.0') && !isNewerVersion('', '0.1.0') &&
+        !isNewerVersion('0.1.0', 'nightly'),
+      'a malformed tag read as newer')
   }
 
   // ------------------------------------------------------- loopback and picker

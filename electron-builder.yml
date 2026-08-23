@@ -10,7 +10,20 @@ files:
 asarUnpack:
   # node-sqlite3-wasm loads its .wasm from disk at runtime; it cannot live inside the asar.
   - '**/node_modules/node-sqlite3-wasm/**'
+# Where the updater looks, and where `electron-builder --publish` uploads to. Without
+# this block there is no app-update.yml in the package, and electron-updater throws on
+# first use rather than reporting that it cannot check.
+publish:
+  provider: github
+  owner: Sfoucheur
+  repo: matomeru
 win:
+  # The app is unsigned, and electron-updater otherwise compares the downloaded
+  # installer's signature to the running app's publisher -- with no signature at
+  # either end that check fails and the update silently never installs. Integrity then
+  # rests on the sha512 in latest.yml, fetched over HTTPS from GitHub: weaker than code
+  # signing, and the same trust already placed in the download link itself.
+  verifyUpdateCodeSignature: false
   target:
     - target: nsis
       arch: [x64]
@@ -21,10 +34,11 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: Matomeru
-  # No blockmap. It exists only to let an auto-updater fetch a differential
-  # download from an update feed, and this app ships no updater — nothing reads
-  # it. Note this does NOT avoid the electron-builder 26.14+ breakage described
-  # in README.md: that require() sits at the top of the module, so the import
-  # throws whether or not the blockmap is ever built. The version pin is what
-  # avoids it; this line just drops a file nothing uses.
+  # No blockmap, even though the app now ships an updater and could use one.
+  # A blockmap buys a differential download; skipping it means electron-updater
+  # fetches the whole installer each time, which for an app that updates rarely is
+  # the simpler trade — and the differential path is adjacent to the electron-builder
+  # 26.14+ breakage described in README.md that the version pin exists to avoid.
+  # Note the pin is what avoids that breakage, not this line: the offending require()
+  # sits at the top of the module and throws whether or not a blockmap is built.
   differentialPackage: false

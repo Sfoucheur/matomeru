@@ -37,7 +37,9 @@ const DEFAULTS: AppSettings = {
     theme nobody asked for. `system` is one click away for anyone who wants it.
   */
   themeMode: 'dark',
-  pureBlack: false
+  pureBlack: false,
+  // On by default: an app that can update itself and does not look is not much use.
+  checkUpdatesOnLaunch: true
 }
 
 /** Settings stored as JSON rather than a bare string or boolean. */
@@ -171,6 +173,8 @@ export function getSettings(): AppSettings {
     theme: parseTheme(map.get('theme')),
     themeMode: parseThemeMode(map.get('themeMode')),
     pureBlack: map.get('pureBlack') === '1',
+    // Defaults to on, so an existing install starts checking without being told to.
+    checkUpdatesOnLaunch: (map.get('checkUpdatesOnLaunch') ?? '1') === '1',
     gridColumns: parseGridColumns(map.get('gridColumns')),
     labelPossession: parsePossession(map.get('labelPossession'), map.get('notOwnedColors')),
     viewModes: parseViewModes(map.get('viewModes'))

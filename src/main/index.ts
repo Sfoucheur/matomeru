@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import { closeDb, getDb, setDataDir } from './db/connection.js'
 import { registerHandlers } from './ipc/handlers.js'
 import { setAppVersion } from './services/backup.js'
+import { checkForUpdates } from './services/updates.js'
+import { getSettings } from './db/repos/settings.js'
+import { broadcastProgress } from './ipc/handlers.js'
 import { adoptOldData } from './services/adoptOldData.js'
 import { registerImageProtocol, registerImageScheme } from './services/imageCache.js'
 
@@ -73,6 +76,21 @@ if (!app.requestSingleInstanceLock()) {
     registerImageProtocol()
     registerHandlers()
     createWindow()
+
+    /*
+      One quiet look for a new release, a few seconds after the window exists.
+
+      Delayed because startup already has migrations, a window and the first queries
+      to get through, and an update check is the least urgent thing the app does. It
+      is silent by design: `silent` suppresses the error, so an unreachable GitHub or
+      a repository with no releases yet leaves no trace in the UI. Nobody asked, and
+      there would be nothing for them to do about it.
+    */
+    if (getSettings().checkUpdatesOnLaunch) {
+      setTimeout(() => {
+        void checkForUpdates(broadcastProgress, { silent: true })
+      }, 4000)
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -743,6 +743,24 @@ export const en = {
   'boosters.refresh': 'Refresh',
   'boosters.loaded': '{boosters} booster types, {cards} cards priced for {set}.',
 
+  // ----------------------------------------------------------------- updates
+  'updates.title': 'Updates',
+  'updates.current': 'Version {version}',
+  'updates.check': 'Check for updates',
+  'updates.checking': 'Checking…',
+  'updates.upToDate': 'You have the latest release.',
+  'updates.never': 'Not checked yet.',
+  'updates.checkedAt': 'Last checked {when}.',
+  'updates.available': 'Version {version} is available.',
+  'updates.download': 'Download update',
+  'updates.downloading': 'Downloading…',
+  'updates.ready': 'Version {version} is ready to install.',
+  'updates.install': 'Restart and install',
+  'updates.openPage': 'Open the release page',
+  'updates.portable': 'This is the portable build, so it cannot replace itself. Updates open in your browser instead.',
+  'updates.disabled': 'Updates are only available in an installed build. This one is running from source.',
+  'updates.onLaunch': 'Look for updates at startup',
+  'updates.onLaunchHint': 'One quiet check a few seconds after the app opens. It says nothing unless there is something newer.',
   // ------------------------------------------------------------------ backup
   'backup.title': 'Back up to Google Drive',
   'backup.local': 'On this machine',
@@ -789,6 +807,11 @@ export const en = {
 
   // ------------------------------------------------------------------- errors
 
+  'err.updateUnavailable': 'Updates only work in an installed build, not when running from source.',
+  'err.updateCheckFailed': 'GitHub returned {status} when asked for the latest release.',
+  'err.updateNotInstallable': 'This build cannot install updates itself.',
+  'err.updateNothingToGet': 'There is no update to download.',
+  'err.updateNotDownloaded': 'The update has not finished downloading yet.',
   'err.backupNotConfigured': 'Enter your Google client ID and secret in Settings first.',
   'err.backupNotConnected': 'Connect to Google Drive in Settings first.',
   'err.backupAuthDenied': 'Google did not grant access: {reason}',

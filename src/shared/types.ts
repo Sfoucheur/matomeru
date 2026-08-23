@@ -952,7 +952,14 @@ export interface CsvDryRun {
 // ---------- Progress ----------
 
 export interface ProgressEvent {
-  job: 'csv-import' | 'deck-sync' | 'deck-language' | 'booster-odds' | 'price-sync' | 'backup'
+  job:
+    | 'csv-import'
+    | 'deck-sync'
+    | 'deck-language'
+    | 'booster-odds'
+    | 'price-sync'
+    | 'backup'
+    | 'update'
   phase: string
   done: number
   total: number
@@ -1109,6 +1116,8 @@ export interface AppSettings {
   theme: ThemeName
   /** Light or dark. `system` follows the OS, exactly as `locale` does. */
   themeMode: ThemeMode
+  /** Whether to look for a new release shortly after launch. */
+  checkUpdatesOnLaunch: boolean
   /**
    * True black backgrounds for OLED panels, where a near-black still glows.
    * Only meaningful in dark mode, so the UI hides it in light.
@@ -1239,4 +1248,43 @@ export interface RestoreResult {
   safetyCopy: string
   /** The manifest of what was restored, for the message. */
   manifest: BackupManifest
+}
+
+// ---------- Updates ----------
+
+/**
+ * What updating can do in this build.
+ *
+ * - `auto` — an installed build: check, download, install on restart.
+ * - `notify` — a portable build: nothing can be installed over it, so the most it can
+ *   honestly do is notice a release and offer to open its page.
+ * - `disabled` — not packaged at all, where `autoUpdater` throws.
+ *
+ * Declared here rather than beside the function that computes it, because this file
+ * is compiled for the renderer as well and cannot reach into the main process.
+ */
+export type UpdateMode = 'auto' | 'notify' | 'disabled'
+
+/**
+ * What the Settings panel needs to describe updating.
+ *
+ * One shape for all three modes, so the panel has a single thing to render rather
+ * than a branch per build type. `available` stays null until a check has actually
+ * found something — "no update" and "have not looked" are different states, and
+ * conflating them makes a silent launch check look like a clean bill of health.
+ */
+export interface UpdateState {
+  mode: UpdateMode
+  /** The running version, from Electron itself rather than from package.json at runtime. */
+  current: string
+  /** Set once a check has completed, whatever it found. */
+  checkedAt: string | null
+  /** The newer release, when there is one. */
+  available: { version: string; notes: string; url: string } | null
+  /** True once the installer is on disk and only a restart stands in the way. */
+  downloaded: boolean
+  /** True while a download is running, so the button can say so. */
+  downloading: boolean
+  /** Set when the last check or download failed. Null after a success. */
+  error: string | null
 }

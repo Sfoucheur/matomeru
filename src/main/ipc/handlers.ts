@@ -115,6 +115,13 @@ import {
 } from '../services/backup.js'
 import { driveStore, folderName, setFolderName } from '../services/googleDrive.js'
 import {
+  checkForUpdates,
+  downloadUpdate,
+  installUpdate,
+  openReleasePage,
+  updateState
+} from '../services/updates.js'
+import {
   connect as connectDrive,
   disconnect as disconnectDrive,
   hasBundledClient,
@@ -145,11 +152,21 @@ function handle<Args extends unknown[], Result>(
   })
 }
 
-const broadcast = createThrottledBroadcaster((event: ProgressEvent) => {
+/**
+ * Progress out to every window, throttled.
+ *
+ * Exported because the launch-time update check runs from `index.ts`, before any
+ * handler has been called, and it should report through the same bar as everything
+ * else rather than inventing a second channel.
+ */
+export const broadcastProgress = createThrottledBroadcaster((event: ProgressEvent) => {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('app:progress', event)
   }
 })
+
+/** The name the handlers below have always used. */
+const broadcast = broadcastProgress
 
 export function registerHandlers(): void {
   // ---------- Collection ----------
@@ -733,6 +750,19 @@ export function registerHandlers(): void {
     const { bytes } = await snapshot()
     return bytes
   })
+
+  // ---------- Updates ----------
+
+  /*
+    Four verbs, and none of them do more than they say. A check reports; a download
+    downloads; installing quits. The renderer decides which to offer from the mode in
+    the state, so a portable build never sees a button that cannot work.
+  */
+  handle('updates:state', () => updateState())
+  handle('updates:check', () => checkForUpdates(broadcast))
+  handle('updates:download', () => downloadUpdate(broadcast))
+  handle('updates:install', () => installUpdate(broadcast))
+  handle('updates:openRelease', () => openReleasePage())
 
   // ---------- CSV ----------
   handle('csv:pickImport', async () => {

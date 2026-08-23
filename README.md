@@ -435,6 +435,57 @@ checksum, and a snapshot claiming a newer schema — against an in-memory fake, 
 no credentials and no network. Sabotaging the order so the file is replaced before it
 is verified is reported by name, as `UNREADABLE: file is not a database`.
 
+## Updating
+
+`electron-builder` already emitted `latest.yml` with a sha512 of the installer — that
+file *is* electron-updater's feed format — so GitHub releases were already an update
+feed waiting to be read. Settings has an Updates panel: current version, a check
+button, and whichever single action applies.
+
+Three behaviours, from one `updateMode()`:
+
+| Mode | When | What it does |
+|---|---|---|
+| `auto` | installed (NSIS) | check, download on request, install on restart |
+| `notify` | portable | check the releases API, offer to open the release page |
+| `disabled` | running from source | nothing, and says why |
+
+`disabled` and `notify` are not politeness. `autoUpdater` reads `app-update.yml` when
+it initialises and throws outside a packaged app, which is why the import is dynamic
+and only happens in `auto`. And the portable build is the trap: `app-update.yml` is
+written into the *shared* resources directory, so the portable exe contains one too and
+electron-updater will cheerfully check and download before failing at the install —
+the worst possible moment to discover it. The portable stub sets
+`PORTABLE_EXECUTABLE_DIR` (`app-builder-lib/templates/nsis/portable.nsi`), which is the
+signal to take the other road.
+
+`autoDownload` is off. 96 MB should not start moving because the app launched; the
+launch check only looks, and it looks **silently** — an unreachable GitHub or a
+repository with no releases leaves no trace, because nobody asked and there is nothing
+to do about it. The manual check reports everything. That distinction lives in a
+module-level `quiet` flag rather than a closure, because electron-updater reports
+failure through an event and an event can outlive the promise it belongs to.
+
+`win.verifyUpdateCodeSignature: false` is set, and deserves saying out loud rather
+than hiding in a diff: the app is unsigned, and electron-updater's Windows check
+compares the downloaded installer's signature to the running app's publisher. With no
+signature at either end that check fails and the update simply never installs.
+Integrity then rests on the sha512 in `latest.yml` over HTTPS from GitHub — weaker
+than code signing, and the same trust already placed in the download link.
+
+**Publishing:** `electron-builder --publish always` uploads the installer, `latest.yml`
+and the portable exe, and needs `GH_TOKEN` in the environment at publish time only,
+never in the app. The tag must match `package.json` (`v0.1.1` for `0.1.1`) or the feed
+and the app disagree about what is newer.
+
+**On `npm audit`:** adding `electron-updater` raises a high advisory against
+`builder-util-runtime` (credential leak on cross-origin redirect). It does not apply to
+what ships here: `electron-updater` carries its own nested `builder-util-runtime@9.7.0`,
+which is the patched version, and the vulnerable 9.6.3 sits only under
+`electron-builder` — a devDependency that never reaches the package. `npm audit fix`
+would "fix" it by moving electron-builder to 26.15.x, which is exactly the version
+range the pin exists to avoid.
+
 ## Floating surfaces
 
 Popovers, dialogs and toasts use `.panel-floating`, not `.panel`. The two want
