@@ -3,6 +3,9 @@ import type {
   BoosterOdds,
   AddCardInput,
   AppSettings,
+  BackupResult,
+  BackupStatus,
+  RestoreResult,
   CardLocations,
   CollectionFilters,
   CollectionPage,
@@ -249,6 +252,24 @@ const api = {
     redo: () => call<{ label: string } | null>('undo:redo'),
     state: () => call<UndoState>('undo:state')
   },
+  backup: {
+    /** Never returns a credential — only what the dialog needs to describe things. */
+    status: () => call<BackupStatus>('backup:status'),
+    setCredentials: (clientId: string, clientSecret: string) =>
+      call<boolean>('backup:setCredentials', clientId, clientSecret),
+    connect: () => call<boolean>('backup:connect'),
+    disconnect: () => call<boolean>('backup:disconnect'),
+    /** `force` carries the user's acknowledgement that a newer remote may be replaced. */
+    save: (force = false) => call<BackupResult>('backup:save', force),
+    restore: () => call<RestoreResult>('backup:restore'),
+    /** Opens Google's Picker. `cancelled` when the user closed it without choosing. */
+    pickFolder: () =>
+      call<{ cancelled: boolean; folder: { id: string; name: string } | null }>(
+        'backup:pickFolder'
+      ),
+    snapshotSize: () => call<number>('backup:snapshotSize')
+  },
+
   settings: {
     get: () => call<AppSettings>('settings:get'),
     update: (patch: Partial<AppSettings>) => call<AppSettings>('settings:update', patch)

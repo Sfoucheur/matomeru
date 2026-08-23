@@ -7,7 +7,8 @@
  *
  *   npm run verify
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, join as joinPath } from 'node:path'
 import { closeDb, getDb, setDataDir } from '../src/main/db/connection.js'
@@ -35,6 +36,25 @@ import {
   setPickItemQuantity
 } from '../src/main/db/repos/pickLists.js'
 import { moveToCollection, moveToDeck, revertMove } from '../src/main/db/repos/moves.js'
+import {
+  HISTORY_KEPT,
+  localTouchedSince,
+  restoreFromRemote,
+  saveToRemote,
+  snapshot,
+  schemaVersion,
+  verifySnapshot,
+  type RemoteStore
+} from '../src/main/services/backup.js'
+import {
+  consentUrl,
+  DRIVE_SCOPE,
+  parseCallback,
+  pkcePair,
+  resolveCredentials
+} from '../src/main/services/oauth.js'
+import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
+import { parsePicked, pickerPage } from '../src/main/services/picker.js'
 import {
   deckBreakdown,
   deckMoves,
@@ -4423,8 +4443,477 @@ async function main(): Promise<void> {
     check('a count that lags the listing never reports a negative', p4.hidden === 0, `hidden ${p4.hidden}`)
   }
 
+  // ---------------------------------------------------------------- backup
+  section('Backup and restore')
+
+  {
+    /*
+      The remote, faked in memory.
+
+      `RemoteStore` was kept to four operations precisely so this could be small
+      enough to trust: it is a Buffer and a list, so what these checks exercise is
+      the real save/restore logic rather than a second implementation of it. The
+      parts a fake cannot cover — OAuth, resumable chunking, Drive's own error
+      shapes — are covered by the pure checks below and by a live smoke test that
+      skips loudly when no credentials are configured.
+    */
+    const fake = (): {
+      store: RemoteStore
+      writes: () => number
+      history: () => number
+      corrupt: (payload: Buffer, sha?: string) => void
+      restamp: (patch: Partial<BackupManifest>) => void
+    } => {
+      let current: { data: Buffer; manifest: BackupManifest | null } | null = null
+      const history: { data: Buffer; manifest: BackupManifest | null }[] = []
+      let writes = 0
+      return {
+        writes: () => writes,
+        history: () => history.length,
+        corrupt: (payload, sha) => {
+          if (!current) return
+          current = {
+            data: payload,
+            manifest: current.manifest
+              ? { ...current.manifest, sha256: sha ?? current.manifest.sha256 }
+              : null
+          }
+        },
+        restamp: (patch) => {
+          if (current?.manifest) current = { ...current, manifest: { ...current.manifest, ...patch } }
+        },
+        store: {
+          label: () => 'FakeDrive',
+          stat: async () =>
+            current === null ? null : { bytes: current.data.byteLength, manifest: current.manifest },
+          put: async (path, manifest, onProgress) => {
+            if (current) history.unshift(current)
+            const data = readFileSync(path)
+            current = { data, manifest }
+            writes += 1
+            onProgress(data.byteLength, data.byteLength)
+          },
+          get: async (target, onProgress) => {
+            if (!current) throw new Error('nothing to get')
+            writeFileSync(target, current.data)
+            onProgress(current.data.byteLength, current.data.byteLength)
+          },
+          rotate: async (keep) => {
+            const dropped = Math.max(0, history.length - keep)
+            history.length = Math.min(history.length, keep)
+            return dropped
+          }
+        }
+      }
+    }
+
+    const quiet = (): void => {}
+
+    /**
+     * Every table, so a restore is judged on the whole database and not on the three
+     * tables one feature happens to touch. A lost column somewhere unrelated is
+     * exactly the failure a narrower fingerprint would wave through.
+     */
+    const wholeDb = (): string => {
+      const tables = (
+        getDb().all(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ) as { name: string }[]
+      ).map((row) => row.name)
+      return JSON.stringify(
+        tables.map((table) => [table, getDb().all(`SELECT * FROM ${table}`)])
+      )
+    }
+
+    // ---- a snapshot round-trips
+    const remote = fake()
+    const before = wholeDb()
+    const saved = await saveToRemote(remote.store, quiet)
+    check('a backup writes a snapshot to the remote', saved.uploaded && remote.writes() === 1,
+      `uploaded ${saved.uploaded}, writes ${remote.writes()}`)
+
+    // Something the restore has to undo.
+    getDb().run("INSERT INTO settings (key, value) VALUES ('backup.probe', 'dirt') " +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    check('and the local database really did change', wholeDb() !== before, 'no change to undo')
+
+    await restoreFromRemote(remote.store, quiet)
+    check('restoring puts the whole database back, every table of it',
+      wholeDb() === before, 'the restored database differs')
+
+    /*
+      ---- nothing written, nothing sent
+
+      Tested on its own remote, and after a save rather than after a restore: a
+      restore replaces the database file outright, so the very next save has a file
+      it has never sent and uploading it is correct. What must be skipped is the
+      reflexive second Ctrl+S, and that is what this asserts.
+    */
+    {
+      const idle = fake()
+      const first = await saveToRemote(idle.store, quiet, null)
+      // The marker the app keeps, handed back in as the handler does.
+      const second = await saveToRemote(idle.store, quiet, first.at)
+      check('a second backup with nothing written since sends nothing',
+        first.uploaded && !second.uploaded && idle.writes() === 1,
+        `first ${first.uploaded}, second ${second.uploaded}, writes ${idle.writes()}`)
+
+      // And a write in between is noticed. The timestamp goes back far enough that
+      // the comparison cannot turn on the filesystem's mtime resolution.
+      getDb().run(
+        "INSERT INTO settings (key, value) VALUES ('backup.probe', 'touched') " +
+          'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+      )
+      const third = await saveToRemote(idle.store, quiet, '2000-01-01T00:00:00.000Z')
+      check('but a backup after a write does send',
+        third.uploaded && idle.writes() === 2,
+        `uploaded ${third.uploaded}, writes ${idle.writes()}`)
+      check('and the write is what the skip test itself reports',
+        localTouchedSince('2000-01-01T00:00:00.000Z') &&
+          !localTouchedSince('2999-01-01T00:00:00.000Z'),
+        'the mtime test does not distinguish past from future')
+      getDb().run("DELETE FROM settings WHERE key = 'backup.probe'")
+    }
+
+    // ---- the safety copy
+    const copies = readdirSync(dir).filter(
+      (name) => name.startsWith('before-restore-') && name.endsWith('.db')
+    )
+    check('a copy of the local database is kept before it is replaced',
+      copies.length >= 1, `${copies.length} copies`)
+    check('and that copy is itself a usable database',
+      copies.length > 0 && verifySnapshot(join(dir, copies[0])).ok,
+      copies.length ? JSON.stringify(verifySnapshot(join(dir, copies[0]))) : 'none')
+
+    /**
+     * The fingerprint, or why it could not be taken.
+     *
+     * A refused restore must leave the database not merely equal but *readable*, and
+     * the two are different claims: sabotaging the order so the file is replaced
+     * before it is checked left a garbage file in place, and a bare `wholeDb()` then
+     * threw inside the driver and took the whole run down. A crash is a signal but
+     * not an answer — it names no check. Returning the failure as a value makes the
+     * assertion below report it by name, which is what a guard this important
+     * deserves.
+     */
+    const readableWholeDb = (): string => {
+      try {
+        return wholeDb()
+      } catch (err) {
+        return `UNREADABLE: ${(err as Error).message}`
+      }
+    }
+
+    /*
+      ---- a download whose checksum is wrong is refused
+
+      The payload is a perfectly good database — the current snapshot, in fact — and
+      only the recorded hash is wrong. An unreadable payload would not test this:
+      the integrity check would refuse it and the checksum guard could be deleted
+      with every check still passing, which is exactly what the first version of
+      this check did.
+    */
+    const intact = readableWholeDb()
+    {
+      const good = await snapshot()
+      const validPayload = readFileSync(good.path)
+      remote.corrupt(validPayload, 'f'.repeat(64))
+      let rejected = ''
+      try {
+        await restoreFromRemote(remote.store, quiet)
+      } catch (err) {
+        rejected = (err as Error).message
+      }
+      check('a valid database with the wrong checksum recorded is still refused',
+        rejected.length > 0, rejected || 'it was accepted')
+      check('and that refusal leaves the local database readable and unchanged',
+        readableWholeDb() === intact, readableWholeDb().slice(0, 60))
+    }
+
+    remote.corrupt(Buffer.from('not a database at all'))
+    let refused = ''
+    try {
+      await restoreFromRemote(remote.store, quiet)
+    } catch (err) {
+      refused = (err as Error).message
+    }
+    check('a download that does not match its checksum is refused',
+      refused.length > 0, refused || 'it was accepted')
+    check('and the local database is untouched by the attempt',
+      readableWholeDb() === intact, readableWholeDb().slice(0, 60))
+
+    // ---- garbage that hashes correctly is still refused, by SQLite this time
+    const garbage = Buffer.concat([Buffer.from('SQLite format 3'), Buffer.from([0]), Buffer.from('and then lies')])
+    remote.corrupt(garbage, createHash('sha256').update(garbage).digest('hex'))
+    refused = ''
+    try {
+      await restoreFromRemote(remote.store, quiet)
+    } catch (err) {
+      refused = (err as Error).message
+    }
+    check('a payload with a correct checksum but no database in it is refused',
+      refused.length > 0, refused || 'it was accepted')
+    check('and the local database is still untouched',
+      readableWholeDb() === intact, readableWholeDb().slice(0, 60))
+
+    // ---- a snapshot from a newer app is refused
+    const fresh = fake()
+    await saveToRemote(fresh.store, quiet)
+    fresh.restamp({ schemaVersion: schemaVersion() + 1 })
+    refused = ''
+    try {
+      await restoreFromRemote(fresh.store, quiet)
+    } catch (err) {
+      refused = (err as Error).message
+    }
+    check('a backup from a newer version of the app is refused, not migrated backwards',
+      refused.includes(String(schemaVersion() + 1)), refused || 'it was accepted')
+
+    // ---- rotation
+    const rotating = fake()
+    for (let round = 0; round < HISTORY_KEPT + 3; round += 1) {
+      // A different database each round, or the hash check would skip the upload
+      // and there would be nothing to rotate.
+      getDb().run(
+        "INSERT INTO settings (key, value) VALUES ('backup.probe', ?) " +
+          'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        [`round-${round}`]
+      )
+      // Null, so the skip never applies and every round really uploads.
+      await saveToRemote(rotating.store, quiet, null)
+    }
+    check(`the remote keeps ${HISTORY_KEPT} previous snapshots and no more`,
+      rotating.history() === HISTORY_KEPT, `${rotating.history()} kept`)
+    getDb().run("DELETE FROM settings WHERE key = 'backup.probe'")
+  }
+
+  // ------------------------------------------------------- loopback and picker
+  {
+    /*
+      The loopback server both browser flows depend on.
+
+      Worth its own checks because the failure modes are invisible from the outside:
+      a listener left behind after the user closes the tab, or a second request
+      resolving a promise that was already answered. Both are testable here without
+      Google, which is the whole reason the transport was split from the semantics.
+    */
+    const first = loopbackOnce({
+      callbackPath: '/done',
+      timeoutMs: 5000,
+      onTimeout: () => new Error('timed out'),
+      serve: (path) => (path === '/page' ? '<p>hello</p>' : null),
+      done: () => '<p>thanks</p>'
+    })
+    const origin = await whenListening(first)
+    check('the loopback server reports a usable local origin',
+      /^http:\/\/127\.0\.0\.1:\d+$/.test(origin), origin)
+
+    const served = await fetch(`${origin}/page`)
+    const servedBody = await served.text()
+    check('it serves the page it was given', servedBody.includes('hello'), servedBody.slice(0, 40))
+
+    const ignored = await fetch(`${origin}/favicon.ico`)
+    check('and answers anything else with no content, rather than treating it as the reply',
+      ignored.status === 204, String(ignored.status))
+
+    const answered = await fetch(`${origin}/done?id=abc&name=Cards`)
+    const answeredBody = await answered.text()
+    const landed = await first.landed
+    check('the callback resolves with its query',
+      landed.get('id') === 'abc' && landed.get('name') === 'Cards',
+      landed.toString())
+    check('and the browser is answered before the caller is told, so the page arrives',
+      answeredBody.includes('thanks'), answeredBody.slice(0, 40))
+
+    /*
+      And it is gone. A server still listening after the flow finished is a port held
+      for the life of the app and a second reply that could resolve nothing.
+    */
+    let stillUp = false
+    try {
+      await fetch(`${origin}/done`)
+      stillUp = true
+    } catch {
+      stillUp = false
+    }
+    check('the server stops listening once it has landed', !stillUp, 'it is still accepting')
+    /*
+      Stopped explicitly as well, so a leak cannot take the run down with it. An open
+      listener keeps Node's event loop alive: when this was sabotaged the check
+      correctly noticed, and then the process never exited and the whole suite hung
+      with no output. Catching a fault is not much use if catching it also silences
+      the report.
+    */
+    first.stop()
+
+    // ---- and it gives up rather than waiting forever
+    const patient = loopbackOnce({
+      callbackPath: '/done',
+      timeoutMs: 150,
+      onTimeout: () => new Error('nobody came'),
+      serve: () => null,
+      done: () => ''
+    })
+    await whenListening(patient)
+    /*
+      Raced against a deadline of its own, because the failure being guarded against
+      is a promise that never settles. Awaiting it directly would hang this suite
+      instead of failing it -- which is what happened when the timeout was removed on
+      purpose: no output, no verdict, just a run that never ended.
+    */
+    const verdict = await Promise.race([
+      patient.landed.then(() => 'it landed by itself').catch((err) => (err as Error).message),
+      new Promise<string>((resolve) => setTimeout(() => resolve('never gave up'), 1200))
+    ])
+    patient.stop()
+    check('a flow nobody completes times out instead of hanging',
+      verdict === 'nobody came', verdict)
+  }
+
+  {
+    /*
+      The picker page. Asserted on its text because the Picker's own failures are
+      badly timed: a page missing its appId opens and looks right, and the folder it
+      returns is then one the app cannot write to. That surfaces as a permission
+      error on the next backup, a long way from the cause.
+    */
+    const page = pickerPage({
+      accessToken: 'tok-123',
+      apiKey: 'key-456',
+      appId: '789',
+      title: 'Choose a folder',
+      waiting: 'Opening…'
+    })
+    check('the picker page carries the access token', page.includes('"tok-123"'), 'no token')
+    check('and the developer key', page.includes('"key-456"'), 'no key')
+    check('and the appId, which is what makes a picked folder writable at all',
+      page.includes('setAppId') && page.includes('"789"'), 'no appId')
+    check('and asks for folders that can be selected',
+      page.includes('setSelectFolderEnabled(true)') &&
+        page.includes('application/vnd.google-apps.folder'),
+      'folders are not selectable')
+    check('and loads the Picker from Google rather than bundling it',
+      page.includes('https://apis.google.com/js/api.js'), 'no api.js')
+
+    // Values are injected as JSON, so a quote in a token cannot end the string.
+    const nasty = pickerPage({
+      accessToken: 'a"; alert(1); var x="b',
+      apiKey: 'k',
+      appId: '1',
+      title: '<script>bad()</script>',
+      waiting: 'x'
+    })
+    check('a quote in an injected value cannot break out of its string',
+      nasty.includes(JSON.stringify('a"; alert(1); var x="b')), 'the token was not escaped')
+    check('and a title is escaped where it lands in markup',
+      !nasty.includes('<script>bad()</script>'), 'the title was not escaped')
+
+    // ---- what comes back
+    const picked = parsePicked(new URLSearchParams('id=folder-1&name=Backups'))
+    check('a picked folder is read back with its id and name',
+      'folder' in picked && picked.folder.id === 'folder-1' && picked.folder.name === 'Backups',
+      JSON.stringify(picked))
+    const cancelled = parsePicked(new URLSearchParams('cancel=1'))
+    check('cancelling is not an error — nothing should change and nothing should be said',
+      'cancelled' in cancelled, JSON.stringify(cancelled))
+    const broken = parsePicked(new URLSearchParams('error=Google+could+not+be+reached'))
+    check('and a failure is reported as one',
+      'error' in broken && broken.error.includes('Google'), JSON.stringify(broken))
+    const empty = parsePicked(new URLSearchParams(''))
+    check('a reply with no folder in it is a failure, not a silent success',
+      'error' in empty, JSON.stringify(empty))
+  }
+
+  {
+    /*
+      Which OAuth client wins.
+
+      The point of compiling one in is that the user pastes nothing; the point of
+      keeping the fields is that a build without one still works. Both halves are
+      easy to get backwards, and getting them backwards means either a build that
+      ignores its own credentials or one that ignores the user's.
+    */
+    const bundled = { clientId: 'bundled-id', clientSecret: 'bundled-secret' }
+    const stored = { clientId: 'stored-id', clientSecret: 'stored-secret' }
+    check('a compiled-in client is used in preference to a stored one',
+      resolveCredentials(bundled, stored)?.clientId === 'bundled-id',
+      JSON.stringify(resolveCredentials(bundled, stored)))
+    check('a stored client is used when the build carries none',
+      resolveCredentials({ clientId: '', clientSecret: '' }, stored)?.clientId === 'stored-id',
+      JSON.stringify(resolveCredentials(null, stored)))
+    check('neither means not configured, rather than half a client',
+      resolveCredentials(null, null) === null &&
+        resolveCredentials({ clientId: 'id-only' }, null) === null,
+      'a half-filled client was accepted')
+    check('and whitespace is not a credential',
+      resolveCredentials({ clientId: '  ', clientSecret: '  ' }, stored)?.clientId === 'stored-id',
+      'blank strings counted as a client')
+  }
+
+  // ---------------------------------------------------------------- oauth
+  {
+    /*
+      The OAuth pieces that are pure functions. What is worth asserting is not that
+      they run but that they say the right thing: a challenge that is not the hash
+      of its verifier makes the exchange fail, and a consent URL missing
+      `access_type=offline` succeeds and then dies an hour later with no refresh
+      token — the kind of bug that only shows up long after the code that caused it.
+    */
+    const { verifier, challenge } = pkcePair()
+    const expected = createHash('sha256')
+      .update(verifier)
+      .digest('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    check('the PKCE challenge really is the hash of its verifier',
+      challenge === expected, `${challenge} vs ${expected}`)
+    check('and the verifier is long enough to be worth hashing',
+      verifier.length >= 43, `${verifier.length} chars`)
+
+    const url = new URL(
+      consentUrl({ clientId: 'abc.apps.googleusercontent.com', redirectUri: 'http://127.0.0.1:5555',
+        challenge, state: 'xyz' })
+    )
+    check('the consent URL asks for offline access, or there is no refresh token',
+      url.searchParams.get('access_type') === 'offline',
+      String(url.searchParams.get('access_type'))
+    )
+    check('and re-consents, so reconnecting returns a refresh token again',
+      url.searchParams.get('prompt') === 'consent',
+      String(url.searchParams.get('prompt'))
+    )
+    check('and asks for nothing broader than the files this app creates',
+      url.searchParams.get('scope') === DRIVE_SCOPE,
+      String(url.searchParams.get('scope'))
+    )
+    check('and carries the state that ties the reply to this request',
+      url.searchParams.get('state') === 'xyz' &&
+        url.searchParams.get('code_challenge_method') === 'S256',
+      `${url.searchParams.get('state')} / ${url.searchParams.get('code_challenge_method')}`
+    )
+
+    const back = parseCallback('/?code=4/abc&state=xyz')
+    check('the loopback reply is read back out of the query',
+      back.code === '4/abc' && back.state === 'xyz' && back.error === null,
+      JSON.stringify(back)
+    )
+    const denied = parseCallback('/?error=access_denied&state=xyz')
+    check('and a refusal arrives as an error rather than as a missing code',
+      denied.error === 'access_denied' && denied.code === null,
+      JSON.stringify(denied)
+    )
+  }
+
   section('Persistence')
-  const countBefore = (db.get('SELECT COUNT(*) AS c FROM collection_items') as { c: number }).c
+  /*
+    `getDb()` rather than the `db` captured at the top of this run. A restore closes
+    the database and leaves it closed — deliberately, since the app relaunches — so
+    from the backup section onwards that captured facade wraps a closed handle and
+    every call on it throws inside the driver. This is the harness catching the same
+    stale-handle hazard the real code has to respect.
+  */
+  const countBefore = (getDb().get('SELECT COUNT(*) AS c FROM collection_items') as { c: number }).c
   closeDb()
   setDataDir(dir)
   const reopened = getDb()

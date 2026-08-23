@@ -1,7 +1,8 @@
-import { BrowserWindow, clipboard, dialog, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage } from 'electron'
 import type {
   AddCardInput,
   AppSettings,
+  BackupStatus,
   CollectionFilters,
   Condition,
   CsvColumnMap,
@@ -105,7 +106,28 @@ import {
   undoableAsync,
   wholeTable
 } from '../db/undo.js'
-import { getLocale } from '../db/repos/settings.js'
+import { getLocale, getRawSetting, setRawSetting } from '../db/repos/settings.js'
+import {
+  localTouchedSince,
+  restoreFromRemote,
+  saveToRemote,
+  snapshot
+} from '../services/backup.js'
+import { chosenFolder, driveStore, setChosenFolder } from '../services/googleDrive.js'
+import {
+  accessToken,
+  connect as connectDrive,
+  disconnect as disconnectDrive,
+  hasBundledClient,
+  hasRefreshToken,
+  isConfigured,
+  pickerConfig,
+  setCredentials
+} from '../services/googleAuth.js'
+import { loopbackOnce, whenListening } from '../services/loopback.js'
+import { parsePicked, pickerPage, PICKED_PATH } from '../services/picker.js'
+import { callbackPage } from '../services/oauth.js'
+import { hostname } from 'node:os'
 
 /** Localised message, resolved at throw time from the stored locale. */
 function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
@@ -418,6 +440,15 @@ export function registerHandlers(): void {
     if (!name) throw new Error(tr('err.setUsername'))
     const result = await syncUserDecks(name, broadcast)
     clearUndoHistory()
+
+    /*
+      And the backup marker goes with it. It recorded when *this* machine last
+      uploaded, which said something about the database that was just replaced; the
+      database now on disk was written seconds ago and has never been backed up from
+      here. Leaving the old timestamp would make the next Ctrl+S report "up to date"
+      about a file it has never sent.
+    */
+    setRawSetting(KEY_LAST_AT, null)
     return result
   })
   handle('decks:addByUrl', async (input: string) => {
@@ -564,6 +595,213 @@ export function registerHandlers(): void {
       recomputeLabelPossession(settings.labelPossession)
     }
     return settings
+  })
+
+  // ---------- Backup ----------
+
+  /*
+    The keys the renderer never sees. `getSettings()` reads named fields and ignores
+    everything else, so these live in the same table without being handed out — and
+    the client secret and refresh token are not among them at all: those are sealed
+    with safeStorage inside googleAuth, and nothing here can read them back.
+  */
+  const KEY_LAST_AT = 'backup.lastBackupAt'
+
+  handle('backup:status', async (): Promise<BackupStatus> => {
+    const configured = isConfigured()
+    const connected = configured && hasRefreshToken()
+    const lastBackupAt = getRawSetting(KEY_LAST_AT)
+    const picker = pickerConfig()
+    const folder = chosenFolder()
+    const base: BackupStatus = {
+      configured,
+      bundled: hasBundledClient(),
+      folderName: folder?.name ?? null,
+      canPickFolder: picker.apiKey !== '' && picker.appId !== '',
+      connected,
+      label: folder?.name ?? 'Matomeru',
+      lastBackupAt,
+      remote: null,
+      remoteIsNewer: false,
+      upToDate: false,
+      error: null
+    }
+    if (!connected) return base
+
+    const store = driveStore()
+    try {
+      const remote = await store.stat()
+      if (!remote?.manifest) return { ...base, label: store.label() }
+      const manifest = remote.manifest
+      return {
+        ...base,
+        label: store.label(),
+        remote: { ...manifest, bytes: remote.bytes },
+        // Another machine wrote something we have never pulled down.
+        remoteIsNewer:
+          manifest.machine !== hostname() && manifest.snapshotAt > (lastBackupAt ?? ''),
+        // The same test the save itself applies, so the dialog cannot promise one
+        // thing and the action do another.
+        upToDate: !localTouchedSince(lastBackupAt)
+      }
+    } catch (err) {
+      // A revoked token or a dead network must not stop the dialog opening; it
+      // reports what went wrong instead of failing to appear.
+      return { ...base, error: (err as Error).message }
+    }
+  })
+
+  handle('backup:setCredentials', (clientId: string, clientSecret: string) => {
+    setCredentials(clientId, clientSecret)
+    return true
+  })
+
+  handle('backup:connect', async () => {
+    await connectDrive()
+    return true
+  })
+
+  handle('backup:disconnect', () => {
+    disconnectDrive()
+    return true
+  })
+
+  /**
+   * Choosing the folder, through Google's own Picker.
+   *
+   * The Picker rather than a folder tree of our own, because listing a whole Drive
+   * needs the full `drive` scope — restricted, verification-gated, and it would make
+   * the consent screen say this app can read everything you own. Picking is itself
+   * what grants access to the chosen folder, so `drive.file` stays sufficient and the
+   * promise that Matomeru sees only what it created stays true.
+   *
+   * Served over loopback because the Picker refuses a `file://` origin. The window is
+   * a plain one with no preload: it runs Google's script and nothing of ours, and it
+   * cannot reach the app's IPC.
+   */
+  handle('backup:pickFolder', async () => {
+    if (!isConfigured()) throw new Error(tr('err.backupNotConfigured'))
+    if (!hasRefreshToken()) throw new Error(tr('err.backupNotConnected'))
+    const { apiKey, appId } = pickerConfig()
+    if (!apiKey || !appId) throw new Error(tr('err.backupNoPickerKey'))
+
+    const token = await accessToken()
+    const page = pickerPage({
+      accessToken: token,
+      apiKey,
+      appId,
+      title: tr('backup.pickerTitle'),
+      waiting: tr('backup.pickerWaiting')
+    })
+
+    const loopback = loopbackOnce({
+      callbackPath: PICKED_PATH,
+      timeoutMs: 5 * 60 * 1000,
+      onTimeout: () => new Error(tr('err.backupPickerTimeout')),
+      serve: (path) => (path === '/picker' ? page : null),
+      done: () => callbackPage(tr('backup.pickerTitle'), tr('backup.browserDoneHint'))
+    })
+
+    const origin = await whenListening(loopback)
+    const window = new BrowserWindow({
+      width: 980,
+      height: 680,
+      parent: BrowserWindow.getAllWindows()[0],
+      title: tr('backup.pickerTitle'),
+      backgroundColor: '#0b0d12',
+      autoHideMenuBar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false }
+    })
+
+    /*
+      Closing the window is a cancel, and has to be handled: without this the promise
+      would sit unresolved for the full five minutes while the user waited for a
+      dialog that had already gone.
+    */
+    const closed = new Promise<'closed'>((resolve) => window.on('closed', () => resolve('closed')))
+
+    try {
+      await window.loadURL(`${origin}/picker`)
+      const outcome = await Promise.race([loopback.landed, closed])
+      if (outcome === 'closed') return { cancelled: true, folder: null }
+
+      const picked = parsePicked(outcome)
+      if ('cancelled' in picked) return { cancelled: true, folder: null }
+      if ('error' in picked) throw new Error(tr('err.backupPickerFailed', { reason: picked.error }))
+      setChosenFolder(picked.folder)
+      return { cancelled: false, folder: picked.folder }
+    } finally {
+      loopback.stop()
+      if (!window.isDestroyed()) window.destroy()
+    }
+  })
+
+  handle('backup:save', async (force = false) => {
+    if (!isConfigured()) throw new Error(tr('err.backupNotConfigured'))
+    if (!hasRefreshToken()) throw new Error(tr('err.backupNotConnected'))
+    const store = driveStore()
+
+    /*
+      The clobber guard, enforced here and not only in the dialog.
+
+      The renderer asks for the acknowledgement, but a guard that lives only in the
+      renderer is a guard that a second window, a stale dialog, or a future call
+      site walks straight past. `force` is the acknowledgement crossing the wire.
+    */
+    if (!force) {
+      const remote = await store.stat()
+      const manifest = remote?.manifest
+      const lastBackupAt = getRawSetting(KEY_LAST_AT)
+      if (
+        manifest &&
+        manifest.machine !== hostname() &&
+        manifest.snapshotAt > (lastBackupAt ?? '')
+      ) {
+        throw new Error(
+          tr('err.backupWouldClobber', { machine: manifest.machine })
+        )
+      }
+    }
+
+    const result = await saveToRemote(store, broadcast, getRawSetting(KEY_LAST_AT))
+    if (result.uploaded) setRawSetting(KEY_LAST_AT, result.at)
+    return result
+  })
+
+  handle('backup:restore', async () => {
+    if (!isConfigured()) throw new Error(tr('err.backupNotConfigured'))
+    if (!hasRefreshToken()) throw new Error(tr('err.backupNotConnected'))
+    const result = await restoreFromRemote(driveStore(), broadcast)
+
+    /*
+      The undo journal describes rows in the database that was just replaced. Its
+      before-images point at ids that may now mean different cards, so replaying one
+      would corrupt rather than undo — the same reasoning that clears it after a deck
+      sync, only more so.
+    */
+    clearUndoHistory()
+
+    /*
+      Relaunch rather than reopen. `invalidate()` only refreshes the visible view,
+      and a restore also replaces settings, theme, locale, the first-paint theme
+      hint in localStorage, and every piece of session state — selections, filters,
+      the open deck, a half-finished CSV import. Restarting resets all of it
+      provably; reloading each part by hand is a list nobody keeps correct.
+
+      Deferred so this reply reaches the renderer first, which is what lets it say
+      what happened before the window goes.
+    */
+    setTimeout(() => {
+      app.relaunch()
+      app.quit()
+    }, 500)
+    return result
+  })
+
+  /** The snapshot alone, for the tests and for a status read that wants real bytes. */
+  handle('backup:snapshotSize', async () => {
+    const { bytes } = await snapshot()
+    return bytes
   })
 
   // ---------- CSV ----------

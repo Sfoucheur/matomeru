@@ -348,7 +348,75 @@ UNIQUE key rather than an id, because an add has no id yet and because changing 
 copy's finish moves it across that key and can merge it into a sibling row. Inside
 a text field Ctrl+Z is left to the browser: there it means "undo my typing", and
 stealing it to roll back a database write while you fixed a typo would be both
-surprising and destructive.
+surprising and destructive. `Ctrl+S` follows the same rule for the same reason.
+
+## Backing up to Google Drive
+
+`Ctrl+S` opens a dialog; nothing is sent by the keystroke alone. It shows what is on
+this machine beside what is on Drive, and confirming uploads a snapshot of the
+database. Restore is offered from the same dialog and from Settings.
+
+**No desktop sync client, and one click to connect.** Settings offers "Connect with
+Google Drive"; the browser opens Google's consent page, you approve, and that is the
+whole flow. The OAuth client is compiled in from a gitignored `.env` — see
+`.env.example` for the one-time Google Cloud setup — so there is nothing to paste. The
+two credential fields remain, folded away under "use my own Google client", for a
+build with no client baked in.
+
+The consent page cannot exist without a `client_id`: it is a required parameter of that
+page's URL, and there is no anonymous way to ask Google for access. So the credential
+does not disappear, it moves — registered once at build time instead of typed in on
+every install. A packaged asar is extractable, so the bundled secret is readable by
+anyone with the installer; that is the documented shape of Google's installed-app
+flow, and PKCE is what actually protects the exchange.
+
+The one scope requested is `drive.file`, which Google restricts to files the app
+created **or the user explicitly picked**: the rest of your Drive stays invisible,
+enforced on Google's side rather than promised on ours. Set the consent screen's
+publishing status to **In production**, or refresh tokens expire every seven days and
+the connection dies weekly.
+
+**Choosing the folder** goes through Google's own Picker, opened in its own window and
+served over loopback because the Picker refuses a `file://` origin. Picking is itself
+what grants access to that folder, which is why `drive.file` stays sufficient — a
+folder tree of our own would need the full `drive` scope, which is *restricted*:
+publishing it requires Google verification, and not publishing means re-authorising
+weekly. Until a folder is picked the app creates and uses `Matomeru` at the top of
+your Drive, and a stored folder that has been deleted or trashed falls back to that
+rather than failing every save.
+
+The client secret and refresh token are sealed with Electron's `safeStorage` (DPAPI
+on Windows) and stored under `backup.*` keys that are deliberately **not** part of
+`AppSettings` — that type is handed to the renderer wholesale, and a credential has
+no business crossing into a window. What the renderer gets is a derived
+`BackupStatus`, and a check asserts it carries those fields and nothing else.
+
+The snapshot is `VACUUM INTO`, not a file copy: copying is only safe when nothing is
+mid-write, and nothing can promise that while a price refresh might be running.
+SQLite builds the copy, so it is the committed state by construction.
+
+**"Nothing changed" is decided by the file's mtime, not by a hash**, and that is not
+laziness. `VACUUM INTO` writes a different file every run — three consecutive
+snapshots of one untouched database produce three different digests, because the
+header advances each generation. A hash comparison would report "changed" almost
+always and the skip would never fire. mtime answers the question actually asked, and
+when it is wrong it costs one needless upload rather than a missed one. The
+manifest's sha256 keeps its real job: proving a *download* is the bytes that were
+uploaded.
+
+Restore is ordered so that everything which can refuse runs **before** the local
+file is touched — schema version, then download, then checksum, then SQLite's own
+`integrity_check`, and only then is the live database moved aside, into a
+`before-restore-*.db` kept next to it. Then the app relaunches rather than
+hot-swapping: `invalidate()` refreshes only the visible view, and a restore also
+replaces settings, theme, locale, the first-paint theme hint in `localStorage` and
+every piece of session state. Restarting resets all of it provably.
+
+The remote is injected as a four-method `RemoteStore`, so `npm run verify` drives the
+whole save/restore path — including a corrupt payload, a valid database with a wrong
+checksum, and a snapshot claiming a newer schema — against an in-memory fake, with
+no credentials and no network. Sabotaging the order so the file is replaced before it
+is verified is reported by name, as `UNREADABLE: file is not a database`.
 
 ## Floating surfaces
 

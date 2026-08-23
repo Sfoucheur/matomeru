@@ -184,6 +184,32 @@ export function setSetting(key: keyof AppSettings, value: string | null): void {
   )
 }
 
+/**
+ * Reads and writes a settings row that is deliberately NOT part of `AppSettings`.
+ *
+ * `AppSettings` is handed to the renderer wholesale by `settings:get`, which makes
+ * it the wrong home for the backup credentials: a client secret and a refresh token
+ * have no business crossing into a window, and a typed field is an invitation for
+ * some future screen to render one. `getSettings()` reads named keys and ignores
+ * everything else, so these rows sit in the same table without ever being handed
+ * out — the renderer sees only the derived `BackupStatus`.
+ *
+ * Keys are namespaced `backup.*` so they are recognisable in the raw table.
+ */
+export function getRawSetting(key: string): string | null {
+  const row = getDb().get('SELECT value FROM settings WHERE key = ?', [key]) as
+    | { value: string | null }
+    | undefined
+  return row?.value ?? null
+}
+
+export function setRawSetting(key: string, value: string | null): void {
+  getDb().run(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, value]
+  )
+}
+
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue

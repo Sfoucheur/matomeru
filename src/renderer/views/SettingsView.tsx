@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, ExternalLink, PackageOpen, RefreshCw, Save } from 'lucide-react'
+import {
+  AlertCircle,
+  CloudUpload,
+  Download,
+  ExternalLink,
+  FolderOpen,
+  Link2,
+  Link2Off,
+  PackageOpen,
+  RefreshCw,
+  Save
+} from 'lucide-react'
 import { THEMES, type Currency, type LocaleSetting, type ThemeMode } from '@shared/types'
 import {
   LOCALES,
@@ -12,7 +23,8 @@ import { guard, useApp } from '../store/app'
 import type { ViewProps } from '../App'
 import { Button, Select } from '../components/primitives'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
-import { count, relativeTime } from '../lib/format'
+import type { BackupStatus } from '@shared/types'
+import { count, megabytes, relativeTime } from '../lib/format'
 
 export default function SettingsView(_props: ViewProps): React.ReactElement {
   const settings = useApp((s) => s.settings)
@@ -317,6 +329,8 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
 
           <BoosterDataPanel />
 
+          <BackupPanel />
+
           <section className="panel p-4 text-[11px] leading-relaxed text-ink-500">
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">
               {t('settings.dataTitle')}
@@ -339,6 +353,227 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
  * left out, because Scryfall's booster flag already answers those offline and no
  * download would add anything.
  */
+/**
+ * Setting up the Drive connection, and the two actions that use it.
+ *
+ * The credentials are the user's own OAuth client: nothing is compiled into this
+ * app, so there is no shared secret and no account of ours in the path. That is the
+ * trade this panel embodies — a one-time visit to Google Cloud, in exchange for the
+ * app never holding anyone else's credential and never needing a desktop sync
+ * client installed.
+ *
+ * The secret field writes but never reads: `backup:status` returns no credential at
+ * all, so there is nothing to populate it with, and an empty box is the honest
+ * representation of a value this screen cannot see.
+ */
+function BackupPanel(): React.ReactElement {
+  const t = useT()
+  const toast = useApp((s) => s.toast)
+  const openBackup = useApp((s) => s.openBackup)
+  const [status, setStatus] = useState<BackupStatus | null>(null)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async (): Promise<void> => {
+    const next = await guard(() => window.api.backup.status())
+    if (next) setStatus(next)
+  }
+
+  useEffect(() => {
+    void refresh()
+  }, [])
+
+  const saveCreds = async (): Promise<void> => {
+    const ok = await guard(() =>
+      window.api.backup.setCredentials(clientId.trim(), clientSecret.trim())
+    )
+    if (!ok) return
+    // Cleared once stored: it is sealed with safeStorage from here on, and leaving
+    // it sitting in a form field would be the one place it stayed readable.
+    setClientSecret('')
+    toast('success', t('settings.backupCredsSaved'))
+    void refresh()
+  }
+
+  const connect = async (): Promise<void> => {
+    setBusy(true)
+    const ok = await guard(() => window.api.backup.connect())
+    setBusy(false)
+    if (!ok) return
+    toast('success', t('settings.backupConnected'))
+    void refresh()
+  }
+
+  const disconnect = async (): Promise<void> => {
+    const ok = await guard(() => window.api.backup.disconnect())
+    if (!ok) return
+    toast('info', t('settings.backupDisconnected'))
+    void refresh()
+  }
+
+  const chooseFolder = async (): Promise<void> => {
+    setBusy(true)
+    const result = await guard(() => window.api.backup.pickFolder())
+    setBusy(false)
+    if (!result) return
+    // Cancelling is not a failure, and should not be reported as one.
+    if (result.cancelled || !result.folder) {
+      toast('info', t('backup.pickKept'))
+      return
+    }
+    toast('success', t('backup.folderChosen', { name: result.folder.name }))
+    void refresh()
+  }
+
+  const backUpNow = async (): Promise<void> => {
+    setBusy(true)
+    const result = await guard(() => window.api.backup.save(false))
+    setBusy(false)
+    if (!result) return
+    toast(
+      result.uploaded ? 'success' : 'info',
+      result.uploaded
+        ? t('backup.saved', { size: megabytes(result.bytes), label: status?.label ?? 'Drive' })
+        : t('backup.nothingSent')
+    )
+    void refresh()
+  }
+
+  return (
+    <section className="panel p-4" data-setting="backup">
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+        {t('settings.backupTitle')}
+      </h2>
+
+      <p className="text-[11px] leading-relaxed text-ink-500">{t('settings.backupIntro')}</p>
+
+      {/* Only a build with no client of its own has to explain itself. When one is
+          compiled in there is nothing to set up, and saying so would be noise. */}
+      {status !== null && !status.bundled && (
+        <p className="mt-2 text-[11px] leading-relaxed text-warn">
+          {t('settings.backupNoClient')}
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {status?.connected ? (
+          <Button icon={<Link2Off size={13} />} onClick={() => void disconnect()}>
+            {t('settings.backupDisconnect')}
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            icon={<Link2 size={13} />}
+            onClick={() => void connect()}
+            disabled={busy || status?.configured !== true}
+            data-action="backupConnect"
+          >
+            {t('settings.backupConnect')}
+          </Button>
+        )}
+        <Button
+          icon={<CloudUpload size={13} />}
+          onClick={() => void backUpNow()}
+          disabled={busy || status?.connected !== true}
+          data-action="backupNow"
+        >
+          {t('settings.backupNow')}
+        </Button>
+        {/* Through the dialog, not straight from here: a restore replaces everything
+            on this machine, so it goes past the same acknowledgement either way in. */}
+        <Button
+          variant="danger"
+          icon={<Download size={13} />}
+          onClick={() => openBackup('restore')}
+          disabled={status?.connected !== true || status?.remote === null}
+          data-action="backupRestore"
+        >
+          {t('settings.backupRestore')}
+        </Button>
+      </div>
+
+      {status?.error !== null && status?.error !== undefined && (
+        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-bad">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {status.error}
+        </p>
+      )}
+
+      {/* Where the snapshot lands. Named even before a choice is made, because
+          "somewhere in your Drive" is not something a backup should leave vague. */}
+      <div className="mt-3 flex items-start justify-between gap-3" data-field="backupFolder">
+        <span className="text-[11px] text-ink-400">
+          {t('settings.backupFolder')}
+          <span className="mt-0.5 block text-sm text-ink-200">
+            {status?.folderName ?? t('settings.backupFolderOwn')}
+          </span>
+        </span>
+        <Button
+          icon={<FolderOpen size={13} />}
+          onClick={() => void chooseFolder()}
+          disabled={busy || status?.connected !== true || status?.canPickFolder !== true}
+          data-action="backupChooseFolder"
+        >
+          {t('settings.backupChooseFolder')}
+        </Button>
+      </div>
+
+      <p className="mt-3 text-[11px] text-ink-500">
+        {status?.lastBackupAt
+          ? t('settings.backupLast', { when: relativeTime(status.lastBackupAt) })
+          : t('backup.never')}
+      </p>
+
+      {/*
+        The credentials, folded away.
+
+        They are the escape hatch — a build with no client of its own, or someone who
+        would rather authorise against their own Google project than the one this app
+        was built with. Kept out of the way rather than removed, because the path is
+        real and is what the checks exercise.
+      */}
+      <details className="mt-3 group" data-field="backupOwnClient">
+        <summary className="cursor-pointer text-[11px] text-ink-500 transition-colors
+          hover:text-ink-300">
+          {t('settings.backupOwnClient')}
+        </summary>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+          {t('settings.backupSetup')}
+        </p>
+        <div className="mt-2 grid gap-2">
+          <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
+            {t('settings.backupClientId')}
+            <input
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              spellCheck={false}
+              className="field min-w-0 text-sm outline-none placeholder:text-ink-600"
+              data-field="backupClientId"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
+            {t('settings.backupClientSecret')}
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                spellCheck={false}
+                className="field min-w-0 flex-1 text-sm outline-none placeholder:text-ink-600"
+                data-field="backupClientSecret"
+              />
+              <Button icon={<Save size={13} />} onClick={() => void saveCreds()}>
+                {t('common.save')}
+              </Button>
+            </div>
+          </label>
+        </div>
+      </details>
+    </section>
+  )
+}
+
 function BoosterDataPanel(): React.ReactElement {
   const t = useT()
   const toast = useApp((s) => s.toast)

@@ -62,6 +62,16 @@ interface AppState {
   toast: (kind: Toast['kind'], message: string) => void
   dismissToast: (id: number) => void
 
+  /**
+   * Which side of the backup dialog is open, if any.
+   *
+   * In the store rather than in `App`, because there are two ways in — Ctrl+S from
+   * anywhere, and the Restore button in Settings — and they want the dialog on
+   * different tabs. A local flag in `App` could only be raised by the shortcut.
+   */
+  backupMode: 'save' | 'restore' | null
+  openBackup: (mode: 'save' | 'restore' | null) => void
+
   /** Scryfall id whose detail modal is open, if any. */
   detailFor: string | null
   /**
@@ -192,6 +202,9 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+
+  backupMode: null,
+  openBackup: (backupMode) => set({ backupMode }),
 
   detailFor: null,
   detailContext: null,

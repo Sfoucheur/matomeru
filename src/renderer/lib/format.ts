@@ -168,6 +168,18 @@ export function foilLabelForDensity(label: string, density: TileDensity): string
   return trimmed || label
 }
 
+/**
+ * A file size, for messages about the backup.
+ *
+ * Whole megabytes above a megabyte, one decimal below it. A 33 MB database does not
+ * benefit from "33.16", and a small one should not read as "0".
+ */
+export function megabytes(bytes: number): string {
+  const mb = bytes / 1_048_576
+  const value = mb >= 1 ? Math.round(mb) : Math.round(mb * 10) / 10
+  return `${new Intl.NumberFormat(intlLocale).format(value)} MB`
+}
+
 export function relativeTime(iso: string | null): string {
   if (!iso) return t(formatLocale, 'common.never')
   const then = new Date(iso).getTime()

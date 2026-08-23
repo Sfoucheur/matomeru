@@ -7,3 +7,6 @@ dist/
 .probe.cjs
 *.log
 .DS_Store
+
+# The OAuth client this build authorises against. See .env.example.
+.env

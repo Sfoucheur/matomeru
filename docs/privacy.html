@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy policy — Matomeru</title>
+  <meta name="description" content="What Matomeru stores, what it contacts, and what it never sends anywhere.">
+  <style>
+    :root {
+      --ink-950: #0b0d12; --ink-900: #12141b; --ink-800: #1a1d26; --ink-700: #262a36;
+      --ink-500: #6b7180; --ink-300: #a8adba; --ink-100: #e8e8ea; --gold: #d1a24b;
+    }
+    * { box-sizing: border-box }
+    body {
+      margin: 0; background: var(--ink-950); color: var(--ink-100);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.65; font-size: 16px;
+    }
+    .wrap { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 6rem }
+    h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -.01em }
+    .updated { color: var(--ink-500); font-size: .85rem; margin: 0 0 2.5rem }
+    h2 {
+      font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+      color: var(--ink-500); margin: 2.5rem 0 .75rem; font-weight: 600;
+    }
+    p { margin: 0 0 1rem; color: var(--ink-300) }
+    ul { margin: 0 0 1rem; padding-left: 1.15rem; color: var(--ink-300) }
+    li { margin-bottom: .5rem }
+    strong { color: var(--ink-100); font-weight: 600 }
+    a { color: var(--gold) }
+    code {
+      background: var(--ink-800); border: 1px solid var(--ink-700); border-radius: .25rem;
+      padding: .1rem .35rem; font-size: .85em; color: var(--ink-100);
+    }
+    .panel {
+      background: var(--ink-900); border: 1px solid var(--ink-700);
+      border-radius: .6rem; padding: 1.1rem 1.25rem; margin: 0 0 1rem;
+    }
+    table { border-collapse: collapse; width: 100%; margin: 0 0 1rem; font-size: .92rem }
+    th, td {
+      text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--ink-700);
+      vertical-align: top; color: var(--ink-300);
+    }
+    th { color: var(--ink-500); font-weight: 600; font-size: .78rem; text-transform: uppercase;
+         letter-spacing: .06em }
+    footer {
+      margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--ink-700);
+      color: var(--ink-500); font-size: .85rem;
+    }
+    footer a { color: var(--ink-300) }
+    .scroll { overflow-x: auto }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Privacy policy</h1>
+    <p class="updated">Matomeru · last updated 23 August 2026</p>
+
+    <div class="panel">
+      <p style="margin:0">
+        Matomeru is a desktop application that runs entirely on your own computer. It
+        has no user accounts, collects no analytics, and sends nothing to its
+        developer. There is no server operated by this application.
+      </p>
+    </div>
+
+    <h2>What is stored, and where</h2>
+    <p>
+      Everything the app knows lives in a single folder on your computer — on Windows,
+      <code>%APPDATA%\matomeru</code>. It holds one SQLite database (your cards, decks,
+      pull lists and settings) and a cache of card images downloaded for display.
+    </p>
+    <p>
+      Nothing in that folder is transmitted anywhere unless you explicitly ask the app
+      to back it up (see below). Deleting the folder deletes everything the app holds.
+    </p>
+
+    <h2>Services the app contacts</h2>
+    <p>
+      The app makes requests to the following services, and only for the purposes
+      listed. None of these requests carry your name, your email address, or any
+      identifier the app has created for you.
+    </p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Service</th><th>Why</th><th>When</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Scryfall</strong></td>
+            <td>Card data, prices and card images</td>
+            <td>When you search, add cards, or refresh prices</td>
+          </tr>
+          <tr>
+            <td><strong>MTGJSON</strong></td>
+            <td>Set and booster-pack composition data</td>
+            <td>When you load booster data for a set</td>
+          </tr>
+          <tr>
+            <td><strong>Archidekt</strong></td>
+            <td>Reading your public decklists</td>
+            <td>Only if you enter an Archidekt username or deck link</td>
+          </tr>
+          <tr>
+            <td><strong>Google</strong></td>
+            <td>Backing up to and restoring from your Drive</td>
+            <td>Only if you connect Google Drive, and only when you ask for a backup</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Google Drive backup</h2>
+    <p>
+      This feature is optional and inactive until you connect it. When you do, the app
+      opens Google's own consent page in your browser; your Google password is entered
+      on Google's website and is never seen by this application.
+    </p>
+    <p>
+      The app requests exactly one permission,
+      <code>https://www.googleapis.com/auth/drive.file</code>. Google restricts that
+      permission to files the application itself created, plus any folder you
+      explicitly select through Google's own folder picker. The application cannot
+      list, read or modify anything else in your Drive.
+    </p>
+    <ul>
+      <li>
+        <strong>What is uploaded:</strong> a snapshot of the local database described
+        above — your cards, decks, pull lists and app settings — as a single file, into
+        a folder of your choosing. Card images are not uploaded.
+      </li>
+      <li>
+        <strong>Who can read it:</strong> you. The file lives in your Drive, under your
+        account. The developer has no access to it and no way to obtain it.
+      </li>
+      <li>
+        <strong>Access tokens:</strong> stored only on your computer, encrypted using
+        the operating system's own credential protection (DPAPI on Windows). They are
+        never transmitted anywhere except back to Google when refreshing access.
+      </li>
+      <li>
+        <strong>What the app learns about your account:</strong> nothing. It does not
+        request your name, email address or profile, and never receives them.
+      </li>
+      <li>
+        <strong>Withdrawing access:</strong> at any time, either with the Disconnect
+        button in the app's settings, or from
+        <a href="https://myaccount.google.com/permissions">your Google account
+        permissions page</a>. Revoking access leaves any backups already in your Drive
+        intact, and you may delete them yourself like any other file.
+      </li>
+    </ul>
+
+    <h2>What is never collected</h2>
+    <ul>
+      <li>No analytics, usage statistics, crash reports or telemetry of any kind.</li>
+      <li>No advertising, and no data shared with or sold to third parties.</li>
+      <li>No account registration, and no personal details requested by the app.</li>
+    </ul>
+
+    <h2>Changes</h2>
+    <p>
+      If this policy changes, the revised version will be published at this address
+      with an updated date at the top.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions about this policy can be sent to
+      <a href="mailto:sebastien.foucheur@gmail.com">sebastien.foucheur@gmail.com</a>.
+    </p>
+
+    <footer>
+      <p style="margin:0">
+        <a href="index.html">Matomeru</a> ·
+        <a href="https://github.com/Sfoucheur/matomeru">Source on GitHub</a>
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

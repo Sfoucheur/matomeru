@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { closeDb, getDb, setDataDir } from './db/connection.js'
 import { registerHandlers } from './ipc/handlers.js'
+import { setAppVersion } from './services/backup.js'
 import { adoptOldData } from './services/adoptOldData.js'
 import { registerImageProtocol, registerImageScheme } from './services/imageCache.js'
 
@@ -66,6 +67,9 @@ if (!app.requestSingleInstanceLock()) {
     adoptOldData(dataDir, (message) => console.log(`[data] ${message}`))
     setDataDir(dataDir)
     getDb()
+    // Handed in rather than imported, so the backup service stays free of Electron
+    // and `scripts/verify.ts` can drive it in plain Node.
+    setAppVersion(app.getVersion())
     registerImageProtocol()
     registerHandlers()
     createWindow()

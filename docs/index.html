@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Matomeru — a local collection manager for Magic: The Gathering</title>
+  <meta name="description" content="A Windows desktop app for managing a Magic: The Gathering collection in bulk. Everything stays on your machine.">
+  <style>
+    :root {
+      --ink-950: #0b0d12; --ink-900: #12141b; --ink-800: #1a1d26; --ink-700: #262a36;
+      --ink-500: #6b7180; --ink-300: #a8adba; --ink-100: #e8e8ea; --gold: #d1a24b;
+    }
+    * { box-sizing: border-box }
+    body {
+      margin: 0; background: var(--ink-950); color: var(--ink-100);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.65; font-size: 16px;
+    }
+    .wrap { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 6rem }
+    header { display: flex; align-items: baseline; gap: .75rem; margin-bottom: .5rem }
+    .mark { font-size: 2rem; color: var(--gold); line-height: 1 }
+    h1 { font-size: 1.9rem; margin: 0; letter-spacing: -.01em }
+    .tagline { color: var(--ink-300); font-size: 1.05rem; margin: .5rem 0 2.5rem }
+    h2 {
+      font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+      color: var(--ink-500); margin: 2.5rem 0 .75rem; font-weight: 600;
+    }
+    p { margin: 0 0 1rem; color: var(--ink-300) }
+    ul { margin: 0 0 1rem; padding-left: 1.15rem; color: var(--ink-300) }
+    li { margin-bottom: .4rem }
+    strong { color: var(--ink-100); font-weight: 600 }
+    a { color: var(--gold) }
+    .panel {
+      background: var(--ink-900); border: 1px solid var(--ink-700);
+      border-radius: .6rem; padding: 1.1rem 1.25rem; margin: 0 0 1rem;
+    }
+    footer {
+      margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--ink-700);
+      color: var(--ink-500); font-size: .85rem;
+    }
+    footer a { color: var(--ink-300) }
+    code {
+      background: var(--ink-800); border: 1px solid var(--ink-700); border-radius: .25rem;
+      padding: .1rem .35rem; font-size: .85em; color: var(--ink-100);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <span class="mark">ま</span>
+      <h1>Matomeru</h1>
+    </header>
+    <p class="tagline">
+      A Windows desktop app for managing a Magic: The Gathering collection in bulk.
+    </p>
+
+    <h2>What it does</h2>
+    <ul>
+      <li>Holds a collection of cards with finish, condition, language and quantity, and prices it from Scryfall.</li>
+      <li>Imports and exports CSV, and adds cards in bulk by name or set number.</li>
+      <li>Syncs decks from Archidekt and shows which cards a deck is missing.</li>
+      <li>Moves cards between decks and the collection, and tracks what has left a deck before the decklist catches up.</li>
+      <li>Builds pull lists for cards you are taking out, sold or traded.</li>
+      <li>Works out booster odds from set data.</li>
+      <li>Breaks the collection down by set, rarity and language, with its total value.</li>
+    </ul>
+
+    <h2>Where your data lives</h2>
+    <div class="panel">
+      <p style="margin:0">
+        On your machine, in <code>%APPDATA%\matomeru</code> — one SQLite database and a
+        cache of card images. There is no account to create, no server of ours to talk
+        to, and nothing is uploaded anywhere unless you ask for it.
+      </p>
+    </div>
+
+    <h2>Backing up to Google Drive</h2>
+    <p>
+      Optional, and off until you turn it on. Pressing <strong>Ctrl+S</strong> offers to
+      copy a snapshot of the database to a folder in <strong>your own</strong> Google
+      Drive, and the same dialog can read it back to restore.
+    </p>
+    <p>
+      The app asks Google for a single narrow permission —
+      <code>drive.file</code> — which lets it see only the files it created itself or
+      the folder you explicitly chose through Google's own folder picker. The rest of
+      your Drive stays invisible to it, and that is enforced by Google rather than
+      promised by us. You can withdraw the permission at any time from
+      <a href="https://myaccount.google.com/permissions">your Google account</a>.
+    </p>
+
+    <h2>Privacy</h2>
+    <p>
+      No analytics, no telemetry, no accounts, and no data sent to the developer.
+      The full detail, including every service the app contacts, is in the
+      <a href="privacy.html">privacy policy</a>.
+    </p>
+
+    <footer>
+      <p style="margin:0">
+        Source: <a href="https://github.com/Sfoucheur/matomeru">github.com/Sfoucheur/matomeru</a>
+        · <a href="privacy.html">Privacy policy</a>
+      </p>
+      <p style="margin:.4rem 0 0">
+        Matomeru is unofficial Fan Content. Not affiliated with or endorsed by Wizards of
+        the Coast, Scryfall or Archidekt.
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -19,6 +19,7 @@ import ImportExportView from './views/ImportExportView'
 import StatsView from './views/StatsView'
 import SettingsView from './views/SettingsView'
 import CardDetailModal from './components/CardDetailModal'
+import BackupDialog from './components/BackupDialog'
 import type { TranslationKey } from '@shared/i18n/index'
 import { useT } from './hooks/useT'
 
@@ -61,6 +62,8 @@ export default function App(): React.ReactElement {
   const toast = useApp((s) => s.toast)
   const invalidate = useApp((s) => s.invalidate)
   const t = useT()
+  const backupMode = useApp((s) => s.backupMode)
+  const openBackup = useApp((s) => s.openBackup)
 
   /**
    * Views are mounted on first visit and then kept mounted, hidden rather than
@@ -98,6 +101,32 @@ export default function App(): React.ReactElement {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [setView])
+
+  /*
+    Ctrl+S opens the backup dialog. It never sends anything by itself.
+
+    The same input guard as undo, for the same reason: inside a text field the
+    keystroke belongs to the field, not to the app. `preventDefault` is not optional
+    here — without it Chromium opens its own Save-page dialog over ours.
+
+    A shortcut that wrote straight to Drive would be the wrong shape. Ctrl+S in most
+    apps saves to a place you already chose; here it copies 33 MB to someone's
+    cloud and may overwrite what another machine put there, and both of those are
+    facts you should see before agreeing to them.
+  */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.ctrlKey && !e.metaKey) return
+      if (e.key.toLowerCase() !== 's' || e.shiftKey) return
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+      e.preventDefault()
+      openBackup('save')
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [openBackup])
 
   /*
     Ctrl+Z and Ctrl+Y, for everything you change locally.
@@ -179,6 +208,9 @@ export default function App(): React.ReactElement {
         </main>
 
         {detailFor && <CardDetailModal scryfallId={detailFor} />}
+        {backupMode !== null && (
+          <BackupDialog initialMode={backupMode} onClose={() => openBackup(null)} />
+        )}
 
         <Toasts />
       </div>

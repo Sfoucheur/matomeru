@@ -170,6 +170,15 @@ export function closeDb(): void {
     handle = null
     facade = null
   }
+  /*
+    Reset the nesting counter too. A closed database is not inside a transaction by
+    definition, so leaving `depth` where it was would have the next `transaction()`
+    open a SAVEPOINT against a connection that has no transaction to save a point
+    in. Nothing did that before — `closeDb` was only ever called on quit — but a
+    restore closes the database mid-session, which is exactly the case where a
+    stale depth would matter.
+  */
+  depth = 0
 }
 
 export function nowIso(): string {

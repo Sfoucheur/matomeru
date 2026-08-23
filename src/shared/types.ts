@@ -952,7 +952,7 @@ export interface CsvDryRun {
 // ---------- Progress ----------
 
 export interface ProgressEvent {
-  job: 'csv-import' | 'deck-sync' | 'deck-language' | 'booster-odds' | 'price-sync'
+  job: 'csv-import' | 'deck-sync' | 'deck-language' | 'booster-odds' | 'price-sync' | 'backup'
   phase: string
   done: number
   total: number
@@ -1155,4 +1155,80 @@ export function parseTheme(raw: string | null | undefined): ThemeName {
 
 export function parseThemeMode(raw: string | null | undefined): ThemeMode {
   return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'dark'
+}
+
+// ---------- Backup ----------
+
+/**
+ * What a snapshot says about itself.
+ *
+ * Travels with the remote copy rather than beside it — as Drive `appProperties`
+ * on the file — so one metadata request tells the dialog when the remote was
+ * written, from which machine, and whether it matches what this machine holds,
+ * without pulling 33 MB down to find out.
+ */
+export interface BackupManifest {
+  /** When the snapshot was taken, ISO 8601. */
+  snapshotAt: string
+  /** The highest migration the writing app had applied. Restore refuses a higher one. */
+  schemaVersion: number
+  appVersion: string
+  /** SHA-256 of the snapshot file, so a truncated download is caught before it is used. */
+  sha256: string
+  /** Hostname of the machine that wrote it, which is what makes a clobber detectable. */
+  machine: string
+  cards: number
+  decks: number
+  pickLists: number
+}
+
+/** The remote as the dialog needs to describe it. Carries no credential, ever. */
+export interface BackupStatus {
+  /** A client id and secret are available — compiled into this build, or entered. */
+  configured: boolean
+  /**
+   * True when this build carries its own OAuth client, so connecting is one click and
+   * Settings needs to ask for nothing. False means the credential fields are the only
+   * way in, and Settings says so rather than offering a button that cannot work.
+   */
+  bundled: boolean
+  /** Where backups go: the folder picked in Drive, or null for the app's own. */
+  folderName: string | null
+  /** Whether the Picker can be offered at all — it needs an API key and a project number. */
+  canPickFolder: boolean
+  /** Those credentials have been exchanged for a refresh token that still works. */
+  connected: boolean
+  /** Where the snapshot lives, for messages: the Drive folder name. */
+  label: string
+  /** When this machine last wrote a snapshot, ISO 8601. */
+  lastBackupAt: string | null
+  /** What is on the remote now, or null when nothing has ever been written. */
+  remote: (BackupManifest & { bytes: number }) | null
+  /**
+   * True when the remote holds a snapshot this machine has never seen: newer than
+   * our own last write, and stamped by a different machine. Saving over it would
+   * lose whatever that machine did.
+   */
+  remoteIsNewer: boolean
+  /** True when a fresh local snapshot would be byte-identical to the remote. */
+  upToDate: boolean
+  /** Set when the last status read failed — a revoked token, no network. */
+  error: string | null
+}
+
+export interface BackupResult {
+  /** False when the snapshot already matched the remote and nothing was sent. */
+  uploaded: boolean
+  bytes: number
+  at: string
+  /** How many history copies were dropped by rotation. */
+  pruned: number
+}
+
+export interface RestoreResult {
+  bytes: number
+  /** Where the pre-restore copy of the local database was kept. */
+  safetyCopy: string
+  /** The manifest of what was restored, for the message. */
+  manifest: BackupManifest
 }

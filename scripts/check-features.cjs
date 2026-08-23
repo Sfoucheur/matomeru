@@ -1658,10 +1658,12 @@ async function main() {
     detail dialog offers now opens from the row.
   */
   await goto('collection')
+  // By hook, not by label: [aria-label="Table view"] matches nothing while the app
+  // is in French, so this click was silently doing nothing whenever the locale had
+  // been switched by an earlier check.
   await evaluate(`(() => {
-    const table = document.querySelector('[aria-label="Table view"]')
-    table?.click()
-    return !!table
+    document.querySelector('[data-view="table"]')?.click()
+    return true
   })()`)
   await wait(900)
   const rowZoom = JSON.parse(
@@ -1974,6 +1976,272 @@ async function main() {
     `found ${englishBack.length}`
   )
   console.log(`        → e.g. ${englishBack.slice(0, 3).join(', ')}`)
+
+  section('Ctrl+S offers a backup')
+
+  /*
+    What can be driven without a Drive account, which is most of what matters here:
+    that the shortcut opens the dialog at all, that an unconfigured app says so
+    instead of offering a button that cannot work, and that the destructive half
+    stays out of reach until it can be done safely.
+
+    The save and restore logic itself — the refusals, the round trip, the safety
+    copy — is driven in `npm run verify` against an in-memory remote, where a
+    corrupt payload can be produced on purpose. Injecting a fake remote into the
+    running app would mean a seam in shipped code whose only purpose is to be
+    tested, and the guards it would cover are already covered there.
+  */
+  await goto('collection')
+  await wait(500)
+
+  const shortcut = JSON.parse(
+    await evaluate(`(async () => {
+      // Dispatched on the document, which is where App listens.
+      const event = new KeyboardEvent('keydown', {
+        key: 's', ctrlKey: true, bubbles: true, cancelable: true
+      })
+      document.dispatchEvent(event)
+      await new Promise((r) => setTimeout(r, 900))
+      const dialog = document.querySelector('[data-dialog="backup"]')
+      const status = await window.api.backup.status()
+      return JSON.stringify({
+        prevented: event.defaultPrevented,
+        opened: !!dialog,
+        bundled: status.bundled,
+        canPickFolder: status.canPickFolder,
+        // Which state it opened in. A profile with no credentials must land here.
+        unavailable: !!document.querySelector('[data-field="unavailable"]'),
+        settingsButton: !!document.querySelector('[data-action="backupOpenSettings"]'),
+        confirm: !!document.querySelector('[data-action="confirmBackup"]')
+      })
+    })()`)
+  )
+  console.log(`        → ${JSON.stringify(shortcut)}`)
+  check(
+    'Ctrl+S opens the backup dialog',
+    shortcut.opened === true,
+    JSON.stringify(shortcut)
+  )
+  check(
+    "and takes the keystroke, so Chromium's own save dialog never appears",
+    shortcut.prevented === true,
+    `prevented ${shortcut.prevented}`
+  )
+  /*
+    Which state the dialog opens in depends on the build, so the assertion has to as
+    well. A build with an OAuth client compiled in is configured before anyone touches
+    it — that is the whole point of compiling one in — and would never show the
+    "not set up" panel. Asserting the panel unconditionally would fail on exactly the
+    build that ships.
+  */
+  if (shortcut.bundled) {
+    check(
+      'a build with its own client goes straight to the connect state',
+      shortcut.unavailable === true && shortcut.settingsButton === true,
+      JSON.stringify(shortcut)
+    )
+    console.log('        → a client is compiled into this build')
+  } else {
+    check(
+      'with no credentials entered it explains that, instead of offering a dead button',
+      shortcut.unavailable === true &&
+        shortcut.settingsButton === true &&
+        shortcut.confirm === false,
+      JSON.stringify(shortcut)
+    )
+  }
+
+  // Inside a text field the keystroke belongs to the field.
+  const inBox = await evaluate(`(() => {
+    document.querySelector('[role="dialog"] button')?.click()
+    const input = document.querySelector('[data-search]')
+    if (!input) return 'no search box'
+    input.focus()
+    const event = new KeyboardEvent('keydown', {
+      key: 's', ctrlKey: true, bubbles: true, cancelable: true
+    })
+    input.dispatchEvent(event)
+    return event.defaultPrevented ? 'intercepted' : 'left to the field'
+  })()`)
+  check(
+    'Ctrl+S while typing is left alone',
+    inBox === 'left to the field',
+    String(inBox)
+  )
+
+  // The Settings panel: the credential fields exist, and the destructive action is
+  // out of reach until there is something to restore from.
+  await goto('settings')
+  await wait(900)
+  const panel = JSON.parse(
+    await evaluate(`(async () => {
+      const section = document.querySelector('[data-setting="backup"]')
+      if (!section) return JSON.stringify({ missing: true })
+      const status = await window.api.backup.status()
+      const restore = section.querySelector('[data-action="backupRestore"]')
+      const now = section.querySelector('[data-action="backupNow"]')
+      const connect = section.querySelector('[data-action="backupConnect"]')
+      const pick = section.querySelector('[data-action="backupChooseFolder"]')
+      const details = section.querySelector('[data-field="backupOwnClient"]')
+      /*
+        checkVisibility, not offsetParent.
+
+        A closed details element in this Chromium hides its content with
+        content-visibility, not display:none -- measured, because offsetParent said
+        "visible" either way, and so did getClientRects, computed display and
+        offsetHeight. Only checkVisibility tells the two apart. (offsetParent is
+        still the right test for the hidden view panes elsewhere in this file: those
+        really are display:none.)
+        No backticks in here: this comment sits inside a template literal.
+      */
+      const secret = section.querySelector('[data-field="backupClientSecret"]')
+      return JSON.stringify({
+        missing: false,
+        bundled: status.bundled,
+        clientId: !!section.querySelector('[data-field="backupClientId"]'),
+        secretIsMasked: secret?.type === 'password',
+        fieldsHidden: secret ? !secret.checkVisibility({ contentVisibilityAuto: true, checkVisibilityCSS: true }) : null,
+        disclosureOpen: details ? details.open : null,
+        folderRow: !!section.querySelector('[data-field="backupFolder"]'),
+        pickDisabled: pick ? pick.disabled : null,
+        restoreDisabled: restore ? restore.disabled : null,
+        backUpDisabled: now ? now.disabled : null,
+        connectDisabled: connect ? connect.disabled : null
+      })
+    })()`)
+  )
+  console.log(`        → ${JSON.stringify(panel)}`)
+  check('Settings carries a backup panel', panel.missing === false, JSON.stringify(panel))
+  check(
+    'the client secret is a password field, not plain text on screen',
+    panel.secretIsMasked === true,
+    JSON.stringify(panel)
+  )
+  check(
+    'restoring is unreachable until the app is connected',
+    panel.restoreDisabled === true && panel.backUpDisabled === true,
+    JSON.stringify(panel)
+  )
+  check(
+    panel.bundled
+      ? 'connecting is offered straight away, because the build carries its own client'
+      : 'connecting is unreachable until credentials are entered',
+    panel.connectDisabled === (panel.bundled ? false : true),
+    JSON.stringify(panel)
+  )
+  check(
+    'the credential fields are folded away rather than the first thing you see',
+    panel.fieldsHidden === true && panel.disclosureOpen === false,
+    JSON.stringify(panel)
+  )
+  check(
+    'the panel says where backups will go',
+    panel.folderRow === true,
+    JSON.stringify(panel)
+  )
+  check(
+    'and choosing a folder is unreachable until connected',
+    panel.pickDisabled === true,
+    JSON.stringify(panel)
+  )
+
+  // Opening the disclosure is what brings the fields out.
+  const opened = JSON.parse(
+    await evaluate(`(async () => {
+      const details = document.querySelector('[data-field="backupOwnClient"]')
+      if (!details) return JSON.stringify({ missing: true })
+      details.open = true
+      await new Promise((r) => setTimeout(r, 300))
+      const secret = document.querySelector('[data-field="backupClientSecret"]')
+      const shown = secret ? secret.checkVisibility({ contentVisibilityAuto: true, checkVisibilityCSS: true }) : false
+      details.open = false
+      return JSON.stringify({ missing: false, shown })
+    })()`)
+  )
+  check(
+    'and opening it brings them out',
+    opened.missing === false && opened.shown === true,
+    JSON.stringify(opened)
+  )
+
+  /*
+    The credentials round-trip, and the secret does not come back.
+
+    Entering them is the one part of the flow that needs no Google at all, and it is
+    worth driving because the panel deliberately cannot read what it wrote: status
+    carries no credential, so if `configured` did not flip after saving there would
+    be no way to tell from the screen that anything had been stored.
+  */
+  const creds = JSON.parse(
+    await evaluate(`(async () => {
+      const before = await window.api.backup.status()
+      await window.api.backup.setCredentials('probe.apps.googleusercontent.com', 'probe-secret')
+      const after = await window.api.backup.status()
+      await window.api.backup.setCredentials('', '')
+      const cleared = await window.api.backup.status()
+      /*
+        Checked structurally, not by searching for the string that was typed in.
+
+        Looking for 'probe-secret' proved nothing: the secret is sealed before it is
+        stored, so a handler that leaked it would leak the ciphertext and the search
+        would come back clean — which is exactly what happened when this was
+        sabotaged on purpose. What the status may contain is a closed list, so that
+        is what gets asserted: these fields and no others, and no value anywhere in
+        it that looks like a stored credential.
+      */
+      const serialized = JSON.stringify(after)
+      return JSON.stringify({
+        before: before.configured,
+        after: after.configured,
+        cleared: cleared.configured,
+        connected: after.connected,
+        bundled: after.bundled,
+        fields: Object.keys(after).sort().join(','),
+        leaks:
+          serialized.includes('probe-secret') ||
+          serialized.includes('enc:') ||
+          serialized.includes('plain:')
+      })
+    })()`)
+  )
+  console.log(`        → ${JSON.stringify(creds)}`)
+  if (creds.bundled) {
+    /*
+      A skip, and an honest one: with a client compiled in, `configured` is true
+      before and after and clearing the stored pair changes nothing. There is no
+      transition left to observe, so observing one is not possible rather than
+      merely unnecessary.
+    */
+    console.log('        → skipped: this build has its own client, so stored ones change nothing')
+  } else {
+    check(
+      'entering credentials makes the app configured',
+      creds.before === false && creds.after === true,
+      JSON.stringify(creds)
+    )
+    check(
+      'clearing them makes it unconfigured again',
+      creds.cleared === false,
+      JSON.stringify(creds)
+    )
+  }
+  check(
+    'the status never carries the secret back to the screen',
+    creds.leaks === false,
+    `something credential-shaped came back over IPC: ${creds.fields}`
+  )
+  check(
+    'and carries nothing beyond the fields it is meant to',
+    creds.fields ===
+      'bundled,canPickFolder,configured,connected,error,folderName,label,lastBackupAt,' +
+      'remote,remoteIsNewer,upToDate',
+    creds.fields
+  )
+  check(
+    'and credentials alone are not a connection',
+    creds.connected === false,
+    JSON.stringify(creds)
+  )
 
   // Leave the probe app as it was found.
   await setLocale('system')
