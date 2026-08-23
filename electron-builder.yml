@@ -21,3 +21,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: Matomeru
+  # No blockmap. It exists only to let an auto-updater fetch a differential
+  # download from an update feed, and this app ships no updater — nothing reads
+  # it. Note this does NOT avoid the electron-builder 26.14+ breakage described
+  # in README.md: that require() sits at the top of the module, so the import
+  # throws whether or not the blockmap is ever built. The version pin is what
+  # avoids it; this line just drops a file nothing uses.
+  differentialPackage: false

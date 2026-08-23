@@ -116,6 +116,16 @@ export const fr: Record<keyof typeof en, string> = {
   'settings.languageHint':
     'La langue de l’application elle-même. Le nom des cartes reste dans la langue de l’édition que vous possédez.',
   'settings.languageSystem': 'Suivre Windows',
+  'settings.theme': 'Palette de couleurs',
+  'settings.themeHint':
+    'Change lâinterface et la couleur dâaccentuation. Les couleurs des cartes ne changent jamais.',
+  'settings.themeMode': 'Clair ou sombre',
+  'settings.themeModeHint': 'SystÃ¨me suit Windows.',
+  'settings.themeModeSystem': 'SystÃ¨me',
+  'settings.themeModeLight': 'Clair',
+  'settings.themeModeDark': 'Sombre',
+  'settings.pureBlack': 'Noir absolu',
+  'settings.pureBlackHint': 'Fonds vraiment noirs, pour les Ã©crans OLED.',
   'settings.reduceMotion': 'Réduire les animations',
   'settings.reduceMotionHint':
     'Immobilise les animations, y compris celles dessinées en JavaScript plutôt qu’en CSS.',

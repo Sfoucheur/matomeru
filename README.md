@@ -19,6 +19,15 @@ npm run package    # NSIS installer + portable exe into dist/
 npm run verify     # end-to-end checks against a scratch DB and the live APIs
 ```
 
+> **`electron-builder` is pinned to 26.13.0, exactly — do not widen it to a caret.**
+> From 26.14.0 on, `app-builder-lib`'s blockmap step does
+> `require("@noble/hashes/blake2.js")` from CommonJS while asking for `^2.2.0`, and every
+> `@noble/hashes` 2.x is ESM-only with no CJS entry point. So `npm run package` dies with
+> `ERR_REQUIRE_ESM` after the bundle is written but before any installer is produced. The
+> `require` sits at module top level, so `differentialPackage: false` does *not* avoid it —
+> the import throws whether or not a blockmap is ever built. Checked up to 26.15.7, still
+> broken; 26.13.0 predates the file entirely. `^26.13.0` would resolve straight back into it.
+
 > **Node version.** Electron 43's install script needs Node **≥ 22.12** (it does
 > `require()` on an ES module). On Node 22.11 `npm install` leaves the Electron binary
 > missing and `electron .` fails with _"Electron failed to install correctly"_. Either
@@ -328,6 +337,21 @@ the things most likely to break quietly:
 - **every tile row declares the same track count its height was computed from** — laying a short
   final chunk over fewer, wider tracks made it taller than its slot, and the overflow painted behind
   the rows below as duplicate giant cards
+
+`npm run check:themes` measures every colour scheme in a running app. The ramps are built with
+`color-mix()` and `oklch(from ...)` over a few per-theme seeds, so nothing about a theme can be
+confirmed by reading the stylesheet: Lightning CSS emits a static srgb fallback beside each mixed
+token with the *default* seeds inlined, and if that branch ever won, all twelve themes would collapse
+to the default palette while the CSS still looked right. So it resolves each token through a probe
+element, converts it through a canvas — the same pipeline that paints the window — and checks the
+contrast of every accent against the surface it actually sits on. That is not a formality: measuring
+found Yotsuba's accent at **2.63:1** as a border and Tidal Wave's at **3.25:1** under text, which is
+why the accent stops clamp lightness per mode instead of applying one fixed lighten to seeds that
+range from `#ae3200` to `#f2f2f2`. It also asserts what a theme must *not* touch — mana and rarity
+colours are identical across all twelve.
+
+Run it on a freshly launched app, and not in the same session as `check:features`: both drive the real
+UI, and `check:features` is deliberately not idempotent.
 
 `npm run check:geometry` covers what those checks structurally cannot: it measures a **running** app
 over the debug protocol and compares every virtualized row's declared height against the height its

@@ -20,7 +20,8 @@
     "probe:boosters": "esbuild scripts/probe-boosters.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.probe-boosters.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-boosters.cjs",
     "check:features": "node scripts/check-features.cjs",
     "probe:thranduil": "esbuild scripts/probe-thranduil.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.probe-thr.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-thr.cjs",
-    "icon": "electron scripts/make-icon.cjs && node scripts/check-icon.cjs"
+    "icon": "electron scripts/make-icon.cjs && node scripts/check-icon.cjs",
+    "check:themes": "node scripts/check-themes.cjs"
   },
   "dependencies": {
     "node-sqlite3-wasm": "^0.8.60",
@@ -35,7 +36,7 @@
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^43.4.1",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "26.13.0",
     "electron-vite": "^5.0.0",
     "lucide-react": "^1.33.0",
     "motion": "^13.1.1",

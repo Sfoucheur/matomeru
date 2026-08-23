@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertCircle, ExternalLink, PackageOpen, RefreshCw, Save } from 'lucide-react'
-import type { Currency, LocaleSetting } from '@shared/types'
+import { THEMES, type Currency, type LocaleSetting, type ThemeMode } from '@shared/types'
 import {
   LOCALES,
   LOCALE_NAMES,
@@ -23,6 +23,13 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
 
   const [username, setUsername] = useState('')
   const [syncing, setSyncing] = useState(false)
+
+  /*
+    Read off <html> rather than recomputed from the setting: with `system`
+    chosen, the store's media listener is what decides, so this is the one
+    source of truth for whether the pure-black row applies.
+  */
+  const resolvedDark = document.documentElement.classList.contains('dark')
 
   useEffect(() => {
     setUsername(settings?.archidektUsername ?? '')
@@ -198,6 +205,99 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
                 ]}
               />
             </label>
+
+            <label className="mb-3.5 flex items-center justify-between gap-4">
+              <span className="text-sm text-ink-200">
+                {t('settings.themeMode')}
+                <span className="mt-0.5 block text-[11px] text-ink-500">
+                  {t('settings.themeModeHint')}
+                </span>
+              </span>
+              {/* The hook sits on a wrapper because Select takes a closed set of
+                  props and would drop it. It exists so checks can reach this
+                  control without matching a label that changes with the
+                  language — selecting by visible text is exactly how the theme
+                  probe first reported false passes against the French UI. */}
+              <span data-setting="themeMode" className="w-40 shrink-0">
+                <Select
+                  className="w-full"
+                  value={settings.themeMode}
+                  onChange={(themeMode: ThemeMode) => void updateSettings({ themeMode })}
+                  options={[
+                    { value: 'system', label: t('settings.themeModeSystem') },
+                    { value: 'light', label: t('settings.themeModeLight') },
+                    { value: 'dark', label: t('settings.themeModeDark') }
+                  ]}
+                />
+              </span>
+            </label>
+
+            {/*
+              Pure black only means something against a dark shell, so it is
+              hidden rather than disabled in light mode — a disabled control
+              invites the question of how to enable it.
+            */}
+            {resolvedDark && (
+              <label className="mb-3.5 flex items-start justify-between gap-4">
+                <span className="text-sm text-ink-200">
+                  {t('settings.pureBlack')}
+                  <span className="mt-0.5 block text-[11px] text-ink-500">
+                    {t('settings.pureBlackHint')}
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  data-setting="pureBlack"
+                  checked={settings.pureBlack}
+                  onChange={(e) => void updateSettings({ pureBlack: e.target.checked })}
+                  className="mt-1 shrink-0 accent-gold-500"
+                />
+              </label>
+            )}
+
+            <div className="mb-3.5">
+              <span className="text-sm text-ink-200">
+                {t('settings.theme')}
+                <span className="mt-0.5 block text-[11px] text-ink-500">
+                  {t('settings.themeHint')}
+                </span>
+              </span>
+              {/*
+                Swatches rather than a dropdown: each one previews its own accent
+                over its own shell, so the choice is visible before it is made.
+                A name alone does not tell you what "Tako" looks like.
+              */}
+              <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                {THEMES.map((theme) => {
+                  const active = settings.theme === theme.name
+                  return (
+                    <button
+                      key={theme.name}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => void updateSettings({ theme: theme.name })}
+                      className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors ${
+                        active
+                          ? 'border-gold-500 bg-ink-750'
+                          : 'border-ink-700 hover:border-ink-600 hover:bg-ink-800'
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-black/30"
+                        style={{ backgroundColor: theme.shell }}
+                      >
+                        <span
+                          className="h-3 w-3 rounded-full"
+                          style={{ backgroundColor: theme.swatch }}
+                        />
+                      </span>
+                      <span className="truncate text-xs text-ink-200">{theme.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
 
             <label className="flex items-start justify-between gap-4">
               <span className="text-sm text-ink-200">

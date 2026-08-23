@@ -8,6 +8,8 @@ import {
   type Currency,
   type GridKey,
   type LocaleSetting,
+  parseTheme,
+  parseThemeMode,
   type Possession,
   type ViewModes
 } from '@shared/types'
@@ -27,7 +29,15 @@ const DEFAULTS: AppSettings = {
   labelPossession: {},
   viewModes: { ...DEFAULT_VIEW_MODES },
   deckGroupByCategory: true,
-  locale: 'system'
+  locale: 'system',
+  theme: 'matomeru',
+  /*
+    Dark, not `system`. The app shipped dark-only with `class="dark"` hardcoded,
+    so following the OS by default would flip every existing install to a light
+    theme nobody asked for. `system` is one click away for anyone who wants it.
+  */
+  themeMode: 'dark',
+  pureBlack: false
 }
 
 /** Settings stored as JSON rather than a bare string or boolean. */
@@ -158,6 +168,9 @@ export function getSettings(): AppSettings {
     // Defaults to on, so an existing install keeps the grouping it already has.
     deckGroupByCategory: (map.get('deckGroupByCategory') ?? '1') === '1',
     locale: parseLocale(map.get('locale')),
+    theme: parseTheme(map.get('theme')),
+    themeMode: parseThemeMode(map.get('themeMode')),
+    pureBlack: map.get('pureBlack') === '1',
     gridColumns: parseGridColumns(map.get('gridColumns')),
     labelPossession: parsePossession(map.get('labelPossession'), map.get('notOwnedColors')),
     viewModes: parseViewModes(map.get('viewModes'))

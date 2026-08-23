@@ -111,6 +111,15 @@ export const en = {
   'settings.languageHint':
     'The language of the app itself. Card names stay in whatever language the printing you own is in.',
   'settings.languageSystem': 'Follow Windows',
+  'settings.theme': 'Colour scheme',
+  'settings.themeHint': 'Repaints the shell and the accent. Card colours are never themed.',
+  'settings.themeMode': 'Light or dark',
+  'settings.themeModeHint': 'System follows Windows.',
+  'settings.themeModeSystem': 'System',
+  'settings.themeModeLight': 'Light',
+  'settings.themeModeDark': 'Dark',
+  'settings.pureBlack': 'Pure black',
+  'settings.pureBlackHint': 'True black backgrounds, for OLED screens.',
   'settings.reduceMotion': 'Reduce motion',
   'settings.reduceMotionHint':
     'Stills the animations, including the ones drawn by JavaScript rather than CSS.',

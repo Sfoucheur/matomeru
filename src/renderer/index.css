@@ -6,26 +6,58 @@
   `border-ink-800`, and so on.
 */
 @theme {
-  /* Neutral shell — dark-first, cool slate rather than pure grey. */
-  --color-ink-950: #07090d;
-  --color-ink-900: #0b0d12;
-  --color-ink-850: #10131a;
-  --color-ink-800: #151922;
-  --color-ink-750: #1b202b;
-  --color-ink-700: #232935;
-  --color-ink-600: #313947;
-  --color-ink-500: #4a5464;
-  --color-ink-400: #6b7688;
-  --color-ink-300: #9aa4b4;
-  --color-ink-200: #c3cad6;
-  --color-ink-100: #e4e8ef;
+  /*
+    Colour comes from three seeds, so a theme is three lines rather than 34 hexes:
+    an accent, a neutral to tint the shell with, and how hard to tint. The ramps
+    below are derived from them once; every theme block further down only moves
+    the seeds. See the theme section for the values and where they came from.
+  */
+  --seed-accent: #d1a24b;
+  --seed-tint: #0b0d12;
+  --seed-tint-amount: 0%;
+
+  /*
+    Neutral shell — dark-first, cool slate rather than pure grey, tinted towards
+    the theme's neutral. Mixed in oklab so a tint shifts hue without dragging
+    lightness around with it, which is what keeps the ramp's steps even.
+  */
+  --color-ink-950: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #07090d);
+  --color-ink-900: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #0b0d12);
+  --color-ink-850: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #10131a);
+  --color-ink-800: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #151922);
+  --color-ink-750: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #1b202b);
+  --color-ink-700: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #232935);
+  --color-ink-600: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #313947);
+  --color-ink-500: color-mix(in oklab, var(--seed-tint) var(--seed-tint-amount), #4a5464);
+  /*
+    The readable end of the ramp is tinted at half strength: text has to stay
+    legible whatever the theme, and a heavy tint on near-white is what turns a
+    theme into a filter over the whole app.
+  */
+  --color-ink-400: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 2), #6b7688);
+  --color-ink-300: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 2), #9aa4b4);
+  --color-ink-200: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 3), #c3cad6);
+  --color-ink-100: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #e4e8ef);
   --color-ink-50: #f4f6fa;
 
-  /* Accent — warm gold, the one colour that carries brand weight. */
-  --color-gold-600: #b8873a;
-  --color-gold-500: #d1a24b;
-  --color-gold-400: #e0b768;
-  --color-gold-300: #edd08f;
+  /*
+    Accent — the one colour that carries brand weight.
+
+    The lightness is clamped rather than the seed being used raw, because the
+    same stop has to work three ways: as text on a panel, as a fill under dark
+    text, and as a border. Measured across the twelve seeds, a fixed lighten
+    could not do that — the accents span #ae3200 to #f2f2f2, and Yotsuba came out
+    at 2.63:1 as a border while Yin Yang sat at 17:1. Clamping in oklch keeps
+    each theme's own hue and chroma and only pulls the outliers into a usable
+    band, so contrast is a property of the rule instead of per-theme tuning.
+
+    The bounds come from scripts/check-themes.cjs, which measures every stop
+    against the shell it actually sits on. Change them and re-run it.
+  */
+  --color-gold-500: oklch(from var(--seed-accent) clamp(0.64, l, 0.92) c h);
+  --color-gold-600: oklch(from var(--color-gold-500) calc(l - 0.09) c h);
+  --color-gold-400: oklch(from var(--color-gold-500) calc(l + 0.05) c h);
+  --color-gold-300: oklch(from var(--color-gold-500) calc(l + 0.12) c h);
 
   /* MTG mana colours, for colour-identity pips and filters. */
   --color-mana-w: #f8f2dc;
@@ -66,21 +98,121 @@
   utility follows automatically.
 */
 :root:not(.dark) {
-  --color-ink-950: #ffffff;
-  --color-ink-900: #f7f8fb;
-  --color-ink-850: #f1f3f8;
-  --color-ink-800: #e9ecf3;
-  --color-ink-750: #dfe4ed;
-  --color-ink-700: #d2d8e4;
-  --color-ink-600: #b8c0d0;
-  --color-ink-500: #8b95a8;
+  /* Tinted far more gently than the dark ramp: on a white shell a strong tint
+     reads as a colour cast rather than a theme. */
+  --color-ink-950: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #ffffff);
+  --color-ink-900: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #f7f8fb);
+  --color-ink-850: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #f1f3f8);
+  --color-ink-800: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #e9ecf3);
+  --color-ink-750: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 4), #dfe4ed);
+  --color-ink-700: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 3), #d2d8e4);
+  --color-ink-600: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 3), #b8c0d0);
+  --color-ink-500: color-mix(in oklab, var(--seed-tint) calc(var(--seed-tint-amount) / 3), #8b95a8);
   --color-ink-400: #6c7688;
   --color-ink-300: #4d566a;
   --color-ink-200: #333c4d;
   --color-ink-100: #1d2532;
   --color-ink-50: #0d1218;
-  --color-gold-500: #9a6f22;
-  --color-gold-400: #b8873a;
+  /*
+    The accent carries text on white here, so the band is inverted: every stop
+    has to be dark enough to read, and the ordering flips with it — 300 is the
+    darkest in light mode and the lightest in dark. That inversion predates the
+    themes; the original light block darkened gold-500 and gold-400 for the same
+    reason.
+  */
+  --color-gold-500: oklch(from var(--seed-accent) clamp(0.3, l, 0.5) c h);
+  --color-gold-600: oklch(from var(--color-gold-500) calc(l - 0.05) c h);
+  --color-gold-400: oklch(from var(--color-gold-500) calc(l - 0.03) c h);
+  --color-gold-300: oklch(from var(--color-gold-500) calc(l - 0.07) c h);
+}
+
+/*
+  The themes. Seeds are Tadami's own "Key colors", so these are the same schemes
+  rather than an impression of them:
+  github.com/tadamiorg/tadami/tree/main/app/src/main/java/com/sf/tadami/ui/themes/colorschemes
+
+  Mana and rarity colours are deliberately absent from every block below. A
+  black-mana pip or a mythic-orange rarity states something about the card; a
+  theme that repainted them would make the app lie.
+*/
+[data-theme='tadami'] {
+  --seed-accent: #2979ff;
+  --seed-tint: #919094;
+  --seed-tint-amount: 10%;
+}
+[data-theme='doom'] {
+  --seed-accent: #f38020;
+  --seed-tint: #655c5a;
+  --seed-tint-amount: 14%;
+}
+[data-theme='greenapple'] {
+  --seed-accent: #188140;
+  --seed-tint: #5d5f5b;
+  --seed-tint-amount: 14%;
+}
+[data-theme='lavender'] {
+  --seed-accent: #a177ff;
+  --seed-tint: #111129;
+  --seed-tint-amount: 30%;
+}
+[data-theme='midnightdusk'] {
+  --seed-accent: #f02475;
+  --seed-tint: #16151d;
+  --seed-tint-amount: 30%;
+}
+[data-theme='strawberry'] {
+  --seed-accent: #ed4a65;
+  --seed-tint: #655c5c;
+  --seed-tint-amount: 14%;
+}
+[data-theme='tako'] {
+  --seed-accent: #f3b375;
+  --seed-tint: #21212e;
+  --seed-tint-amount: 30%;
+}
+[data-theme='tealturquoise'] {
+  --seed-accent: #40e0d0;
+  --seed-tint: #16292b;
+  --seed-tint-amount: 16%;
+}
+/* Teal Turquoise carries no key-colour header; its light form uses a true teal,
+   which is the value in its own lightScheme. */
+[data-theme='tealturquoise']:not(.dark) {
+  --seed-accent: #008080;
+}
+[data-theme='tidalwave'] {
+  /* Its secondary, not its primary: #004152 is too dark to carry text as well. */
+  --seed-accent: #5ed4fc;
+  --seed-tint: #16151d;
+  --seed-tint-amount: 26%;
+}
+[data-theme='yinyang'] {
+  --seed-accent: #f2f2f2;
+  --seed-tint: #0a0a0a;
+  --seed-tint-amount: 34%;
+}
+[data-theme='yinyang']:not(.dark) {
+  --seed-accent: #1a1a1a;
+}
+[data-theme='yotsuba'] {
+  --seed-accent: #ae3200;
+  --seed-tint: #655c5a;
+  --seed-tint-amount: 14%;
+}
+
+/*
+  Pure black, for OLED. Copied from Tadami's reasoning rather than just setting
+  #000 everywhere: its BaseColorScheme deliberately keeps containers off pure
+  black — "Cannot be pure black as there's content scrolling behind it" — using
+  #0C0C0C / #131313 / #1B1B1B. Only the page itself goes fully black.
+*/
+:root.dark[data-black='1'] {
+  --color-ink-950: #000000;
+  --color-ink-900: #000000;
+  --color-ink-850: #0c0c0c;
+  --color-ink-800: #131313;
+  --color-ink-750: #1b1b1b;
+  --color-ink-700: #262626;
 }
 
 @layer base {

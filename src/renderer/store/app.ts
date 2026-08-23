@@ -97,6 +97,43 @@ const DATA_AFFECTING_SETTINGS = new Set<keyof AppSettings>([
 
 let toastId = 0
 
+/** Where applyTheme leaves its paint hint for the next launch to pick up. */
+export const THEME_HINT = 'matomeru.theme'
+
+/**
+ * Paints the chosen scheme onto <html>, which is where every colour token is
+ * defined — so one attribute re-themes the whole app without a re-render.
+ *
+ * `index.html` ships with `class="dark"` so the first paint is never a white
+ * flash; this runs once settings arrive and corrects it if it was wrong.
+ */
+function applyTheme(settings: AppSettings): void {
+  const root = document.documentElement
+  const dark =
+    settings.themeMode === 'system'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : settings.themeMode === 'dark'
+  root.classList.toggle('dark', dark)
+  root.dataset.theme = settings.theme
+  // Pure black is a dark-mode refinement; on a light shell it means nothing.
+  if (dark && settings.pureBlack) root.dataset.black = '1'
+  else delete root.dataset.black
+  /*
+    Mirrored so the next launch can paint the right shell before the settings
+    round-trip completes — see paintStoredTheme in main.tsx. The database stays
+    the only source of truth; this copy is a paint hint and is rewritten here
+    every time, so a stale one cannot outlive a single frame.
+  */
+  try {
+    localStorage.setItem(
+      THEME_HINT,
+      JSON.stringify({ theme: settings.theme, dark, black: dark && settings.pureBlack })
+    )
+  } catch {
+    /* storage disabled or full — the only cost is a flash on the next launch */
+  }
+}
+
 export const useApp = create<AppState>((set, get) => ({
   view: 'collection',
   setView: (view) => set({ view }),
@@ -113,6 +150,7 @@ export const useApp = create<AppState>((set, get) => ({
     document.documentElement.classList.toggle('reduce-motion', settings.reduceMotion)
     // And the document language, which index.html hardcodes to English.
     document.documentElement.lang = locale
+    applyTheme(settings)
   },
   loadSettings: async () => {
     const settings = await window.api.settings.get()
@@ -207,3 +245,13 @@ export async function guard<T>(
     return undefined
   }
 }
+
+/*
+  With `system` chosen, the OS can change under us while the app is open. Bound
+  once at module load rather than in a component, because the theme belongs to
+  the document and outlives any view.
+*/
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  const settings = useApp.getState().settings
+  if (settings?.themeMode === 'system') applyTheme(settings)
+})

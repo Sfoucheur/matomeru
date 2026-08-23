@@ -995,4 +995,58 @@ export interface AppSettings {
    * refetch — nothing about what a query returns depends on it.
    */
   locale: LocaleSetting
+  /**
+   * Which colour scheme paints the shell and the accent. A display preference,
+   * so it survives restarts. `matomeru` is the app's own look; the rest are
+   * ports of Tadami's schemes, which is where the names come from.
+   */
+  theme: ThemeName
+  /** Light or dark. `system` follows the OS, exactly as `locale` does. */
+  themeMode: ThemeMode
+  /**
+   * True black backgrounds for OLED panels, where a near-black still glows.
+   * Only meaningful in dark mode, so the UI hides it in light.
+   */
+  pureBlack: boolean
+}
+
+/**
+ * The colour schemes, in the order the picker shows them: the app's own first,
+ * then Tadami's eleven alphabetically.
+ *
+ * A theme is three CSS seeds — an accent, a neutral to tint the shell with, and
+ * how hard to tint — not a transplanted palette; see index.css. The `swatch`
+ * here is only for the picker's preview, which has to paint a colour before the
+ * theme is applied and so cannot read it back out of a variable.
+ *
+ * Names are deliberately untranslated. They are proper nouns, like set names.
+ */
+export const THEMES = [
+  { name: 'matomeru', label: 'Matomeru', swatch: '#d1a24b', shell: '#0b0d12' },
+  { name: 'doom', label: 'Doom', swatch: '#f38020', shell: '#141112' },
+  { name: 'greenapple', label: 'Green Apple', swatch: '#188140', shell: '#121412' },
+  { name: 'lavender', label: 'Lavender', swatch: '#a177ff', shell: '#0e0e1a' },
+  { name: 'midnightdusk', label: 'Midnight Dusk', swatch: '#f02475', shell: '#100f15' },
+  { name: 'strawberry', label: 'Strawberry', swatch: '#ed4a65', shell: '#141112' },
+  { name: 'tadami', label: 'Tadami', swatch: '#2979ff', shell: '#0d0f13' },
+  { name: 'tako', label: 'Tako', swatch: '#f3b375', shell: '#100f16' },
+  { name: 'tealturquoise', label: 'Teal Turquoise', swatch: '#40e0d0', shell: '#0c1215' },
+  { name: 'tidalwave', label: 'Tidal Wave', swatch: '#5ed4fc', shell: '#100f15' },
+  { name: 'yinyang', label: 'Yin Yang', swatch: '#f2f2f2', shell: '#080809' },
+  { name: 'yotsuba', label: 'Yotsuba', swatch: '#ae3200', shell: '#141112' }
+] as const
+
+export type ThemeName = (typeof THEMES)[number]['name']
+
+export type ThemeMode = 'system' | 'light' | 'dark'
+
+const THEME_NAMES = new Set<string>(THEMES.map((t) => t.name))
+
+/** A stale or hand-edited value must never leave the app unpainted. */
+export function parseTheme(raw: string | null | undefined): ThemeName {
+  return raw && THEME_NAMES.has(raw) ? (raw as ThemeName) : 'matomeru'
+}
+
+export function parseThemeMode(raw: string | null | undefined): ThemeMode {
+  return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'dark'
 }
