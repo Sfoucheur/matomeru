@@ -65,3 +65,59 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   }
   return false
 }
+
+/**
+ * The bits of `electron-updater`'s updater this app touches.
+ *
+ * Declared here rather than imported, so this module stays free of the dependency and
+ * of Electron — which is what lets the verification suite reach it.
+ */
+export interface AutoUpdaterLike {
+  autoDownload: boolean
+  autoInstallOnAppQuit: boolean
+  logger: unknown
+  /*
+    Only the three events this app listens to, typed for what each one carries. A
+    catch-all signature would type every listener argument as `never` and push the
+    casts out to the call sites, which is where they would rot.
+  */
+  on(
+    event: 'download-progress',
+    listener: (progress: { transferred: number; total: number; percent: number }) => void
+  ): unknown
+  on(event: 'update-downloaded', listener: () => void): unknown
+  on(event: 'error', listener: (err: Error) => void): unknown
+  checkForUpdates(): Promise<{ updateInfo: { version: string; releaseNotes?: unknown } } | null>
+  downloadUpdate(): Promise<unknown>
+  quitAndInstall(): void
+}
+
+/**
+ * Digs the updater out of whatever a dynamic import handed back.
+ *
+ * This exists because of a real failure: `const { autoUpdater } = await import(...)`
+ * gave `undefined` in the packaged app, and the next line read `.checkForUpdates` off
+ * it. The built main process is ESM and `electron-updater` is CommonJS, so Node has to
+ * guess which named exports a CJS module offers. It does that with `cjs-module-lexer`,
+ * which understands the `get: function () { return x }` form tsc emits — and not the
+ * arrow-with-`||` form electron-updater actually uses:
+ *
+ *     Object.defineProperty(exports, "autoUpdater", {
+ *       enumerable: true,
+ *       get: () => { return _autoUpdater || doLoadAutoUpdater(); },
+ *     })
+ *
+ * So no named export appears. What is guaranteed, whatever the lexer manages, is that
+ * a CJS module's `default` **is** its `module.exports` — so that is the fallback, and
+ * it is the one that actually works here.
+ *
+ * Null rather than a throw: the caller turns it into a message that says what went
+ * wrong, which is more than the `TypeError` did.
+ */
+export function pickAutoUpdater(mod: unknown): AutoUpdaterLike | null {
+  const namespace = mod as {
+    autoUpdater?: AutoUpdaterLike
+    default?: { autoUpdater?: AutoUpdaterLike }
+  }
+  return namespace?.autoUpdater ?? namespace?.default?.autoUpdater ?? null
+}

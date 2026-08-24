@@ -807,6 +807,7 @@ export const en = {
 
   // ------------------------------------------------------------------- errors
 
+  'err.updateModuleShape': 'The updater could not be loaded in this build. This is a packaging fault rather than something you can fix here.',
   'err.updateUnavailable': 'Updates only work in an installed build, not when running from source.',
   'err.updateCheckFailed': 'GitHub returned {status} when asked for the latest release.',
   'err.updateNotInstallable': 'This build cannot install updates itself.',

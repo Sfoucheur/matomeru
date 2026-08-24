@@ -808,6 +808,7 @@ export const fr: Record<keyof typeof en, string> = {
 
 	// ------------------------------------------------------------------- errors
 
+	"err.updateModuleShape": "Le module de mise à jour n’a pas pu être chargé dans cette version. Il s’agit d’un défaut d’empaquetage, pas de quelque chose que vous pouvez corriger ici.",
 	"err.updateUnavailable": "Les mises à jour ne fonctionnent que dans une version installée, pas lors d’une exécution depuis les sources.",
 	"err.updateCheckFailed": "GitHub a renvoyé {status} à la demande de la dernière version.",
 	"err.updateNotInstallable": "Cette version ne peut pas installer les mises à jour elle-même.",

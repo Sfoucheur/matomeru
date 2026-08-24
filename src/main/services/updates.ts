@@ -17,7 +17,12 @@ import type { ProgressEvent, UpdateState } from '@shared/types'
 import { t } from '@shared/i18n/index.js'
 import type { TranslationKey } from '@shared/types'
 import { getLocale } from '../db/repos/settings.js'
-import { isNewerVersion, updateMode } from './updateCheck.js'
+import {
+  type AutoUpdaterLike,
+  isNewerVersion,
+  pickAutoUpdater,
+  updateMode
+} from './updateCheck.js'
 
 function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
   return t(getLocale(), key, vars)
@@ -81,7 +86,7 @@ let wired = false
 let sink: ProgressSink = () => {}
 let quiet = false
 
-async function updater(onProgress: ProgressSink): Promise<typeof import('electron-updater').autoUpdater> {
+async function updater(onProgress: ProgressSink): Promise<AutoUpdaterLike> {
   sink = onProgress
   /*
     Imported here rather than at the top of the module.
@@ -90,7 +95,8 @@ async function updater(onProgress: ProgressSink): Promise<typeof import('electro
     an unpackaged build throws before any of our own code gets a chance to say the
     feature is unavailable. A dynamic import keeps `disabled` genuinely inert.
   */
-  const { autoUpdater } = await import('electron-updater')
+  const autoUpdater = pickAutoUpdater(await import('electron-updater'))
+  if (autoUpdater === null) throw new Error(tr('err.updateModuleShape'))
 
   if (!wired) {
     wired = true

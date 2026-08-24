@@ -346,6 +346,34 @@ artwork must be solid, since nothing controls what is behind it.
 
 ## Verification
 
+### Importing a CommonJS dependency from the ESM main process
+
+The built main process is ESM. A dependency left external — `electron-updater`, and any
+future one — is therefore loaded by Node's ESM loader, which has to guess which *named*
+exports a CommonJS module offers. It guesses with `cjs-module-lexer`, and the guess can
+fail silently.
+
+It did. `const { autoUpdater } = await import('electron-updater')` gave `undefined` in a
+packaged build, because the package exports through an arrow-function getter:
+
+```js
+Object.defineProperty(exports, "autoUpdater", {
+  enumerable: true,
+  get: () => { return _autoUpdater || doLoadAutoUpdater(); },
+})
+```
+
+The lexer understands the `get: function () { return x }` form tsc emits, not that one.
+What *is* guaranteed for any CJS module is that its `default` is `module.exports`, so
+`pickAutoUpdater` in `updateCheck.ts` reads the named export first and falls back to
+`default`. A `verify` check imports a fixture module with that exact shape from a real
+ESM child process and asserts both halves, so if a future Node closes the gap the check
+says so rather than leaving a workaround nobody dares remove.
+
+Worth remembering the *reason* it shipped: the import only runs in `auto` mode, and a
+development run is always `disabled`, so the failing path could not execute locally. When
+a code path is unreachable in development, that is the one to write a check for.
+
 ### The suite never uses the network
 
 Two sections used to call Scryfall and Archidekt for real. That worked on one machine

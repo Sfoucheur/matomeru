@@ -9,6 +9,8 @@
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { gunzipSync, gzipSync } from 'node:zlib'
+import { execFileSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, join as joinPath } from 'node:path'
@@ -56,7 +58,11 @@ import {
   pkcePair
 } from '../src/main/services/oauth.js'
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
-import { isNewerVersion, updateMode } from '../src/main/services/updateCheck.js'
+import {
+  isNewerVersion,
+  pickAutoUpdater,
+  updateMode
+} from '../src/main/services/updateCheck.js'
 import {
   deckBreakdown,
   deckMoves,
@@ -4885,6 +4891,83 @@ async function main(): Promise<void> {
     check('an older version is not newer', !isNewerVersion('0.1.0', '0.2.0'))
     check('a shorter version is compared by segment, not by length',
       isNewerVersion('1.0', '0.9.9') && !isNewerVersion('1.0', '1.0.1'))
+    /*
+      Digging the updater out of a dynamic import.
+
+      This is the bug that reached a release: `const { autoUpdater } = await import(...)`
+      returned undefined in the packaged app, and the next line read `.checkForUpdates`
+      off it. Nothing here could have caught it, because the only mode that runs that
+      import is `auto`, and a development run is always `disabled`. So the logic moved
+      somewhere testable, and these are the shapes it has to survive.
+    */
+    const realShape = { default: { autoUpdater: { checkForUpdates: () => null } } }
+    check('the updater is found when it arrives only under default',
+      pickAutoUpdater(realShape) !== null,
+      'the shape electron-updater actually presents was not handled')
+    check('and when it arrives as a named export',
+      pickAutoUpdater({ autoUpdater: { checkForUpdates: () => null } }) !== null)
+    check('a namespace with neither yields null, rather than something that fails later',
+      pickAutoUpdater({}) === null && pickAutoUpdater(undefined) === null,
+      'a missing updater was reported as present')
+
+    /*
+      And the platform rule the fix rests on, exercised for real rather than assumed.
+
+      A fixture CommonJS module with electron-updater's exact export shape -- an arrow
+      getter, which `cjs-module-lexer` does not recognise -- imported from a genuine ESM
+      context in a child process. This is the check that would have caught the original
+      bug: it asserts the named export is *absent* and that `default` carries it. If a
+      future Node teaches the lexer this form, this fails and tells us the workaround has
+      become unnecessary, rather than leaving it there forever.
+    */
+    {
+      const fixture = join(dir, 'cjs-arrow-getter.cjs')
+      writeFileSync(
+        fixture,
+        [
+          'let made = null',
+          'function build() { made = { checkForUpdates: () => null }; return made }',
+          'Object.defineProperty(exports, "autoUpdater", {',
+          '  enumerable: true,',
+          '  get: () => { return made || build() }',
+          '})',
+          ''
+        ].join('\n')
+      )
+      const script =
+        `const m = await import(${JSON.stringify(pathToFileURL(fixture).href)});` +
+        'console.log(JSON.stringify({' +
+        '  named: typeof m.autoUpdater,' +
+        '  viaDefault: typeof m.default?.autoUpdater' +
+        '}))'
+      const shape = JSON.parse(
+        execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+          encoding: 'utf8'
+        }).trim()
+      ) as { named: string; viaDefault: string }
+      check('a CJS arrow-getter export is invisible to the ESM named-export lexer',
+        shape.named === 'undefined',
+        `named export was ${shape.named} — the workaround may no longer be needed`)
+      check('and the same export is reachable through default, which is what the fix uses',
+        shape.viaDefault === 'object',
+        `default gave ${shape.viaDefault}`)
+      rmSync(fixture, { force: true })
+    }
+
+    /*
+      The tripwire. The two checks above test the helper; this one tests that the app
+      still goes through it, which is the part a careless revert would undo.
+    */
+    {
+      const source = readFileSync(joinPath('src', 'main', 'services', 'updates.ts'), 'utf8')
+      check('the updater is not destructured straight out of a dynamic import',
+        !/const\s*\{\s*autoUpdater\s*\}\s*=\s*await import/.test(source),
+        'updates.ts destructures autoUpdater again — that is the bug that shipped')
+      check('and goes through the interop-safe accessor',
+        source.includes('pickAutoUpdater('),
+        'updates.ts no longer calls pickAutoUpdater')
+    }
+
     check('and nonsense never triggers an update prompt',
       !isNewerVersion('nightly', '0.1.0') && !isNewerVersion('', '0.1.0') &&
         !isNewerVersion('0.1.0', 'nightly'),
