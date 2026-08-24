@@ -346,6 +346,43 @@ artwork must be solid, since nothing controls what is behind it.
 
 ## Verification
 
+### The suite never uses the network
+
+Two sections used to call Scryfall and Archidekt for real. That worked on one machine
+and nowhere else: the first CI run was refused by Archidekt with a 403, which is what a
+shared cloud IP gets when it asks for a deck. Deleting them was not an option — one
+seeds the printings every later section builds on, and the other is thirty checks of
+mapping and matching.
+
+So the socket was replaced and everything else kept. Both clients call the global
+`fetch`, so `scripts/verify.ts` installs its own before anything runs and replays
+`scripts/fixtures/http.json.gz` — thirteen recorded responses, 664 KB gzipped from
+3.6 MB of JSON. The real clients still parse, the real mappers still map, the caching
+still writes rows.
+
+Two properties make this trustworthy rather than merely tidy:
+
+- **An unrecorded URL is a hard failure**, naming the URL and the fix. The rule stays
+  true when someone adds a call later, because their call fails loudly instead of
+  quietly dialling out.
+- **Loopback is passed straight through and never recorded.** The loopback checks start
+  a server in-process on an ephemeral port; recording those would capture a port number
+  that never comes round again.
+
+Proven, not assumed: with the underlying `fetch` replaced by one that throws on any
+non-loopback host, the suite still reports 475 passed — so nothing escapes.
+
+`npm run verify:record` re-runs against the real APIs and rewrites the fixture. That is
+the one command here that uses the network, and it is run deliberately: when an API
+changes, or when a new call is added. The diff on the fixture is then the record of what
+moved.
+
+**The trade, stated plainly:** a recording cannot notice that Scryfall changed its
+response shape yesterday. That is the price of a suite that runs anywhere, and
+re-recording is how you go and look.
+
+
+
 `npm run verify` runs 279 checks against a throwaway database and the live APIs, covering
 the things most likely to break quietly:
 

@@ -19,6 +19,7 @@
     "changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0",
     "release:publish": "npm run build && electron-builder --win --publish always",
     "verify": "esbuild scripts/verify.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.verify.cjs --external:node-sqlite3-wasm --alias:@shared=./src/shared --log-level=warning && node .verify.cjs",
+    "verify:record": "esbuild scripts/verify.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.verify.cjs --external:node-sqlite3-wasm --alias:@shared=./src/shared --log-level=warning && node .verify.cjs --record",
     "probe:decks": "esbuild scripts/probe-decks.ts --bundle --platform=node --format=cjs --outfile=.probe.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm && node .probe.cjs",
     "check:geometry": "node scripts/check-geometry.cjs",
     "probe:foil": "esbuild scripts/probe-foil.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.probe-foil.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-foil.cjs",

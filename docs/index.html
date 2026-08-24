@@ -3,106 +3,371 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Matomeru — a local collection manager for Magic: The Gathering</title>
-  <meta name="description" content="A Windows desktop app for managing a Magic: The Gathering collection in bulk. Everything stays on your machine.">
+  <title>Matomeru — documentation</title>
+  <meta name="description" content="Matomeru is a Windows app for handling a Magic: The Gathering collection in bulk. Download, features, backup, updates and troubleshooting.">
   <style>
     :root {
-      --ink-950: #0b0d12; --ink-900: #12141b; --ink-800: #1a1d26; --ink-700: #262a36;
-      --ink-500: #6b7180; --ink-300: #a8adba; --ink-100: #e8e8ea; --gold: #d1a24b;
+      --ink-950: #0b0d12; --ink-900: #12141b; --ink-850: #161923; --ink-800: #1a1d26;
+      --ink-700: #262a36; --ink-600: #3a4050; --ink-500: #6b7180; --ink-300: #a8adba;
+      --ink-100: #e8e8ea; --gold: #d1a24b; --gold-dim: #8a6c31; --warn: #d9a441;
     }
     * { box-sizing: border-box }
+    html { scroll-behavior: smooth }
     body {
       margin: 0; background: var(--ink-950); color: var(--ink-100);
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       line-height: 1.65; font-size: 16px;
     }
-    .wrap { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 6rem }
-    header { display: flex; align-items: baseline; gap: .75rem; margin-bottom: .5rem }
+    .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 6rem }
+
+    header.masthead { display: flex; align-items: baseline; gap: .75rem; margin-bottom: .4rem }
     .mark { font-size: 2rem; color: var(--gold); line-height: 1 }
     h1 { font-size: 1.9rem; margin: 0; letter-spacing: -.01em }
-    .tagline { color: var(--ink-300); font-size: 1.05rem; margin: .5rem 0 2.5rem }
-    h2 {
-      font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
-      color: var(--ink-500); margin: 2.5rem 0 .75rem; font-weight: 600;
+    .tagline { color: var(--ink-300); font-size: 1.05rem; margin: .4rem 0 2rem }
+
+    nav.toc {
+      border: 1px solid var(--ink-700); border-radius: .6rem; background: var(--ink-900);
+      padding: 1rem 1.25rem; margin: 0 0 2.5rem;
     }
+    nav.toc p {
+      margin: 0 0 .5rem; font-size: .72rem; text-transform: uppercase;
+      letter-spacing: .09em; color: var(--ink-500); font-weight: 600;
+    }
+    nav.toc ol { margin: 0; padding-left: 1.1rem; color: var(--ink-300) }
+    nav.toc li { margin-bottom: .2rem }
+
+    h2 {
+      font-size: 1.15rem; margin: 3rem 0 .75rem; letter-spacing: -.01em;
+      padding-top: .5rem; border-top: 1px solid var(--ink-700);
+    }
+    h3 { font-size: .95rem; margin: 1.75rem 0 .4rem; color: var(--ink-100) }
     p { margin: 0 0 1rem; color: var(--ink-300) }
     ul { margin: 0 0 1rem; padding-left: 1.15rem; color: var(--ink-300) }
     li { margin-bottom: .4rem }
     strong { color: var(--ink-100); font-weight: 600 }
     a { color: var(--gold) }
-    .panel {
-      background: var(--ink-900); border: 1px solid var(--ink-700);
-      border-radius: .6rem; padding: 1.1rem 1.25rem; margin: 0 0 1rem;
+    a:hover { color: var(--ink-100) }
+
+    /* Downloads */
+    .downloads { display: grid; gap: .75rem; margin: 0 0 1rem }
+    @media (min-width: 34rem) { .downloads { grid-template-columns: 1fr 1fr } }
+    .dl {
+      display: block; text-decoration: none; border: 1px solid var(--ink-700);
+      background: var(--ink-900); border-radius: .6rem; padding: 1rem 1.15rem;
+      transition: border-color .15s, background .15s;
     }
+    .dl:hover { border-color: var(--gold-dim); background: var(--ink-850) }
+    .dl .name { display: block; color: var(--gold); font-weight: 600; font-size: .95rem }
+    .dl .note { display: block; color: var(--ink-300); font-size: .82rem; margin-top: .3rem }
+    .dl .rec {
+      display: inline-block; font-size: .65rem; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--ink-950); background: var(--gold);
+      border-radius: .2rem; padding: .05rem .35rem; margin-left: .4rem; vertical-align: .1rem;
+    }
+
+    .callout {
+      border: 1px solid var(--ink-700); border-left: 3px solid var(--warn);
+      background: var(--ink-900); border-radius: .4rem; padding: .85rem 1.1rem;
+      margin: 0 0 1rem; font-size: .9rem;
+    }
+    .callout p:last-child { margin-bottom: 0 }
+
+    table { border-collapse: collapse; width: 100%; margin: 0 0 1rem; font-size: .92rem }
+    th, td {
+      text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--ink-700);
+      vertical-align: top; color: var(--ink-300);
+    }
+    th {
+      color: var(--ink-500); font-weight: 600; font-size: .72rem;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    kbd {
+      background: var(--ink-800); border: 1px solid var(--ink-600);
+      border-bottom-width: 2px; border-radius: .25rem; padding: .05rem .4rem;
+      font-family: inherit; font-size: .82em; color: var(--ink-100); white-space: nowrap;
+    }
+    code {
+      background: var(--ink-800); border: 1px solid var(--ink-700); border-radius: .25rem;
+      padding: .1rem .35rem; font-size: .85em; color: var(--ink-100);
+    }
+    .scroll { overflow-x: auto }
+
     footer {
       margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--ink-700);
       color: var(--ink-500); font-size: .85rem;
     }
     footer a { color: var(--ink-300) }
-    code {
-      background: var(--ink-800); border: 1px solid var(--ink-700); border-radius: .25rem;
-      padding: .1rem .35rem; font-size: .85em; color: var(--ink-100);
-    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <header>
+    <header class="masthead">
       <span class="mark">ま</span>
       <h1>Matomeru</h1>
     </header>
     <p class="tagline">
-      A Windows desktop app for managing a Magic: The Gathering collection in bulk.
+      A Windows app for handling a Magic: The Gathering collection in bulk — for when a
+      box of cards lands on the table and needs to become a list.
     </p>
 
-    <h2>What it does</h2>
-    <ul>
-      <li>Holds a collection of cards with finish, condition, language and quantity, and prices it from Scryfall.</li>
-      <li>Imports and exports CSV, and adds cards in bulk by name or set number.</li>
-      <li>Syncs decks from Archidekt and shows which cards a deck is missing.</li>
-      <li>Moves cards between decks and the collection, and tracks what has left a deck before the decklist catches up.</li>
-      <li>Builds pull lists for cards you are taking out, sold or traded.</li>
-      <li>Works out booster odds from set data.</li>
-      <li>Breaks the collection down by set, rarity and language, with its total value.</li>
-    </ul>
+    <nav class="toc">
+      <p>On this page</p>
+      <ol>
+        <li><a href="#download">Download</a></li>
+        <li><a href="#start">Getting started</a></li>
+        <li><a href="#features">What it does</a></li>
+        <li><a href="#shortcuts">Keyboard shortcuts</a></li>
+        <li><a href="#backup">Backing up to Google Drive</a></li>
+        <li><a href="#updates">Updates</a></li>
+        <li><a href="#data">Where your data lives</a></li>
+        <li><a href="#trouble">Troubleshooting</a></li>
+      </ol>
+    </nav>
 
-    <h2>Where your data lives</h2>
-    <div class="panel">
-      <p style="margin:0">
-        On your machine, in <code>%APPDATA%\matomeru</code> — one SQLite database and a
-        cache of card images. There is no account to create, no server of ours to talk
-        to, and nothing is uploaded anywhere unless you ask for it.
+    <h2 id="download">Download</h2>
+
+    <div class="downloads">
+      <a class="dl" href="https://github.com/Sfoucheur/matomeru/releases">
+        <span class="name">Installer<span class="rec">recommended</span></span>
+        <span class="note">
+          <code>Matomeru-Setup-x.y.z.exe</code> — installs normally, adds a shortcut, and
+          can update itself when a new version appears.
+        </span>
+      </a>
+      <a class="dl" href="https://github.com/Sfoucheur/matomeru/releases">
+        <span class="name">Portable</span>
+        <span class="note">
+          <code>Matomeru x.y.z.exe</code> — runs from wherever you put it, installs
+          nothing. It tells you when an update exists but cannot replace itself.
+        </span>
+      </a>
+    </div>
+
+    <p>
+      Both links go to the releases page, where the files are attached to the newest
+      release. <strong>If that page is empty, there has not been a release yet</strong> —
+      the app is built from source in the meantime.
+    </p>
+
+    <div class="callout">
+      <p>
+        <strong>Windows will warn you about an unrecognised app.</strong> That warning is
+        accurate: the build is not code-signed, which means nobody has paid a certificate
+        authority to vouch for it. Choose <em>More info</em> then <em>Run anyway</em> if
+        you are happy to. See <a href="#trouble">Troubleshooting</a>.
       </p>
     </div>
 
-    <h2>Backing up to Google Drive</h2>
+    <h2 id="start">Getting started</h2>
+
     <p>
-      Optional, and off until you turn it on. Pressing <strong>Ctrl+S</strong> offers to
-      copy a snapshot of the database to a folder in <strong>your own</strong> Google
-      Drive, and the same dialog can read it back to restore.
-    </p>
-    <p>
-      The app asks Google for a single narrow permission —
-      <code>drive.file</code> — which lets it see only the files it created itself or
-      the folder you explicitly chose through Google's own folder picker. The rest of
-      your Drive stays invisible to it, and that is enforced by Google rather than
-      promised by us. You can withdraw the permission at any time from
-      <a href="https://myaccount.google.com/permissions">your Google account</a>.
+      There is nothing to set up. Open the app and it is ready: no account, no sign-in, no
+      server. Everything lives on your machine from the first launch.
     </p>
 
-    <h2>Privacy</h2>
+    <h3>Adding your first cards</h3>
+    <ul>
+      <li>
+        <strong>By name</strong> — the Add cards screen shows every printing of a card in
+        every language, so you can pick the exact one you are holding.
+      </li>
+      <li>
+        <strong>By set and collector number</strong> — faster when you are working through
+        a sorted pile.
+      </li>
+      <li>
+        <strong>From a CSV</strong> — Import / export reads files from ManaBox, Moxfield
+        and Deckbox, or anything you can map to columns yourself.
+      </li>
+    </ul>
+
+    <h3>Connecting your decks</h3>
     <p>
-      No analytics, no telemetry, no accounts, and no data sent to the developer.
-      The full detail, including every service the app contacts, is in the
-      <a href="privacy.html">privacy policy</a>.
+      Put your Archidekt username in Settings and the Decks screen syncs your decklists.
+      The app then answers <em>"where is this card?"</em> — which deck a card is already
+      sleeved into, and which cards a deck is still missing.
+    </p>
+
+    <h2 id="features">What it does</h2>
+
+    <h3>The collection</h3>
+    <p>
+      A table or a gallery of card images, whichever suits what you are doing. Localised
+      names lead, with the English name alongside when they differ. Filter by language,
+      rarity, set, finish, condition, colour, type or price; sort on two levels at once;
+      resize the grid with <kbd>Ctrl</kbd>+<kbd>scroll</kbd>.
+    </p>
+
+    <h3>Card details</h3>
+    <p>
+      Click any card anywhere for one surface with the large image, the set and rarity,
+      current prices, every other printing in every language, which of your decks it sits
+      in, and the odds of pulling that exact printing from each booster the set comes in.
+    </p>
+
+    <h3>Decks</h3>
+    <p>
+      Synced from Archidekt. Deck label colours get a meaning you choose, so the app knows
+      which sleeved cards count as yours. Cards move between a deck and the collection in
+      both directions, and the app keeps track of what has left a deck before Archidekt
+      has caught up.
+    </p>
+
+    <h3>Pull lists</h3>
+    <p>
+      For cards on their way out — sold, traded, or moving into a deck. An open list
+      <strong>reserves</strong> rather than removes: nothing disappears from your
+      collection until you confirm it has actually gone, and a confirmed list can be
+      reverted if you change your mind.
+    </p>
+
+    <h3>Prices and totals</h3>
+    <p>
+      Cached Scryfall prices in USD or EUR, with the collection broken down by set, rarity
+      and language.
+    </p>
+
+    <h3>Language and appearance</h3>
+    <p>
+      English or French, following your Windows language by default, and twelve colour
+      themes in light or dark.
+    </p>
+
+    <h2 id="shortcuts">Keyboard shortcuts</h2>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Keys</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><kbd>Ctrl</kbd>+<kbd>S</kbd></td>
+            <td>Back up to Google Drive. Asks first — the keystroke never sends anything by itself.</td>
+          </tr>
+          <tr>
+            <td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td>
+            <td>Undo and redo, covering every local edit you make.</td>
+          </tr>
+          <tr>
+            <td><kbd>Alt</kbd>+<kbd>1</kbd> … <kbd>Alt</kbd>+<kbd>7</kbd></td>
+            <td>Jump straight to a screen.</td>
+          </tr>
+          <tr>
+            <td><kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>Ctrl</kbd>+<kbd>-</kbd> / <kbd>Ctrl</kbd>+<kbd>0</kbd></td>
+            <td>Bigger cards, smaller cards, reset.</td>
+          </tr>
+          <tr>
+            <td><kbd>Ctrl</kbd>+<kbd>scroll</kbd></td>
+            <td>The same, over any grid of cards.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Inside a text box these are left alone — <kbd>Ctrl</kbd>+<kbd>Z</kbd> there undoes
+      your typing, as it should.
+    </p>
+
+    <h2 id="backup">Backing up to Google Drive</h2>
+
+    <p>
+      Optional, and off until you turn it on. Settings → Backup →
+      <strong>Connect with Google Drive</strong>: your browser opens Google's own consent
+      page, you approve, and that is the whole setup. Your Google password is typed on
+      Google's site and never reaches this app.
+    </p>
+    <p>
+      After that, <kbd>Ctrl</kbd>+<kbd>S</kbd> offers to send a copy of your collection to
+      a folder in your Drive, and the same dialog reads it back to restore. You choose the
+      folder's name; the app creates it at the top of your Drive if it is not there
+      already.
+    </p>
+
+    <ul>
+      <li>
+        <strong>The app can only see files it created.</strong> Google enforces that — the
+        permission requested does not allow it to look at anything else in your Drive.
+      </li>
+      <li>
+        <strong>The backup is your database, compressed</strong> — roughly 4 MB for a
+        30 MB collection. Card images are left out; they re-download on their own.
+      </li>
+      <li>
+        <strong>Restoring replaces everything on this machine</strong>, and keeps a copy of
+        what was there first in case that was not what you wanted.
+      </li>
+      <li>
+        <strong>You can withdraw access</strong> whenever you like, from Settings or from
+        <a href="https://myaccount.google.com/permissions">your Google account</a>.
+      </li>
+    </ul>
+
+    <h2 id="updates">Updates</h2>
+
+    <p>
+      The installed version looks for a new release shortly after it starts and says
+      nothing unless there is one. When there is, Settings → Updates offers to download it
+      and install on restart. You can check whenever you like, or turn the startup check
+      off entirely.
+    </p>
+    <p>
+      The portable version cannot replace itself, so it opens the release page instead and
+      leaves the download to you.
+    </p>
+
+    <h2 id="data">Where your data lives</h2>
+
+    <p>
+      In <code>%APPDATA%\matomeru</code> — one database file and a cache of card images,
+      deliberately outside the app folder so reinstalling or updating never touches them.
+      Deleting that folder deletes everything the app holds.
+    </p>
+    <p>
+      The app has no server. It contacts Scryfall for card data and images, MTGJSON for
+      booster contents, Archidekt for your decklists if you give it a username, and Google
+      only if you turn on backup. Nothing is sent to the developer, ever. The
+      <a href="privacy.html">privacy policy</a> lists all of it.
+    </p>
+
+    <h2 id="trouble">Troubleshooting</h2>
+
+    <h3>"Windows protected your PC"</h3>
+    <p>
+      SmartScreen shows this for applications it has not seen signed by a known publisher.
+      Matomeru is not code-signed, so it will appear. Choose <em>More info</em> then
+      <em>Run anyway</em>. If you would rather not, building from
+      <a href="https://github.com/Sfoucheur/matomeru">source</a> produces the same app.
+    </p>
+
+    <h3>The portable version never updates itself</h3>
+    <p>
+      Correct, and it cannot: there is no installer for it to hand over to. It notices new
+      releases and opens the release page so you can download the new one. Use the
+      installer if you want updates handled for you.
+    </p>
+
+    <h3>Settings says the build has no Google client</h3>
+    <p>
+      That build was compiled without Drive credentials, so backup cannot work in it.
+      Official releases include them; a build made from source needs its own — see the
+      developer notes in the repository.
+    </p>
+
+    <h3>A deck will not sync</h3>
+    <p>
+      Archidekt has to be able to see it. Private decks are not readable by anything but
+      you signed in on their site, so the app reports them as unavailable rather than
+      guessing.
     </p>
 
     <footer>
       <p style="margin:0">
-        Source: <a href="https://github.com/Sfoucheur/matomeru">github.com/Sfoucheur/matomeru</a>
-        · <a href="privacy.html">Privacy policy</a>
+        <a href="privacy.html">Privacy policy</a> ·
+        <a href="https://github.com/Sfoucheur/matomeru">Source on GitHub</a> ·
+        <a href="https://github.com/Sfoucheur/matomeru/releases">Releases</a> ·
+        <a href="https://github.com/Sfoucheur/matomeru/issues">Report a problem</a>
       </p>
-      <p style="margin:.4rem 0 0">
+      <p style="margin:.5rem 0 0">
         Matomeru is unofficial Fan Content. Not affiliated with or endorsed by Wizards of
         the Coast, Scryfall or Archidekt.
       </p>

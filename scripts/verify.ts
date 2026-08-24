@@ -7,7 +7,8 @@
  *
  *   npm run verify
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, join as joinPath } from 'node:path'
@@ -206,7 +207,125 @@ const filters = (patch: Partial<CollectionFilters> = {}): CollectionFilters => (
   ...patch
 })
 
+/*
+  The network, replaced by a recording.
+
+  Two sections of this suite used to call Scryfall and Archidekt for real. That worked
+  on one machine and nowhere else: the first CI run was refused by Archidekt with a 403,
+  because a shared cloud IP asking for a deck is exactly what gets refused. Deleting the
+  sections was not an option either — one of them seeds the printings every later
+  section builds on, and the other is thirty checks of mapping and matching.
+
+  So the socket goes and everything else stays. Both clients call the global `fetch`
+  (`archidekt/client.ts`, `scryfall/client.ts`, `services/sets.ts`), which means the
+  seam already existed and no production code has to know about this. The real clients
+  still parse, the real mappers still map, the caching still writes rows.
+
+  An unrecorded URL throws, naming itself. That is the part that makes "the suite does
+  not use the network" a property rather than a promise: it stays true when someone adds
+  a call later, because their call fails loudly instead of quietly dialling out.
+*/
+/*
+  Gzipped. The recording is 3.6 MB of JSON -- mostly one multilingual Scryfall search and
+  one MTGJSON set file -- which compresses about tenfold. `zlib` is built in, and the
+  file is machine-written either way, so nothing is lost by not being able to read it
+  directly: `npm run verify:record` is how it changes, and the size of the change is
+  still visible in the diff.
+*/
+const FIXTURE = joinPath('scripts', 'fixtures', 'http.json.gz')
+
+interface RecordedResponse {
+  status: number
+  contentType: string
+  body: string
+}
+
+function installRecordedHttp(): void {
+  const real = globalThis.fetch
+  const key = (input: RequestInfo | URL, init?: RequestInit): string =>
+    `${init?.method ?? 'GET'} ${String(input)}`
+
+  /*
+    The suite's own loopback server is not an API and is never recorded.
+
+    The loopback checks start an HTTP server in this process on an ephemeral port and
+    then talk to it. Recording those would capture a port number that will never come
+    round again, so the replay would miss and the checks would fail for a reason having
+    nothing to do with what they test. Passing them straight through is also honest
+    about the rule: nothing leaves the machine.
+  */
+  const isLoopback = (input: RequestInfo | URL): boolean => {
+    try {
+      const { hostname } = new URL(String(input))
+      return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
+    } catch {
+      return false
+    }
+  }
+
+  /*
+    An argv flag rather than an environment variable: `node .verify.cjs --record` works
+    identically from cmd, PowerShell and bash, where quoting an inline env var does not.
+  */
+  if (process.argv.includes('--record')) {
+    const captured: Record<string, RecordedResponse> = {}
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await real(input, init)
+      if (isLoopback(input)) return response
+      // Cloned, because the caller still needs to read the body itself.
+      const copy = response.clone()
+      captured[key(input, init)] = {
+        status: copy.status,
+        contentType: copy.headers.get('content-type') ?? 'application/json',
+        body: await copy.text()
+      }
+      return response
+    }
+    process.on('exit', () => {
+      mkdirSync(joinPath('scripts', 'fixtures'), { recursive: true })
+      // Sorted, so re-recording produces a reviewable diff rather than a reshuffle.
+      const sorted = Object.fromEntries(
+        Object.entries(captured).sort(([a], [b]) => a.localeCompare(b))
+      )
+      writeFileSync(FIXTURE, gzipSync(`${JSON.stringify(sorted, null, 2)}\n`))
+      console.log(`\nRecorded ${Object.keys(sorted).length} responses to ${FIXTURE}`)
+    })
+    console.log('Recording live responses — this run DOES use the network.\n')
+    return
+  }
+
+  let recorded: Record<string, RecordedResponse>
+  try {
+    recorded = JSON.parse(gunzipSync(readFileSync(FIXTURE)).toString('utf8')) as Record<
+      string,
+      RecordedResponse
+    >
+  } catch (err) {
+    throw new Error(
+      `Could not read ${FIXTURE} (${(err as Error).message}). ` +
+        'Run `npm run verify:record` once to create it.'
+    )
+  }
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (isLoopback(input)) return real(input, init)
+    const wanted = key(input, init)
+    const hit = recorded[wanted]
+    if (!hit) {
+      throw new Error(
+        `No recorded response for ${wanted}. This suite does not use the network; ` +
+          'run `npm run verify:record` to capture it.'
+      )
+    }
+    return new Response(hit.body, {
+      status: hit.status,
+      headers: { 'content-type': hit.contentType }
+    })
+  }
+}
+
 async function main(): Promise<void> {
+  installRecordedHttp()
   const dir = mkdtempSync(join(tmpdir(), 'matomeru-verify-'))
   setDataDir(dir)
   const db = getDb()
@@ -232,7 +351,7 @@ async function main(): Promise<void> {
   }
 
   // ------------------------------------------------------------- language path
-  section('Language handling (live Scryfall)')
+  section('Language handling (recorded Scryfall)')
 
   // The set/number/language route is the only one that honours language.
   const ja = await resolveQuick('m10', '146', 'ja')
@@ -468,7 +587,7 @@ async function main(): Promise<void> {
   )
 
   // ------------------------------------------------------------------ decks
-  section('Archidekt deck mapping and matching (live)')
+  section('Archidekt deck mapping and matching (recorded)')
 
   const user = await userByUsername('gategeek42')
   check('username lookup works', !!user && typeof user.id === 'number', 'no user returned')
