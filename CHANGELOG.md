@@ -1,4 +1,11 @@
-## 0.1.1 (2026-08-24)
+## [0.1.2](https://github.com/Sfoucheur/matomeru/compare/v0.1.1...v0.1.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* in app updates ([be7cab1](https://github.com/Sfoucheur/matomeru/commit/be7cab1ed8164ef8d222aeab7007b5473bdf3156))
+
+## [0.1.1](https://github.com/Sfoucheur/matomeru/compare/5c83a364c53917280c63de71a18d14b0d0d0bf1c...v0.1.1) (2026-08-24)
 
 
 ### Bug Fixes
