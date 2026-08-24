@@ -1,6 +1,9 @@
 {
   "name": "matomeru",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "Local MTG bulk collection manager",
   "main": "./out/main/index.js",
   "author": "sebas",
@@ -15,13 +18,13 @@
     "package:dir": "npm run build && electron-builder --win --dir",
     "changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0",
     "release:publish": "npm run build && electron-builder --win --publish always",
-    "verify": "esbuild scripts/verify.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.verify.cjs --external:node-sqlite3-wasm --alias:@shared=./src/shared --log-level=warning && node .verify.cjs",
+    "verify": "esbuild scripts/verify.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.verify.cjs --external:node-sqlite3-wasm --alias:@shared=./src/shared --log-level=warning && node .verify.cjs",
     "probe:decks": "esbuild scripts/probe-decks.ts --bundle --platform=node --format=cjs --outfile=.probe.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm && node .probe.cjs",
     "check:geometry": "node scripts/check-geometry.cjs",
-    "probe:foil": "esbuild scripts/probe-foil.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.probe-foil.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-foil.cjs",
-    "probe:boosters": "esbuild scripts/probe-boosters.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.probe-boosters.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-boosters.cjs",
+    "probe:foil": "esbuild scripts/probe-foil.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.probe-foil.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-foil.cjs",
+    "probe:boosters": "esbuild scripts/probe-boosters.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.probe-boosters.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-boosters.cjs",
     "check:features": "node scripts/check-features.cjs",
-    "probe:thranduil": "esbuild scripts/probe-thranduil.ts --bundle --platform=node --format=cjs --target=node22 --outfile=.probe-thr.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-thr.cjs",
+    "probe:thranduil": "esbuild scripts/probe-thranduil.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.probe-thr.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-thr.cjs",
     "icon": "electron scripts/make-icon.cjs && node scripts/check-icon.cjs",
     "check:themes": "node scripts/check-themes.cjs"
   },

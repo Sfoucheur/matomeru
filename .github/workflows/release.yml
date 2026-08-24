@@ -52,7 +52,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # Read from .nvmrc, so the next bump is one line in one file --
+          # and so fnm locally and setup-node here can never disagree.
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install

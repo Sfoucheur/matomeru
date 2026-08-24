@@ -26,7 +26,7 @@ npm run verify     # end-to-end checks against a scratch DB and the live APIs
 > broken; 26.13.0 predates the file entirely. `^26.13.0` would resolve straight back into it.
 
 > **Node version.** Electron 43's install script needs Node **≥ 22.12** (it does
-> `require()` on an ES module). On Node 22.11 `npm install` leaves the Electron binary
+> `require()` on an ES module). On Node 24.19 `npm install` leaves the Electron binary
 > missing and `electron .` fails with _"Electron failed to install correctly"_. Either
 > upgrade Node, or finish the install manually:
 >
