@@ -1,0 +1,51 @@
+name: CI
+
+# Every branch, every pull request. This job proves the thing compiles and that the
+# data layer still behaves; it never packages and never touches a secret.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Windows, matching where this app actually runs. The repository is public so
+    # runner minutes are free, and there is no reason for CI to prove something on a
+    # platform nobody ships.
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash, so these steps read the same as the ones run locally.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Seeds its own printings into a scratch database, so it needs nothing from the
+      # machine. That is the only reason it can run here at all.
+      - name: Verify
+        run: npm run verify
+
+      - name: Build
+        run: npm run build
+
+      # The live suites are deliberately absent: check:features drives a real Electron
+      # window over the DevTools protocol against a populated card collection, and
+      # check:themes needs a launch of its own. Neither exists on a runner, and a check
+      # that cannot run is worse than one that is honestly missing.

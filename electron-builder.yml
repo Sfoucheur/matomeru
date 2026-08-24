@@ -17,6 +17,11 @@ publish:
   provider: github
   owner: Sfoucheur
   repo: matomeru
+  # Stated rather than left to the default, because it is load-bearing twice over: the
+  # draft is the manual validation step at the end of the release pipeline, and
+  # electron-updater cannot see a draft release -- so "not yet published" and "not yet
+  # offered to anyone" are the same state instead of two things to keep in step.
+  releaseType: draft
 win:
   # The app is unsigned, and electron-updater otherwise compares the downloaded
   # installer's signature to the running app's publisher -- with no signature at

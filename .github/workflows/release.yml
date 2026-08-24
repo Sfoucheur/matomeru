@@ -1,0 +1,147 @@
+name: Release
+
+# Manual, and only from main. Ends at a draft release: the pipeline builds and uploads,
+# you decide whether it ships.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Which part of the version to raise'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+# Committing the bump and creating the release both need write access. Note this cannot
+# grant more than the repository allows: Settings -> Actions -> General -> Workflow
+# permissions must be "Read and write permissions", or the push at step 5 fails.
+permissions:
+  contents: write
+
+# Never two releases at once; the second would bump on top of the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # The Actions UI will happily launch a dispatch from any branch, so this is a
+      # real guard rather than a formality — and it says why rather than releasing
+      # something from develop and leaving you to work out what happened.
+      - name: Only main may release
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Releases run from main only. This dispatch was on $GITHUB_REF."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # The changelog reads the whole history; a shallow clone would produce an
+          # empty or truncated one without failing.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # A release that cannot pass the suite has no business reaching a draft.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Raise the version
+        id: bump
+        run: |
+          npm version "${{ inputs.bump }}" --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$VERSION"
+
+      # Reads the version just written for its heading, so this runs after the bump and
+      # before the tag exists.
+      - name: Write the changelog
+        run: npm run changelog
+
+      - name: Commit, tag and push
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json CHANGELOG.md
+          # [skip ci] because this commit has just been through the same checks; CI
+          # running again on it would prove nothing twice.
+          git commit -m "chore(release): v$VERSION [skip ci]"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin HEAD:main
+          git push origin "v$VERSION"
+
+      # The single most consequential step in this file. These values are inlined into
+      # the bundle at build time, so a build without them produces an app whose Drive
+      # backup can never work -- for every user, permanently. Missing secrets fail the
+      # release rather than shipping something quietly broken.
+      - name: Write the build-time Google client
+        env:
+          CLIENT_ID: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MAIN_VITE_GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+            echo "::error::MAIN_VITE_GOOGLE_CLIENT_ID and MAIN_VITE_GOOGLE_CLIENT_SECRET must be set as repository secrets. Without them the released app cannot connect to Google Drive at all."
+            exit 1
+          fi
+          printf 'MAIN_VITE_GOOGLE_CLIENT_ID=%s\n' "$CLIENT_ID" > .env
+          printf 'MAIN_VITE_GOOGLE_CLIENT_SECRET=%s\n' "$CLIENT_SECRET" >> .env
+          echo "Wrote .env with $(wc -l < .env) values"
+
+      # Builds and uploads the NSIS installer, the portable exe and latest.yml to a
+      # DRAFT release. electron-builder reads GH_TOKEN; the token Actions provides is
+      # enough, so there is nothing to create or rotate.
+      - name: Build and upload to a draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release:publish
+
+      # The release should say what changed, not repeat the whole file. Takes the top
+      # section: the first heading, then everything up to the next one -- which works
+      # whether the preset used '#' or '##' for this version.
+      - name: Set the release notes from the changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          awk 'NR==1 {print; next} /^#/ {exit} {print}' CHANGELOG.md > notes.md
+          # Not fatal: a successful build should not be marked failed because a
+          # cosmetic edit to the draft did not take.
+          gh release edit "v$VERSION" --notes-file notes.md \
+            || echo "::warning::Could not set the release notes; edit the draft by hand."
+
+      - name: What to do next
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          {
+            echo "## v$VERSION is waiting as a draft"
+            echo
+            echo "Nothing has been offered to anyone yet: electron-updater cannot see a"
+            echo "draft release, so publishing is what releases it."
+            echo
+            echo "1. Open the [draft release](${{ github.server_url }}/${{ github.repository }}/releases)"
+            echo "2. Download the installer and check it runs"
+            echo "3. Press **Publish release**"
+            echo
+            echo "Assets uploaded: NSIS installer, portable exe, and \`latest.yml\` (the update feed)."
+          } >> "$GITHUB_STEP_SUMMARY"
