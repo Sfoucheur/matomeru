@@ -20,6 +20,7 @@ import {
 import {
   DEFAULT_DECK_FILTERS,
   NO_LABEL,
+  allocateCopies,
   type Deck,
   type DeckBreakdown,
   type CardContext,
@@ -42,6 +43,7 @@ import FoilBadge from '../components/FoilBadge'
 import Popover from '../components/Popover'
 import { FINISH_LABEL } from '../lib/format'
 import { useT } from '../hooks/useT'
+import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
 import { PROXY_PRICE_HINT, bigMoney, count, relativeTime } from '../lib/format'
 import {
@@ -92,6 +94,8 @@ export default function DecksView({ active }: ViewProps): React.ReactElement {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [breakdown, setBreakdown] = useState<DeckBreakdown | null>(null)
   const [syncing, setSyncing] = useState(false)
+  /** Which single deck is being re-fetched, if any. */
+  const [syncingId, setSyncingId] = useState<number | null>(null)
   const [urlInput, setUrlInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [labelsOpen, setLabelsOpen] = useState(false)
@@ -169,6 +173,22 @@ export default function DecksView({ active }: ViewProps): React.ReactElement {
     })
   }, [breakdown])
 
+  /*
+    One deck. Its own busy flag rather than the view-wide `syncing`, so a single row spins
+    instead of the whole screen going grey — and so the two controls can lock each other
+    out without either pretending the other is idle.
+  */
+  const syncDeck = async (deck: Deck): Promise<void> => {
+    if (!deck.external_id) return
+    setSyncingId(deck.id)
+    const result = await guard(() => window.api.decks.syncOne(deck.external_id as string))
+    setSyncingId(null)
+    if (result) {
+      toast('success', t('decks.syncedOne', { name: result.name }))
+      invalidate()
+    }
+  }
+
   const sync = async (): Promise<void> => {
     setSyncing(true)
     const result = await guard(() => window.api.decks.syncUser())
@@ -219,7 +239,7 @@ export default function DecksView({ active }: ViewProps): React.ReactElement {
             className="w-full"
             icon={<RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />}
             onClick={() => void sync()}
-            disabled={syncing || !username}
+            disabled={syncing || syncingId !== null || !username}
           >
             {syncing
               ? t('decks.syncing')
@@ -262,28 +282,57 @@ export default function DecksView({ active }: ViewProps): React.ReactElement {
 
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
           {decks.map((deck) => (
-            <button
-              key={deck.id}
-              onClick={() => setActiveId(deck.id)}
-              className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                activeId === deck.id ? 'bg-ink-800 text-ink-50' : 'text-ink-300 hover:bg-ink-850'
-              }`}
-            >
-              <p className="flex items-center gap-1.5 truncate text-xs font-medium">
-                {deck.sync_error && <Lock size={10} className="shrink-0 text-warn" />}
-                <span className="truncate">{deck.name}</span>
-              </p>
-              <p className="numeric mt-0.5 text-[10px] text-ink-500">
-                {deck.sync_error ? (
-                  <span className="text-warn">{deck.sync_error}</span>
-                ) : (
-                  <>
-                    {t('decks.cardCount', { count: deck.cardCount })}
-                    {deck.format ? ` · ${deck.format}` : ''}
-                  </>
-                )}
-              </p>
-            </button>
+            /*
+              A row, not a button. It used to be one full-width button, and a button cannot
+              contain a button — so selecting the deck and re-syncing it are two siblings
+              inside a positioned wrapper.
+            */
+            <div key={deck.id} className="group relative">
+              <button
+                onClick={() => setActiveId(deck.id)}
+                className={`w-full rounded-lg py-2 pl-2.5 pr-9 text-left transition-colors ${
+                  activeId === deck.id ? 'bg-ink-800 text-ink-50' : 'text-ink-300 hover:bg-ink-850'
+                }`}
+              >
+                <p className="flex items-center gap-1.5 truncate text-xs font-medium">
+                  {deck.sync_error && <Lock size={10} className="shrink-0 text-warn" />}
+                  <span className="truncate">{deck.name}</span>
+                </p>
+                <p className="numeric mt-0.5 text-[10px] text-ink-500">
+                  {deck.sync_error ? (
+                    <span className="text-warn">{deck.sync_error}</span>
+                  ) : (
+                    <>
+                      {t('decks.cardCount', { count: deck.cardCount })}
+                      {deck.format ? ` · ${deck.format}` : ''}
+                    </>
+                  )}
+                </p>
+              </button>
+              {/*
+                Re-syncs this deck alone, and always re-fetches: the all-decks sync skips a
+                deck Archidekt reports as unchanged, so a deck you only re-labelled is never
+                read again.
+
+                Quiet until you go looking — except on a deck that failed, which is the one
+                you most want to retry, so hiding its retry behind a hover would be exactly
+                the wrong way round.
+              */}
+              <button
+                onClick={() => void syncDeck(deck)}
+                disabled={syncing || syncingId !== null}
+                data-sync-deck={deck.id}
+                title={t('decks.syncOne')}
+                aria-label={t('decks.syncOne')}
+                className={`absolute right-1.5 top-1.5 rounded p-1.5 text-ink-400 transition-all
+                  hover:bg-ink-750 hover:text-gold-400 disabled:opacity-40
+                  focus-visible:opacity-100 group-hover:opacity-100 ${
+                    deck.sync_error || syncingId === deck.id ? 'opacity-100' : 'opacity-0'
+                  }`}
+              >
+                <RefreshCw size={12} className={syncingId === deck.id ? 'animate-spin' : ''} />
+              </button>
+            </div>
           ))}
 
           {!loading && decks.length === 0 && (
@@ -397,62 +446,33 @@ function DeckDetail({
   )
   const shown = sections.reduce((sum, section) => sum + section.cardCount, 0)
 
-  const [selected, setSelected] = useState<Set<number>>(new Set())
   /** Open while the dialog is asking which list and what happens to the copies. */
   const [listDialog, setListDialog] = useState(false)
   const [busy, setBusy] = useState(false)
-  const lastPicked = useRef<number | null>(null)
+
+  /*
+    Selection, from the hook the collection also uses. `deckCardSelectable` returns
+    the reason a card cannot be picked, so a falsy answer is what makes it pickable.
+  */
+  const selectableCards = useMemo(
+    () => ordered.map((card) => ({ key: card.id, selectable: !deckCardSelectable(card) })),
+    [ordered]
+  )
+  const {
+    selected,
+    pick: dispatchSelect,
+    clear: clearSelection,
+    selectAllShown,
+    keep
+  } = useRangeSelection(selectableCards)
 
   // A card filtered out of view must leave the selection with it, or a bulk action
   // would reach cards you can no longer see.
   useEffect(() => {
     const visible = new Set(ordered.map((card) => card.id))
-    setSelected((current) => {
-      const next = new Set([...current].filter((id) => visible.has(id)))
-      return next.size === current.size ? current : next
-    })
-  }, [ordered])
+    keep((id) => visible.has(id))
+  }, [ordered, keep])
 
-  const dispatchSelect = useCallback(
-    (id: number, selectMode: 'toggle' | 'range') => {
-      const toggle = (): void => {
-        setSelected((current) => {
-          const next = new Set(current)
-          if (next.has(id)) next.delete(id)
-          else next.add(id)
-          return next
-        })
-        lastPicked.current = id
-      }
-
-      if (selectMode === 'toggle' || lastPicked.current === null) {
-        toggle()
-        return
-      }
-      // Ranges walk the flattened display order, so a shift-click means what it
-      // looks like it means even across a section heading.
-      const from = ordered.findIndex((card) => card.id === lastPicked.current)
-      const to = ordered.findIndex((card) => card.id === id)
-      if (from === -1 || to === -1) {
-        toggle()
-        return
-      }
-      const [start, end] = from <= to ? [from, to] : [to, from]
-      setSelected((current) => {
-        const next = new Set(current)
-        for (let i = start; i <= end; i += 1) {
-          if (!deckCardSelectable(ordered[i])) next.add(ordered[i].id)
-        }
-        return next
-      })
-      lastPicked.current = id
-    },
-    [ordered]
-  )
-
-  const selectAllShown = useCallback(() => {
-    setSelected(new Set(ordered.filter((card) => !deckCardSelectable(card)).map((c) => c.id)))
-  }, [ordered])
 
   /** Oracle ids for the selection — what the language calls are keyed on. */
   const selectedOracleIds = useMemo(() => {
@@ -582,17 +602,17 @@ function DeckDetail({
     setBusy(false)
     if (result) {
       const parts = [
-        t('decks.langSet', { count: result.converted, lang: lang.toUpperCase() })
+        t('bulk.langSet', { count: result.converted, lang: lang.toUpperCase() })
       ]
       if (result.unavailable.length) {
         parts.push(
-          t('decks.langNoPrinting', {
+          t('bulk.langNoPrinting', {
             count: result.unavailable.length,
             lang: lang.toUpperCase()
           })
         )
       }
-      if (result.failed) parts.push(t('decks.langFailed', { count: result.failed }))
+      if (result.failed) parts.push(t('bulk.langFailed', { count: result.failed }))
       toast(
         result.unavailable.length || result.failed ? 'warn' : 'success',
         `${parts.join(', ')}.`
@@ -727,12 +747,21 @@ function DeckDetail({
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
           {/*
-            Card counts, not row counts. An entry of Forest ×8 contributes eight,
-            which is why these two always sum to the deck total.
+            Card counts, not row counts. An entry of Forest ×8 contributes eight, which is
+            why these three always sum to the deck total.
+
+            Three, not two: a card sitting in your bulk is yours, but the deck is not
+            finished until it is in the deck. The middle figure only appears when there is
+            one, so a deck that is simply complete stays quiet.
           */}
           <span className="numeric text-good">
             {t('decks.owned', { count: count(totals.ownedCards) })}
           </span>
+          {totals.inCollectionCards > 0 && (
+            <span className="numeric text-warn" title={t('decks.inCollectionHint')}>
+              {t('decks.inCollection', { count: count(totals.inCollectionCards) })}
+            </span>
+          )}
           <span className="numeric text-bad">
             {t('decks.missing', { count: count(totals.missingCards) })}
           </span>
@@ -790,7 +819,7 @@ function DeckDetail({
             onClearOverrides={() => void clearOverrides()}
             onAddToList={() => setListDialog(true)}
             onMoveToCollection={() => void moveSelectedToCollection()}
-            onClear={() => setSelected(new Set())}
+            onClear={clearSelection}
           />
         )}
       </AnimatePresence>
@@ -859,7 +888,7 @@ function DeckBody({
   currency: 'usd' | 'eur'
   scrollRef: React.RefObject<HTMLDivElement | null>
   selected: Set<number>
-  onSelect: (id: number, mode: 'toggle' | 'range') => void
+  onSelect: (id: number, mode: PickMode) => void
   tileWidth: number
   density: ReturnType<typeof useGridMetrics>['density']
   ready: boolean
@@ -1009,13 +1038,13 @@ const DeckCardLine = memo(function DeckCardLine({
   card: DeckCardRow
   deck: Deck
   selected: boolean
-  onSelect: (id: number, mode: 'toggle' | 'range') => void
+  onSelect: (id: number, mode: PickMode) => void
 }): React.ReactElement {
   const t = useT()
   const openCard = useApp((s) => s.openCard)
-  // card.held is derived in the main process alongside the owned/missing totals,
-  // so the figure shown here can never disagree with the header.
-  const held = card.held
+  // Derived through the same helper the totals use, so a row can never disagree with
+   // the deck header about what is in the deck and what is merely yours.
+  const allocated = allocateCopies(card)
   // Owning the card only in another printing is worth flagging: the physical
   // card you have is not the one the deck lists.
   const onlyOtherPrinting = card.owned_exact === 0 && card.owned_any > 0
@@ -1025,6 +1054,9 @@ const DeckCardLine = memo(function DeckCardLine({
     if (blocked) return
     if (e.ctrlKey || e.metaKey) onSelect(card.id, 'toggle')
     else if (e.shiftKey) onSelect(card.id, 'range')
+    // A plain click selects just this one, as it does in the collection's list. Both are
+    // lists of cards whose name opens the card, so both answer a click the same way.
+    else onSelect(card.id, 'only')
   }
 
   return (
@@ -1139,14 +1171,29 @@ const DeckCardLine = memo(function DeckCardLine({
         {card.set_code ?? '—'}
       </span>
 
+      {/*
+        What the deck holds, and what your bulk holds towards the rest.
+
+        This read `held`, which was the two added together -- so a deck holding none of a
+        card you had four of said "have 4" in green.
+      */}
       <span
-        className={`numeric w-24 shrink-0 text-right text-xs ${
-          held >= card.quantity ? 'text-good' : 'text-bad'
+        className={`numeric w-32 shrink-0 text-right text-xs ${
+          allocated.inDeck >= card.quantity
+            ? 'text-good'
+            : allocated.missing === 0
+              ? 'text-warn'
+              : 'text-bad'
         }`}
       >
-        {held >= card.quantity
-          ? t('decks.have', { held })
-          : t('decks.haveOf', { held, needed: card.quantity })}
+        {allocated.inDeck >= card.quantity
+          ? t('decks.have', { held: allocated.inDeck })
+          : t('decks.haveOf', { held: allocated.inDeck, needed: card.quantity })}
+        {allocated.fromCollection > 0 && (
+          <span className="ml-1 text-ink-500" title={t('decks.inCollectionHint')}>
+            {t('decks.inBulk', { count: allocated.fromCollection })}
+          </span>
+        )}
       </span>
 
       <span className="flex w-40 shrink-0 justify-end gap-1">
@@ -1159,7 +1206,9 @@ const DeckCardLine = memo(function DeckCardLine({
             {t('proxy.badge')}
           </span>
         )}
-        {card.label_possession && <PossessionBadge card={card} held={held} />}
+        {card.label_possession && (
+          <PossessionBadge card={card} held={allocated.fromCollection} />
+        )}
         {onlyOtherPrinting && (
           <span
             title={t('decks.otherPrintingHint', { count: card.owned_any })}
@@ -1191,34 +1240,32 @@ const DeckGridTile = memo(function DeckGridTile({
   deck: Deck
   density: ReturnType<typeof useGridMetrics>['density']
   selected: boolean
-  onSelect: (id: number, mode: 'toggle' | 'range') => void
+  onSelect: (id: number, mode: PickMode) => void
 }): React.ReactElement {
   const t = useT()
   const openCard = useApp((s) => s.openCard)
-  const held = card.held
-  const complete = held >= card.quantity
+  const allocated = allocateCopies(card)
+  // Complete means the deck holds it. Copies in your bulk are yours, not sleeved.
+  const complete = allocated.inDeck >= card.quantity
+  const coveredByBulk = !complete && allocated.missing === 0
   // Computed once per tile: pure, and read four times below.
   const sides =
     card.scryfall_id === null
       ? null
-      : twoSides(
-          {
-            scryfall_id: card.scryfall_id,
-            name: card.name,
-            printed_name: null,
-            layout: card.layout
-          },
-          card.paired
-        )
+      : twoSides({
+          scryfall_id: card.scryfall_id,
+          name: card.name,
+          printed_name: null,
+          layout: card.layout
+        })
   const blocked = deckCardSelectable(card)
 
   return (
     <CardTile
       scryfallId={card.scryfall_id}
       /*
-        `card.name` is already "A // B" for a transform card, which Archidekt reports as
-        the whole name; only a paired token needs composing. Both go through the same
-        helper so no screen has to remember which is which.
+        `card.name` is already "A // B" for a two-faced card, which is what Archidekt
+        reports, so the title agrees with the tile rather than being composed twice.
       */
       title={sides ? `${sides.front.title} // ${sides.back.title}` : card.name}
       backScryfallId={sides?.back.scryfallId ?? null}
@@ -1231,7 +1278,10 @@ const DeckGridTile = memo(function DeckGridTile({
           ? 'ring-gold-500/60 hover:ring-gold-400'
           : complete
             ? 'ring-good/50 hover:ring-good'
-            : 'ring-bad/40 hover:ring-bad'
+            : // Yours, but in your bulk rather than in the deck: neither done nor to buy.
+              coveredByBulk
+              ? 'ring-warn/50 hover:ring-warn'
+              : 'ring-bad/40 hover:ring-bad'
       }
       onOpen={() =>
         card.scryfall_id && openCard(card.scryfall_id, deckCardContext(card, deck))
@@ -1290,12 +1340,18 @@ const DeckGridTile = memo(function DeckGridTile({
                 card.label_possession === 'owned'
                   ? t('decks.ownedInArchidekt')
                   : t('decks.notOwnedInArchidekt') +
-                    (held > 0 ? t('decks.notOwnedButHeld', { held }) : '')
+                    (allocated.fromCollection > 0
+                      ? t('decks.notOwnedButHeld', { held: allocated.fromCollection })
+                      : '')
               }
               className="rounded px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
               style={{ backgroundColor: card.label_color ?? '#d99a3c' }}
             >
-              {card.label_possession === 'owned' ? 'have' : held > 0 ? 'in bulk' : 'want'}
+              {card.label_possession === 'owned'
+              ? 'have'
+              : allocated.fromCollection > 0
+                ? 'in bulk'
+                : 'want'}
             </span>
           )}
           {!card.in_maindeck && (
@@ -1313,7 +1369,7 @@ const DeckGridTile = memo(function DeckGridTile({
               x{card.quantity}
             </span>
             <span className={`numeric ml-auto text-[10px] ${complete ? 'text-good' : 'text-bad'}`}>
-              have {held}
+              have {allocated.inDeck}
             </span>
           </>
         ) : (
@@ -1322,7 +1378,7 @@ const DeckGridTile = memo(function DeckGridTile({
               complete ? 'bg-good/80 text-ink-950' : 'bg-bad/80 text-white'
             }`}
           >
-            {held}/{card.quantity}
+            {allocated.inDeck}/{card.quantity}
           </span>
         )
       }

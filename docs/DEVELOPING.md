@@ -154,63 +154,244 @@ Split, flip, adventure and meld cards are also named "A // B" and have exactly o
 and a battle is filed under `transform`. Hence `TWO_IMAGE_LAYOUTS` rather than a test on
 the name.
 
-### One physical card, two different tokens
+### One physical card, two different tokens — removed, and why
 
 A Commander 2017 token card is a Cat Warrior on the front (`C17 008/011`) and a Rat on the
-back (`C17 003/011`). Adding both the ordinary way claims two cards when one is in the
-binder, and neither row admits the other exists.
+back (`C17 003/011`), and Scryfall files those as two independent single-faced tokens.
+Each carries `all_parts`, but it links to the *spells that create the token* — `Hungry
+Lynx`, `Jedit Ojanen` — never to the other side of the physical card. So nothing in the
+data can derive it: the app had to be told.
 
-**Scryfall does not record the pairing.** `tc17/3` and `tc17/8` are two independent
-single-faced tokens. Each carries `all_parts`, but it links to the *spells that create the
-token* — `Hungry Lynx`, `Jedit Ojanen` — never to the other side of the physical card. So
-nothing in the data can derive this, and it has to be told once. Note that this is a
-different situation from `double_faced_token`, where Scryfall already models both faces as
-one object with images on `card_faces[1]`.
+For a while it could be. `printing_pairs` (migration 17) held the claim, a fast-entry line
+`c17 008/011 // 003` and a "One card, two sides" action made it, and `filedUnder` in the
+collection repo made a copy of either side land on whichever row already existed.
 
-**But it only has to be told once ever**, because the sheet is printed one way: every C17
-Cat Warrior has the same Rat behind it. That makes it a fact about a pair of printings
-rather than about anything in a binder, which is why `printing_pairs` (migration 17) is
-keyed on `scryfall_id` with the pairing stored in both directions. Per language too — the
-French Cat Warrior has the French Rat behind it, and those are different ids, which the
-primary key covers without a special case.
+**It is gone** (migration 20), and the reason is worth keeping. A claim the app cannot
+check has to be defended everywhere, and every defence was another rule:
 
-Two ways in, because they are reached by different people:
+- It could be told nonsense. A real collection ended up with a Cat Warrior token joined to
+  Teferi's Protection — unexplainable after the fact. Migration 19 added a guard.
+- It outlived the cards. Remove the copies and the claim stayed, so a search for a plain
+  Rat kept returning "Cat Warrior // Rat" with no way to take it apart: the row the
+  Separate action needed was the row that had been deleted. Migration 19 added a trigger.
+- It reached where it did not belong. Attached to search results it renamed cards in the
+  catalogue that had nothing to do with anyone's collection.
+
+What remains is the two-sided card Scryfall publishes — `transform`, `modal_dfc`,
+`double_faced_token`, `reversible_card`, `art_series` — which stacks in every gallery and
+turns over in the detail dialog, needs nobody to maintain it, and cannot be wrong. The
+collection keeps the copies either side ever held; only the claim that they were one card
+is gone. `scripts/verify.ts` has a tripwire that fails if any source file outside the
+migration history mentions `printing_pairs` again.
+
+**One thing that work left behind, which was worth keeping.** The undo property test
+fingerprints the database before and after an action to catch a scope that is too narrow —
+but its table list was hand-written, so a newly added table was invisible to it and a scope
+missing that table passed. The list is now derived from `sqlite_master` minus an explicit
+set of caches, which inverts the failure: a table added tomorrow is compared without anyone
+remembering to say so.
+
+### A card with no Archidekt label counts as owned
+
+Four Commander 2017 precons in a real collection reported cards their owner held as
+missing, and mapping every label colour to "I own it" changed nothing. The reason, measured
+from the stored raw API response rather than reasoned about:
 
 ```
-c17 008/011 // 003     a pile being sorted now; `//` may be spaced or not
-select two rows -> "One card, two sides"      rows already in the database
+Dino Pants        label: ",#656565"    <- the unnamed grey default, all 103 entries
+Arcane Wizardry   label: ""            <- empty string, all 83 entries
 ```
 
-The mechanic that makes it feel like one card is `filedUnder` in the collection repo: a
-copy of *either* side files itself under whichever side the collection already has. Type
-the Cat Warrior first and the Rat joins its row; type the Rat first and the Cat Warrior
-joins that one. A printing with no partner — every ordinary card — returns immediately, so
-nothing else changes. The exception is deliberate: when *both* sides already have rows, a
-further copy stays on its own row rather than jumping onto the partner's, because moving
-copies the user can see would be worse than an extra row.
+**Archidekt sends an empty string for a deck nobody has marked up.** Not the default grey —
+nothing. `recomputeLabelPossession` matches `label LIKE '%' || colour`, which an empty
+string cannot satisfy, so `label_possession` stayed NULL and the deck fell back to counting
+loose collection copies. There was no colour to map.
 
-Merging keeps **one** card, not two: two rows of one are one object. When the two rows
-disagree the larger wins and the toast says so. It refuses while an open pick list holds
-either row, for the reason `removeItem` refuses — the absorbed row is deleted, and
-`pick_list_items.collection_item_id` is `ON DELETE SET NULL`, so a list would quietly lose
-its link to copies it is still counting on.
+So an unlabelled card is now `owned`, in one statement after the colour passes. It is
+additive by construction: the colour passes filter on `label IS NOT NULL AND label != ''`,
+so **a colour still decides wherever there is one**, including one that means "I do not own
+this". The clear step's exemption for locally-moved copies needs no counterpart, because a
+card you carried in yourself has no label either and this rule lands it on `owned` anyway.
 
-Three places had to learn about the other side, and each would otherwise contradict the
-collection: the row's name and number (`A // B`, `#8 // #3`), the search predicate — a
-search for *Rat* has to find the row filed as a Cat Warrior, or combining them hid a token
-you own — and `ownedCount`/`ownedCounts`, which feed the "owned" badge on the Add-cards
-tiles. The detail view's flip control reuses itself here: these are two printings, so
-instead of moving a face index it swaps *which printing* is shown, and the rules text and
-set follow along.
+The cost, which is real and was accepted deliberately: a decklist imported to price up what
+you would need to buy reads as fully owned until you label it.
 
-**One thing this work fixed in the suite itself.** The undo property test fingerprints the
-database before and after an action to catch a scope that is too narrow — but its table
-list was hand-written, so `printing_pairs` was invisible to it and a scope missing that
-table passed. The list is now derived from `sqlite_master` minus an explicit set of caches,
-which inverts the failure: a table added tomorrow is compared without anyone remembering to
-say so.
+Two fixtures in `verify.ts` had to be given labels rather than relaxed — the "I own this"
+and "I do not own this" sections both built deck cards with no label to mean "nothing
+tagged", which under this rule would have made them measure the new default instead of the
+thing they were written for.
 
-`npm run probe:pairs` drives both routes in the running app.
+### In the deck, in your collection, or missing
+
+The Decks screen had one number per card, `held`, and it added two different facts together:
+what the deck holds (an "owned" label, or a proxy) and what your bulk holds. `groupCards`
+bucketed on that sum, so a card the deck holds **none** of, sitting loose in your collection,
+counted as owned, read "have 4", turned green and left the missing pile.
+
+Three states now. `allocateCopies` in `@shared/types` is the one definition:
+
+```ts
+const inDeck = Math.min(card.in_deck, card.quantity)
+const fromCollection = Math.min(Math.max(0, card.quantity - inDeck), card.in_collection)
+const missing = Math.max(0, card.quantity - inDeck - fromCollection)
+```
+
+Allocated in that order, so the three always add up to what the entry asks for. It is
+**shared because the sum is worked out twice** — once in the breakdown, and again in
+`deckGroups.ts` when a filter changes which cards a group contains. Those were two copies of
+the same arithmetic, which is two chances to disagree about whether a deck is finished.
+
+Three things worth knowing before touching it:
+
+- **`held` is unchanged**, and still `in_deck + in_collection`. The move guards, the
+  pick-list paths, `deckSourcesFor` and the collection's derived rows all read it and none
+  of them cares where a copy is. Only the Decks screen splits.
+- **`missingCards` and `missingValue` are unchanged too.** The old `missing` was
+  `quantity − held` and `held` already counted loose copies, so a card in your bulk was
+  never money you had to spend. What split is the owned side. Measured on a real
+  collection: adding one loose copy of a card a deck was missing moved it from
+  missing 12 → 11 and in-collection 0 → 1, and the pile went €143.66 → €142.00.
+- **The new bucket only fills for a card the deck does not vouch for** — an unmapped label
+  or one that means "I do not own this". With every colour mapped to "I own it" and
+  unlabelled counting as owned, it reads 0 everywhere, which is correct and can look like
+  the feature is missing.
+
+Four existing checks had to move, and each was re-read rather than relaxed: three pinned
+`ownedCards + missingCards === cards` and one asserted `ownedCards === 8` for a fixture whose
+eight copies are *loose*. That last one is the behaviour being changed, so it became the
+check that proves it — those eight are `inCollectionCards`, and the same entry with an
+"owned" label moves them back. One caution learned there: `recomputeLabelPossession` is
+global, so calling it inside a shared fixture marks every unlabelled row in it as owned and
+breaks unrelated checks downstream; set `label_possession` on the row under test instead.
+
+### Re-fetching one deck
+
+The all-decks sync skips any deck whose stored `external_updated_at` matches what the
+profile reports (`deckSync.ts`), so a deck you re-labelled in Archidekt and nothing else is
+skipped indefinitely. `decks:syncOne` goes straight at one deck and never consults that
+check, which is the point of a button.
+
+It calls **`addDeckByUrl`, not `syncOneDeck`**. `syncOneDeck` leaves `cacheDeckPrintings`
+and `recomputeLabelPossession` to its callers, and skipping the first leaves deck cards with
+no printing row — no images, no prices. `addDeckByUrl` is already that whole sequence, and
+`upsertDeck` conflicts on `(source, external_id)` so it refreshes rather than duplicating;
+reusing it means a fourth step added tomorrow reaches this path too. A failure is written to
+the deck with `recordDeckError`, so a private or deleted deck keeps its lock icon instead of
+a toast that disappears.
+
+The sidebar row had to stop being one full-width `<button>` — a button cannot contain a
+button — so it is a positioned wrapper holding the selection button and the sync icon as
+siblings. The icon is quiet until hovered **except on a deck that failed**, which is the one
+you most want to retry. `npm run probe:decksync` checks the control; the round trip is in
+the suite, against recordings, because a real re-fetch needs the account whose decks they
+are.
+
+### The details dialog follows its content, and never moves while you use it
+
+Two requirements that pull against each other. It must follow its content — a short card in
+a window-height dialog is a lot of empty space — and it must not resize while you are using
+it, because turning a card over swaps the rules text.
+
+- **A ceiling, not a height.** `Modal` takes `maxHeight` for this; `height` still means
+  "exactly this tall". Only one of the two makes sense per caller, so `height` wins when
+  both are given. (`max-h-[85vh]` used to be hardcoded *alongside* a stated height, and
+  `max-h` beats `h` — the dialog asked for 88vh and was drawn at 85 for weeks with nothing
+  to say so.)
+- **Both faces in one grid cell**, one faded out, rather than mounting only the side being
+  read. The taller side sets the height and the flip cannot change it. This replaced an
+  `AnimatePresence` swap, which would have made the height follow whichever face was
+  showing.
+- **The artwork asks for no height of its own.** Its box is `flex-1 min-h-0` and the button
+  inside it is absolutely positioned, so the details column alone decides the row. An
+  earlier attempt used `h-full` on the image, which resolves to `auto` against an
+  indefinite height — so the picture's intrinsic 936px set the row and every card came out
+  at the ceiling.
+- **The frame is card-shaped, and the height comes from the width.** `object-contain` keeps
+  the *picture's* proportions and says nothing about the ring and the rounded corners around
+  it: with `inset-0` those wrapped the whole box and the card sat in a letterbox, measured
+  at 224×716 against the 0.718 a card is. Deriving the width from `h-full` does not fix it
+  either — an explicit height wins against `aspect-ratio`, so a clamped `max-width` just
+  breaks the ratio. So it is `w-full` plus `aspect-[488/680]`, with `max-h-full` as the
+  guard for a row short enough to bind.
+- **The column states its own width** (`sm:w-[32rem] sm:max-w-[30vw]`). It was `w-auto`
+  between a min and a max, which worked while the picture was in flow and wanted width —
+  once the picture left the flow nothing in that column asked for any, so it collapsed to
+  its floor and the card came out at 224px, smaller than before the dialog was ever made to
+  grow. That regression is invisible to a ratio check, which is why `probe-flip` also
+  asserts the card fills its column and is at least 320px wide on a wide window.
+
+Measured: 839px for a short card against 878px for a wordy one in a 1500px window, both
+under the 1380px ceiling, and identical before and after a flip. `probe-flip.cjs` widens the
+viewport through CDP to check this, because on a default window every card's details exceed
+the ceiling and three cards would agree by coincidence.
+
+### Selecting cards, and acting on more than you can see
+
+**One dispatcher, three screens.** `useRangeSelection` owns Ctrl (toggle), Shift (range
+from the last thing clicked) and a plain click (`only` — this one and nothing else). There
+were two copies of this, the collection's and the Decks screen's, and they had drifted: one
+had a plain-click mode the other did not, and the collection's was never handed to the
+table at all, so Ctrl-click and Shift-click did nothing in list mode. Ranges walk the
+ordered array, never the DOM — both lists are virtualized, so most rows in a range are not
+mounted and a DOM walk would silently select a fraction.
+
+The two galleries keep plain click = open the card, because that is the only way to open one
+from a tile. Both *lists* select on a plain click, since their card name is a link that
+opens it. A modified click that lands on the name or the deck chip is handed back to the row
+rather than opening a dialog over it.
+
+**Select-all reaches the whole filtered set, not the page.** The list draws at most
+`PAGE_SIZE` (200) rows of a set that can be much larger, so `matchingRowKeys` answers from
+the same `buildWhere` and `FROM_ROWS` the page query uses — one definition of "what
+matches", because two would select the wrong cards silently. It returns `{ key, id }`, and
+the id is the load-bearing part: a row the list has not loaded has no `CollectionRow` in the
+renderer, so the id travels with the key or an edit would apply to the 200 rows that happen
+to be drawn. `truncated` says the cap was hit rather than implying the selection is
+complete.
+
+Two consequences to keep in mind:
+
+- The selection now **survives a refetch** and is cleared only when the filters change.
+  Editing does not change which rows match, which is what makes "set the finish, then the
+  condition, then stage them" work. Sort is excluded from that comparison: reordering the
+  same rows is not a new question.
+- Staging and moving are **not offered** past the loaded page (`beyondLoaded`). Both need a
+  whole row — a quantity, what is available — which is not knowable for a row nobody has
+  loaded. Saying so beats applying them to a fraction.
+
+**A language across many rows.** A collection row *is* a printing, so setting a language is
+a repoint: `setItemsLanguage` asks Scryfall for the printing in that language, one row at a
+time (sequential on purpose — the client's queue paces the requests anyway, and firing them
+together would only queue behind itself while making progress meaningless). Four outcomes,
+and three are not failures: `converted`, `unavailable` (Scryfall has no printing in that
+language — the escape hatch is the per-row `forceLanguage`), `gone` (the selection named a
+row the collection no longer holds, which a long-lived selection makes reachable), and
+`failed`.
+
+Two things about the undo, both of which were wrong before this:
+
+- It has to be `undoableAsync`. `undoable` snapshots the after-image the moment the
+  function returns, and an async function returns a promise before it has written anything
+  — so the two images matched and **redo did nothing**.
+- The scope has to be `withPickItems(wholeTable('collection_items'))`. The printings these
+  rows land on come back from Scryfall and are not knowable from the arguments, so a scope
+  built from the ids in hand covers where the rows started and not where they end up. The
+  same reason `moveScopes` does it. Narrow it and the fingerprint check fails by losing a
+  row on redo, which is what it is there for.
+
+`npm run probe:select` drives the gestures and both controls in the running app.
+
+### Fast entry is four fields, not a line
+
+It was one text box and a parser: `m10 146 ja x3`, with `c17 008/011` reading the printed
+fraction. Sorting a pile from one set meant retyping the set and the language for every
+card in it, so it is now Set / Number / Language / Quantity, and a checkbox — on by
+default — that clears only the number after each card.
+
+`parseCollectorNumber` in `src/shared/quickEntry.ts` is what survived the line, and it is
+the part that mattered: it strips leading zeros because Scryfall 404s on `blb/008`, and it
+reads the printed fraction, which is the only thing that tells a Cat Warrior token from
+Teferi's Protection at `c17 8`. `chooseSets` still decides which sheet a denominator names.
 
 `npm run probe:tokens` drives all of this in the running app — including the regression
 that `c17 8` is still Teferi's Protection, because trading one silent wrong card for
@@ -582,10 +763,9 @@ are load-bearing, and three of them are the fixes for how it looked when it firs
 as surely as inline JSX does, which that file's own comment already warns about.
 
 The deck and pick-list queries returned no `layout` at all, so those galleries could not
-tell a two-sided card from any other; both now select it along with the same pairing join
-the collection uses. For the Add-cards results the pairing comes from `pairedNamesFor`, a
-batch lookup in the shape `ownedCounts` already uses — one query for a page of printings
-rather than one per tile.
+tell a two-sided card from any other; both select it now, which is all a tile needs — a
+two-sided card is one printing with two faces, so `twoSides(printing)` answers from the
+layout and the id alone.
 
 **Which layouts have two pictures was measured, not reasoned about**, and the distinction is
 not the one the names suggest: a split, flip, adventure or meld card is *also* named `A // B`

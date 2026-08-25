@@ -29,7 +29,8 @@
 		"icon": "electron scripts/make-icon.cjs && node scripts/check-icon.cjs",
 		"probe:flip": "node scripts/probe-flip.cjs",
 		"probe:stack": "node scripts/probe-stack.cjs",
-		"probe:pairs": "node scripts/probe-pairs.cjs",
+		"probe:select": "node scripts/probe-select.cjs",
+		"probe:decksync": "node scripts/probe-decksync.cjs",
 		"probe:tokens": "node scripts/probe-tokens.cjs",
 		"probe:update": "node scripts/probe-update.cjs",
 		"check:themes": "node scripts/check-themes.cjs"

@@ -13,7 +13,6 @@ import {
 import { holdable, sortPrintings, toPrinting } from '../scryfall/mappers.js'
 import { getDb } from '../db/connection.js'
 import { chooseSets, numberVariants } from '@shared/quickEntry'
-import { pairPrintings, pairedNamesFor } from '../db/repos/pairs.js'
 import { syncSets } from './sets.js'
 import { t } from '@shared/i18n/index'
 import type { TranslationKey } from '@shared/types'
@@ -41,15 +40,19 @@ function cache(cards: ScryfallCard[]): PrintingChoice[] {
     }
   })
   // And one grouped query for the owned counts rather than one per printing.
-  const ids = printings.map((p) => p.scryfall_id)
-  const owned = ownedCounts(ids)
-  // The same again for the other side of a double-sided token, so a tile can draw the
-  // pair without asking per card.
-  const paired = pairedNamesFor(ids)
+  const owned = ownedCounts(printings.map((p) => p.scryfall_id))
+  /*
+    Deliberately no pairing here.
+
+    A pairing says two printings are one card *in your collection*, and this is the
+    catalogue of everything Scryfall has. Attached to a search result it renamed a plain
+    Rat "Cat Warrior // Rat" and left no way to add one side on its own. Scryfall's own
+    two-faced cards still stack anywhere, because that is Scryfall's data; yours shows
+    where your collection is involved.
+  */
   return printings.map((printing) => ({
     ...printing,
-    owned: owned.get(printing.scryfall_id) ?? 0,
-    paired: paired.get(printing.scryfall_id) ?? null
+    owned: owned.get(printing.scryfall_id) ?? 0
   }))
 }
 
@@ -169,7 +172,7 @@ export function addCard(input: AddCardInput): { itemId: number; owned: number } 
 
 export async function quickAdd(
   input: QuickAddInput
-): Promise<{ itemId: number; printing: PrintingChoice; paired: PrintingChoice | null }> {
+): Promise<{ itemId: number; printing: PrintingChoice }> {
   const printing = await resolveQuick(
     input.set,
     input.collectorNumber,
@@ -182,27 +185,6 @@ export async function quickAdd(
     )
   }
 
-  /*
-    The other side, when the line named one.
-
-    Resolved on the set the front landed in, not searched for again: the two sides of
-    a card are on one sheet by definition, and re-running the candidate search could
-    put the back on a different one -- which would record a pairing that does not
-    physically exist.
-
-    The pairing is written even when this copy merges into a row that already exists,
-    because teaching the app is the point of having typed it.
-  */
-  let paired: PrintingChoice | null = null
-  if (input.backNumber) {
-    paired = await resolveOnSet(printing.set_code, input.backNumber, input.lang)
-    if (!paired) {
-      throw new Error(
-        `No printing found for ${printing.set_code.toUpperCase()} #${input.backNumber} in "${input.lang}".`
-      )
-    }
-    pairPrintings(printing.scryfall_id, paired.scryfall_id)
-  }
   // A foil-only or etched-only printing cannot be held in the requested finish,
   // so record the one it actually comes in rather than inventing a nonfoil row.
   const itemId = addToCollection({
@@ -211,9 +193,9 @@ export async function quickAdd(
     condition: input.condition,
     quantity: input.quantity
   })
-  return { itemId, printing: { ...printing, owned: ownedCount(printing.scryfall_id) }, paired }
+  return { itemId, printing: { ...printing, owned: ownedCount(printing.scryfall_id) } }
 }
 
 // The fast-entry parser lives in shared/ so the renderer validates with the
 // exact same rules the main process applies.
-export { parseQuickEntry } from '@shared/quickEntry'
+export { parseCollectorNumber } from '@shared/quickEntry'

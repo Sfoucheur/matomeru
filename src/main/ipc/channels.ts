@@ -2,6 +2,8 @@
 export const CH = {
   // Collection
   collectionQuery: 'collection:query',
+  collectionMatchingKeys: 'collection:matchingKeys',
+  collectionSetLanguages: 'collection:setLanguages',
   collectionFacets: 'collection:facets',
   collectionAdd: 'collection:add',
   collectionSetQuantity: 'collection:setQuantity',
@@ -10,8 +12,6 @@ export const CH = {
   collectionBulkUpdate: 'collection:bulkUpdate',
   collectionBulkRemove: 'collection:bulkRemove',
   collectionLocations: 'collection:locations',
-  collectionPairMerge: 'collection:pairMerge',
-  collectionUnpair: 'collection:unpair',
 
   // Cards / Scryfall
   cardsSuggest: 'cards:suggest',
@@ -19,7 +19,6 @@ export const CH = {
   cardsQuickResolve: 'cards:quickResolve',
   cardsQuickAdd: 'cards:quickAdd',
   cardsPrinting: 'cards:printing',
-  cardsPaired: 'cards:paired',
 
   // Pick lists
   pickListsList: 'pickLists:list',
@@ -41,6 +40,7 @@ export const CH = {
   decksList: 'decks:list',
   decksBreakdown: 'decks:breakdown',
   decksSyncUser: 'decks:syncUser',
+  decksSyncOne: 'decks:syncOne',
   decksAddByUrl: 'decks:addByUrl',
   decksDelete: 'decks:delete',
   decksLabelColors: 'decks:labelColors',

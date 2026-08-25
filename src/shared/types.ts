@@ -195,44 +195,28 @@ export interface CardSide {
 /**
  * The two sides of a card, or null for a card with one.
  *
- * Two different things are two-sided in this app and nothing that draws a card should
- * have to care which it is looking at:
+ * Two-sided here means one of Scryfall's own two-faced printings: Kefka and every other
+ * `transform` / `modal_dfc` / `double_faced_token` / `reversible_card` / `art_series`
+ * card, whose second picture is `face: 1` of the same id.
  *
- *  - **One printing, two faces.** Kefka and every other `transform` / `modal_dfc` /
- *    `double_faced_token` / `reversible_card` / `art_series` card. The second picture
- *    is `face: 1` of the same id.
- *  - **Two printings, one card.** A Commander 2017 Cat Warrior with a Rat on its back,
- *    which Scryfall files as two unrelated cards. The second picture is just the other
- *    printing's own.
- *
- * A pairing wins when a card somehow has both, because a pairing is a statement about a
- * physical object and a layout is a statement about data.
+ * There was briefly a second kind -- two separate printings a user declared to be one
+ * physical card, for a token sheet with a different token on each face. It is gone. It
+ * could be built out of a token and an ordinary card, it outlived the copies it claimed
+ * to describe, and it renamed cards in the catalogue that had nothing to do with anyone's
+ * collection. What is left is data Scryfall publishes, which nobody has to maintain.
  *
  * The names come from splitting on ` // `, the separator Scryfall itself uses for a
  * two-faced name. A two-image layout whose name has no separator keeps the whole name
  * for both sides rather than being reported as one-sided -- the pictures differ, which
  * is what a stacked pair is showing.
  */
-export function twoSides(
-  printing: {
-    scryfall_id: string
-    name: string
-    printed_name?: string | null
-    layout?: string | null
-  },
-  paired?: { scryfall_id: string; name: string; printed_name?: string | null } | null
-): { front: CardSide; back: CardSide } | null {
+export function twoSides(printing: {
+  scryfall_id: string
+  name: string
+  printed_name?: string | null
+  layout?: string | null
+}): { front: CardSide; back: CardSide } | null {
   const shown = printing.printed_name ?? printing.name
-  if (paired) {
-    return {
-      front: { scryfallId: printing.scryfall_id, face: 0, title: shown },
-      back: {
-        scryfallId: paired.scryfall_id,
-        face: 0,
-        title: paired.printed_name ?? paired.name
-      }
-    }
-  }
   if (!hasTwoImages(printing.layout)) return null
   const parts = shown.split(' // ')
   return {
@@ -248,21 +232,17 @@ export function twoSides(
 /**
  * What to call a card, naming both sides when it has two.
  *
- * A two-faced printing is already named `A // B` by Scryfall, so this only composes
- * anything for a pair of printings -- which is exactly the case the collection's gallery
- * tile was getting wrong, showing "Cat Warrior" for a card that is a Cat Warrior and a
- * Rat.
+ * A two-faced printing is already named `A // B` by Scryfall, so today this composes
+ * nothing and simply agrees with the printing. It stays as the one place that answers
+ * "what do I call this card", which is where every tile and every row asks.
  */
-export function bothSidesTitle(
-  printing: {
-    scryfall_id: string
-    name: string
-    printed_name?: string | null
-    layout?: string | null
-  },
-  paired?: { scryfall_id: string; name: string; printed_name?: string | null } | null
-): string {
-  const sides = twoSides(printing, paired)
+export function bothSidesTitle(printing: {
+  scryfall_id: string
+  name: string
+  printed_name?: string | null
+  layout?: string | null
+}): string {
+  const sides = twoSides(printing)
   if (sides === null) return printing.printed_name ?? printing.name
   return `${sides.front.title} // ${sides.back.title}`
 }
@@ -390,20 +370,6 @@ export interface CollectionRow {
    * still a real one, and still what prices and rules text come from.
    */
   language_forced: boolean
-  /**
-   * The other side, when this row is a card with a different token on each face.
-   *
-   * One physical card, one row. A Commander 2017 token is a Cat Warrior on the front
-   * and a Rat on the back, and Scryfall files those as two unrelated printings — so
-   * without this the collection would claim two cards and neither would admit the
-   * other existed. Null for every ordinary card.
-   */
-  paired: {
-    scryfall_id: string
-    name: string
-    printed_name: string | null
-    collector_number: string
-  } | null
   total_value: number | null
 }
 
@@ -591,8 +557,6 @@ export type PickSource =
 export interface PickListItem {
   /** The printing's layout, for deciding whether a tile draws two sides. */
   layout?: string | null
-  /** The other side, when this card is a double-sided token. */
-  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
   id: number
   pick_list_id: number
   collection_item_id: number | null
@@ -650,8 +614,6 @@ export interface Deck {
 export interface DeckCardRow {
   /** The printing's layout, for deciding whether a tile draws two sides. */
   layout?: string | null
-  /** The other side, when this card is a double-sided token. */
-  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
   id: number
   deck_id: number
   scryfall_id: string | null
@@ -694,10 +656,26 @@ export interface DeckCardRow {
   /** Copies you own of this card in any printing or language. */
   owned_any: number
   /**
-   * Copies held for this deck entry, already accounting for the exact-printing
-   * setting and for an "owned" label (where the deck vouches for its own
-   * quantity). Derived once in the main process — the renderer must display this
-   * rather than recomputing, or the number drifts from the owned/missing totals.
+   * Copies this deck actually holds for the entry.
+   *
+   * The deck vouching for its own quantity: an "owned" label, or a proxy filling the
+   * slot. This is what "have it" means on the Decks screen — a card sitting in your bulk
+   * is yours, but it is not in the deck.
+   */
+  in_deck: number
+  /**
+   * Copies of it loose in your collection, accounting for the exact-printing setting.
+   *
+   * Kept apart from `in_deck` on purpose. The two were added together and the sum was
+   * called "owned", so a deck holding none of a card you happened to have four of read
+   * "have 4" and turned green.
+   */
+  in_collection: number
+  /**
+   * `in_deck + in_collection` — everywhere a copy for this entry could be.
+   *
+   * Still derived once in the main process, and still what the move and pick-list paths
+   * read. The Decks screen does not display it any more: it shows the two halves.
    */
   held: number
   /**
@@ -746,7 +724,11 @@ export interface DeckGroup {
   cards: DeckCardRow[]
   /** Sums of quantity, not row counts — a Forest x8 entry counts as 8. */
   cardCount: number
+  /** Copies the deck holds. */
   ownedCards: number
+  /** Copies it does not hold but you do. */
+  inCollectionCards: number
+  /** Copies nobody has. The three sum to `cardCount`. */
   missingCards: number
   missingValue: number
   /** True when any card in this group priced off another printing. */
@@ -760,9 +742,11 @@ export interface DeckTotals {
   entries: number
   inDeckCards: number
   excludedCards: number
-  /** Σ min(held, quantity) — always sums with missingCards to `cards`. */
+  /** Σ min(in_deck, quantity) — copies the decks themselves hold. */
   ownedCards: number
-  /** Σ max(0, quantity − held). */
+  /** Σ of the shortfall your loose copies cover. Yours, but not in the deck. */
+  inCollectionCards: number
+  /** Σ what is neither in the deck nor in your collection. The three sum to `cards`. */
   missingCards: number
   missingValue: number
   /** True when any card contributing to the value priced off another printing. */
@@ -784,7 +768,29 @@ export interface DeckBreakdown {
 
 // ---------- Deck screen filters ----------
 
-export type DeckOwnership = 'all' | 'owned' | 'missing'
+export type DeckOwnership = 'all' | 'owned' | 'inCollection' | 'missing'
+
+/**
+ * Where the copies for one deck entry stand: in the deck, in your bulk, or nowhere.
+ *
+ * Allocated in that order, so the three always add up to what the entry asks for. Shared
+ * because it is worked out twice: once in the breakdown, and again in the renderer when a
+ * filter changes which cards a group contains. Those were two copies of the same sum, and
+ * two copies of a sum are two chances to disagree about whether a deck is finished.
+ *
+ * `missing` is what it always was -- the shortfall your bulk does not cover -- so the
+ * missing pile still means "money you would have to spend". What this splits is the other
+ * side: a card sitting in your collection is yours, but it is not in your deck.
+ */
+export function allocateCopies(card: {
+  quantity: number
+  in_deck: number
+  in_collection: number
+}): { inDeck: number; fromCollection: number; missing: number } {
+  const inDeck = Math.min(card.in_deck, card.quantity)
+  const fromCollection = Math.min(Math.max(0, card.quantity - inDeck), card.in_collection)
+  return { inDeck, fromCollection, missing: Math.max(0, card.quantity - inDeck - fromCollection) }
+}
 
 export type DeckSortField =
   | 'name' | 'color' | 'cmc' | 'rarity' | 'set_code' | 'ownership' | 'price'
@@ -1006,11 +1012,6 @@ export const DEFAULT_PRINTING_FILTERS: PrintingFilters = {
 export interface PrintingChoice extends Printing {
   /** Copies of this exact printing already in the collection. */
   owned: number
-  /**
-   * The printing on the other side of the physical card, for a double-sided token whose
-   * two faces Scryfall files as separate cards. Null for everything else.
-   */
-  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
 }
 
 export interface AddCardInput {
@@ -1039,14 +1040,9 @@ export interface QuickAddInput {
   quantity: number
   /**
    * The denominator printed on the card, when it was typed. Distinguishes a token
-   * sheet from the set at the same number -- see `sheetTotal` on `QuickEntry`.
+   * sheet from the set at the same number -- see `parseCollectorNumber`.
    */
   sheetTotal?: number | null
-  /**
-   * The number on the other side, for a card with a different token on each face.
-   * Resolved on the same sheet as the front, because that is where a back is.
-   */
-  backNumber?: string | null
 }
 
 // ---------- CSV ----------
@@ -1101,6 +1097,7 @@ export interface ProgressEvent {
     | 'csv-import'
     | 'deck-sync'
     | 'deck-language'
+    | 'collection-language'
     | 'booster-odds'
     | 'price-sync'
     | 'backup'

@@ -1,3 +1,4 @@
+import { allocateCopies } from '@shared/types'
 import type { DeckBreakdown, DeckCardRow, DeckFilters, DeckGroup } from '@shared/types'
 import { matchesDeckFilters, sortDeckCards } from './deckFilter'
 
@@ -19,13 +20,17 @@ export const FLAT_GROUP_NAME = 'Deck'
 function totalsFor(name: string, source: DeckGroup, cards: DeckCardRow[]): FilteredGroup {
   let cardCount = 0
   let ownedCards = 0
+  let inCollectionCards = 0
   let missingCards = 0
   let missingValue = 0
   let missingValueIsProxy = false
   for (const card of cards) {
-    const missing = Math.max(0, card.quantity - card.held)
+    // The same allocation the breakdown uses, so a filtered group and the deck header
+    // can never disagree about what is in the deck and what is merely yours.
+    const { inDeck, fromCollection, missing } = allocateCopies(card)
     cardCount += card.quantity
-    ownedCards += Math.min(card.held, card.quantity)
+    ownedCards += inDeck
+    inCollectionCards += fromCollection
     missingCards += missing
     if (card.unit_value) {
       missingValue += card.unit_value * missing
@@ -39,6 +44,7 @@ function totalsFor(name: string, source: DeckGroup, cards: DeckCardRow[]): Filte
     cards,
     cardCount,
     ownedCards,
+    inCollectionCards,
     missingCards,
     missingValue,
     missingValueIsProxy
@@ -86,6 +92,7 @@ function collapse(groups: DeckGroup[]): DeckGroup[] {
       // Recomputed downstream from the filtered cards; these are placeholders.
       cardCount: 0,
       ownedCards: 0,
+      inCollectionCards: 0,
       missingCards: 0,
       missingValue: 0,
       missingValueIsProxy: false

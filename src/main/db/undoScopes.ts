@@ -89,27 +89,6 @@ export function scryfallScopeMany(itemIds: number[]): UndoScope {
 }
 
 /**
- * Everything marking two rows as one card can touch.
- *
- * Three tables, and the third is the one that would be missed. The merge deletes one
- * `collection_items` row, which the `ON DELETE SET NULL` on
- * `pick_list_items.collection_item_id` follows into a table the action never names --
- * exactly the cascade `withPickItems` exists for.
- *
- * `printing_pairs` is a whole table on purpose. The pairing is written for both
- * directions and any pairing either side previously had is cleared first, so the rows
- * touched are not knowable from the two ids alone; the table holds a handful of rows
- * and the alternative is a scope that is subtly too narrow.
- *
- * Scoped on the printings rather than the two ids, for the reason `pickListScopes`
- * gives: the absorbed row is deleted and comes back from an undo with a new id, and
- * an id-based scope would not see it return.
- */
-export function pairScopes(itemIds: number[]): UndoScope[] {
-  return withPickItems(scryfallScopeMany(itemIds), wholeTable('printing_pairs'))
-}
-
-/**
  * Everything validating, reverting or deleting a pick list can touch.
  *
  * Ordered parents first: `pick_list_items` references both `collection_items` and

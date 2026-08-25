@@ -96,19 +96,31 @@ const api = {
     forceLanguage: (itemId: number, lang: string | null, name?: string | null) =>
       call<boolean>('collection:forceLanguage', itemId, lang, name),
     /**
-     * Marks two rows as the two sides of one physical card and merges them.
+     * Every row the filters match, as keys and ids.
      *
-     * `keep` survives with its own finish and condition; `absorb` is deleted. The
-     * quantity kept is the larger of the two, because two rows of one are one card.
+     * For a select-all that reaches past the page on screen. `truncated` says the cap
+     * was hit, so the UI can say so rather than implying it has everything.
      */
-    pairMerge: (keep: number, absorb: number) =>
-      call<{ itemId: number; quantity: number; disagreed: boolean }>(
-        'collection:pairMerge',
-        keep,
-        absorb
+    matchingKeys: (filters: CollectionFilters) =>
+      call<{ rows: { key: string; id: number | null }[]; truncated: boolean }>(
+        'collection:matchingKeys',
+        filters
       ),
-    /** Forgets a pairing. The copies stay where they are. */
-    unpair: (itemId: number) => call<boolean>('collection:unpair', itemId)
+    /**
+     * Points the given rows at their printing in one language.
+     *
+     * One lookup per row, so this is slow and partial by nature: `unavailable` is a card
+     * Scryfall has no printing of in that language, and `gone` is a row the selection
+     * still named but the collection no longer holds.
+     */
+    setLanguages: (itemIds: number[], lang: string) =>
+      call<{
+        converted: number
+        viaSearch: number
+        unavailable: { name: string; lang: string }[]
+        gone: number
+        failed: number
+      }>('collection:setLanguages', itemIds, lang),
   },
 
   cards: {
@@ -123,18 +135,12 @@ const api = {
     quickResolve: (set: string, collectorNumber: string, lang: string) =>
       call<PrintingChoice | null>('cards:quickResolve', set, collectorNumber, lang),
     quickAdd: (input: QuickAddInput) =>
-      call<{
-        itemId: number
-        printing: PrintingChoice
-        /** The other side, when the line named one. Null otherwise. */
-        paired: PrintingChoice | null
-      }>('cards:quickAdd', input),
+      call<{ itemId: number; printing: PrintingChoice }>('cards:quickAdd', input),
     /** One cached printing, for the card detail view. */
-    /** Puts the card's artwork on the system clipboard. */
-    copyImage: (scryfallId: string) => call<boolean>('cards:copyImage', scryfallId),
-    printing: (scryfallId: string) => call<Printing | null>('cards:printing', scryfallId),
-    /** The printing on the other side of a double-sided token card, or null. */
-    paired: (scryfallId: string) => call<Printing | null>('cards:paired', scryfallId)
+    /** Puts one face of the card's artwork on the system clipboard. */
+    copyImage: (scryfallId: string, face: 0 | 1 = 0) =>
+      call<boolean>('cards:copyImage', scryfallId, face),
+    printing: (scryfallId: string) => call<Printing | null>('cards:printing', scryfallId)
   },
 
   pickLists: {
@@ -191,6 +197,14 @@ const api = {
         unavailable: { id: string; name: string; reason: string }[]
         deckCountReported: number | null
       }>('decks:syncUser', username),
+    /**
+     * Re-fetches one deck now, whatever Archidekt says about it having changed.
+     *
+     * The all-decks sync skips a deck whose `updatedAt` has not moved, so a deck you
+     * re-labelled and nothing else is otherwise never read again.
+     */
+    syncOne: (externalId: string) =>
+      call<{ deckId: number; name: string }>('decks:syncOne', externalId),
     addByUrl: (input: string) => call<{ deckId: number; name: string }>('decks:addByUrl', input),
     remove: (deckId: number) => call<boolean>('decks:delete', deckId),
     /** Label colours found across synced decks, for the "don't own" picker. */

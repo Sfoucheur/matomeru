@@ -1,7 +1,7 @@
 import { getDb, nowIso, transaction, type Sql } from '../connection.js'
 import { priceExpr, priceIsProxyExpr } from './printings.js'
 import { parseLabel } from '../../archidekt/mappers.js'
-import { foilTreatmentOf } from '@shared/types'
+import { allocateCopies, foilTreatmentOf } from '@shared/types'
 import type {
   Currency,
   Deck,
@@ -64,22 +64,6 @@ export const DECK_TRAITS_JOIN = `
          ON tr.deck_id = dc.deck_id
         AND tr.oracle_id = dc.oracle_id
         AND tr.scryfall_id = dc.scryfall_id`
-
-/*
-  The other side of a deck entry's card, where there is one.
-
-  Left joins on the entry's own printing, so an ordinary card joins nothing and reads
-  exactly as it did. Shared because three galleries draw a card tile and all three should
-  stack a two-sided card the same way.
-*/
-export const DECK_PAIR_JOIN = `
-  LEFT JOIN printing_pairs dpr ON dpr.scryfall_id = dc.scryfall_id
-  LEFT JOIN printings dpb ON dpb.scryfall_id = dpr.paired_scryfall_id`
-
-export const DECK_PAIR_COLUMNS = `
-  dpb.scryfall_id AS paired_scryfall_id,
-  dpb.name AS paired_name,
-  dpb.printed_name AS paired_printed_name`
 
 export const DECK_PROXIED = 'COALESCE(tr.proxied, 0)'
 
@@ -575,7 +559,6 @@ export function deckBreakdown(
             COALESCE(p.printed_type_line, p.type_line) AS type_line,
             -- What the tile needs to draw a two-sided card as two cards.
             p.layout AS layout,
-            ${DECK_PAIR_COLUMNS},
             ${price} AS unit_value,
             ${proxy} AS price_is_proxy,
             COALESCE((SELECT SUM(ci.quantity) FROM collection_items ci
@@ -601,7 +584,6 @@ export function deckBreakdown(
      LEFT JOIN deck_card_overrides o
             ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
      ${DECK_TRAITS_JOIN}
-     ${DECK_PAIR_JOIN}
      LEFT JOIN deck_card_lang_requests lr
             ON lr.deck_id = dc.deck_id AND lr.oracle_id = dc.oracle_id
      LEFT JOIN printings p ON p.scryfall_id = COALESCE(o.scryfall_id, dc.scryfall_id)
@@ -631,9 +613,6 @@ export function deckBreakdown(
     override_finish: string | null
     override_treatment: string | null
     layout: string | null
-    paired_scryfall_id: string | null
-    paired_name: string | null
-    paired_printed_name: string | null
     proxied: number
     promo_types: string | null
     categories: string
@@ -689,35 +668,29 @@ export function deckBreakdown(
       treatment_forced: row.override_treatment !== null,
       proxied: row.proxied === 1,
       layout: row.layout ?? null,
-      // Only when both halves came back, so a tile never asks for a picture that is not
-      // there.
-      paired:
-        row.paired_scryfall_id && row.paired_name
-          ? {
-              scryfall_id: row.paired_scryfall_id,
-              name: row.paired_name,
-              printed_name: row.paired_printed_name
-            }
-          : null,
       moves: moves.get(row.oracle_id ?? '') ?? [],
-      // The single source of truth for "how many do I have for this entry".
-      // A card under an "owned" label is held by definition — that is the whole
-      // point of the label — added to what the collection holds, matching the
-      // additive rule: a loose copy plus one sleeved in a deck is two.
-      //
-      // A proxied entry is held outright: the slot is filled by a card you can
-      // actually play, so the deck reads complete and it leaves the Missing pile.
-      // It is still marked, so a deck is never quietly complete on stand-ins.
-      //
-      //
-      // Nothing is subtracted here for a local move: `quantity` already is what
-      // the deck physically holds, because a move is written into the row. What a
-      // move changes is only whether Archidekt agrees, which `moves` reports.
+      /*
+        Where the copies for this entry are, kept as two facts rather than one number.
+
+        `in_deck` is the deck vouching for itself: an "owned" label, or a proxy, which is
+        held outright because the slot is filled by something you can play — still marked,
+        so a deck is never quietly complete on stand-ins.
+
+        `in_collection` is your bulk. These used to be added together and the sum called
+        "owned", so a deck holding none of a card you had four of read "have 4" and turned
+        green. A card in your bulk is yours; it is not in your deck.
+
+        Nothing is subtracted here for a local move: `quantity` already is what the deck
+        physically holds, because a move is written into the row. What a move changes is
+        only whether Archidekt agrees, which `moves` reports.
+      */
+      in_deck:
+        row.proxied === 1 ? row.quantity : row.label_possession === 'owned' ? row.quantity : 0,
+      in_collection: exactOnly ? row.owned_exact : Math.max(row.owned_exact, row.owned_any),
+      // Kept for the paths that ask "is a copy reachable at all" -- moves, pick lists.
       held:
-        row.proxied === 1
-          ? row.quantity
-          : (row.label_possession === 'owned' ? row.quantity : 0) +
-            (exactOnly ? row.owned_exact : Math.max(row.owned_exact, row.owned_any))
+        (row.proxied === 1 ? row.quantity : row.label_possession === 'owned' ? row.quantity : 0) +
+        (exactOnly ? row.owned_exact : Math.max(row.owned_exact, row.owned_any))
     }
   })
 
@@ -747,14 +720,15 @@ function groupCards(
   const groups: DeckGroup[] = [...byGroup.entries()].map(([name, groupCardList]) => {
     let cardCount = 0
     let ownedCards = 0
+    let inCollectionCards = 0
     let missingCards = 0
     let missingValue = 0
     let missingValueIsProxy = false
     for (const card of groupCardList) {
-      const owned = Math.min(card.held, card.quantity)
-      const missing = Math.max(0, card.quantity - card.held)
+      const { inDeck: owned, fromCollection, missing } = allocateCopies(card)
       cardCount += card.quantity
       ownedCards += owned
+      inCollectionCards += fromCollection
       missingCards += missing
       const unit = priceOf.get(card.id)
       if (unit) {
@@ -769,6 +743,7 @@ function groupCards(
       cards: groupCardList,
       cardCount,
       ownedCards,
+      inCollectionCards,
       missingCards,
       missingValue,
       missingValueIsProxy
@@ -788,6 +763,7 @@ function groupCards(
     inDeckCards: groups.filter((g) => g.inDeck).reduce((sum, g) => sum + g.cardCount, 0),
     excludedCards: groups.filter((g) => !g.inDeck).reduce((sum, g) => sum + g.cardCount, 0),
     ownedCards: groups.reduce((sum, g) => sum + g.ownedCards, 0),
+    inCollectionCards: groups.reduce((sum, g) => sum + g.inCollectionCards, 0),
     missingCards: groups.reduce((sum, g) => sum + g.missingCards, 0),
     missingValue: groups.reduce((sum, g) => sum + g.missingValue, 0),
     missingValueIsProxy: groups.some((g) => g.missingValueIsProxy)
@@ -894,6 +870,30 @@ export function recomputeLabelPossession(
       [state, ...colors.map((color) => `%${color}`)]
     )
   }
+
+  /*
+    A card with no label at all counts as owned.
+
+    Archidekt sends `label: ""` for a deck nobody has marked up — measured, not assumed:
+    four Commander 2017 precons in one real collection carried an empty string on every
+    one of their 347 cards, while a deck the owner had touched carried `",#656565"`, the
+    unnamed grey default. So mapping every colour to "I own it" could not reach them: they
+    have no colour to map, and the deck reported cards its owner held as missing.
+
+    Additive by construction. The colour passes above filter on
+    `label IS NOT NULL AND label != ''`, so they never see these rows and this never fights
+    them: wherever there is a colour, the colour decides, including one that means "I do not
+    own this". And the clear step's exemption for locally-moved copies needs no counterpart
+    here — a card you carried in yourself has no Archidekt label either, so this lands it on
+    `owned`, which is exactly what that exemption was protecting.
+
+    The cost, which is real: a decklist imported to price up what you would need to buy
+    reads as fully owned until you label it.
+  */
+  db.run(
+    `UPDATE deck_cards SET label_possession = 'owned'
+     WHERE label IS NULL OR label = ''`
+  )
 
   const counts = db.get(
     `SELECT

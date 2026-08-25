@@ -9,10 +9,9 @@ import {
   LayoutGrid,
   Copy,
   ArrowRightLeft,
-  Combine,
   ListChecks,
-  Scissors,
   MapPin,
+  CheckSquare,
   Rows3,
   Trash2
 } from 'lucide-react'
@@ -41,10 +40,12 @@ import {
 } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import { useT } from '../hooks/useT'
+import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import type { ViewProps } from '../App'
 import FilterBar from '../components/FilterBar'
 import ColumnStepper from '../components/ColumnStepper'
 import CardZoom from '../components/CardZoom'
+import LanguagePicker from '../components/LanguagePicker'
 import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import SetIcon from '../components/SetIcon'
@@ -97,6 +98,20 @@ function stageable(row: CollectionRow): boolean {
   return row.source === 'collection' ? row.available > 0 : row.quantity > 0
 }
 
+/**
+ * Whether a row can be selected at all.
+ *
+ * Wider than `stageable`, deliberately. A collection row whose copies are all
+ * reserved by an open pick list cannot be staged again, but its finish and
+ * condition are still yours to edit — so it can still be picked. Every action
+ * narrows the selection to what it can actually apply to (`stageable` for a pick
+ * list, `available > 0` for a move, a non-null id for an edit), which is what
+ * makes selecting more than one action can use safe rather than sloppy.
+ */
+function pickable(row: CollectionRow): boolean {
+  return row.source === 'collection' ? row.id !== null : row.quantity > 0
+}
+
 const PAGE_SIZE = 200
 const ROW_HEIGHT = 52
 
@@ -117,9 +132,6 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   // Persisted, so the choice survives navigation and a restart.
   const mode = useApp((s) => s.viewModeFor('collection'))
   const setMode = useApp((s) => s.setViewMode)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  /** Anchor for shift-click ranges in the gallery. */
-  const lastPicked = useRef<string | null>(null)
   const currency = settings?.currency ?? 'usd'
 
   const load = useCallback(async () => {
@@ -151,18 +163,76 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     void window.api.decks.list().then(setDecks).catch(() => undefined)
   }, [active, dataVersion])
 
-  // Drop selections that are no longer on screen, so bulk actions never act on
-  // rows the user cannot see.
-  useEffect(() => {
-    if (!page) return
-    const visible = new Set(page.rows.map((r) => r.key))
-    setSelected((current) => {
-      const next = new Set([...current].filter((id) => visible.has(id)))
-      return next.size === current.size ? current : next
-    })
-  }, [page])
-
   const rows = page?.rows ?? []
+
+  /*
+    Selection, with Ctrl and Shift, from the hook the Decks screen also uses.
+
+    The order matters and is the display order, because that is what a Shift-click
+    range means. It is handed over as keys plus whether each one may be picked up
+    by a range, so the hook needs to know nothing about a card.
+  */
+  const selectableRows = useMemo(
+    () => rows.map((row) => ({ key: row.key, selectable: pickable(row) })),
+    [rows]
+  )
+  const {
+    selected,
+    pick,
+    clear: clearSelection,
+    replace: replaceSelection,
+    selectAllShown
+  } = useRangeSelection(selectableRows)
+
+  /*
+    Which collection row each key belongs to, for keys that are not on screen.
+
+    Select-all reaches the whole filtered set, and a row the list has not loaded has no
+    `CollectionRow` here at all -- so the id has to travel with the key or a bulk action
+    would silently apply to the 200 rows that happen to be drawn. Filled from both
+    sources: the page, and the select-all answer.
+  */
+  const idByKey = useRef(new Map<string, number | null>())
+  useMemo(() => {
+    for (const row of rows) idByKey.current.set(row.key, row.id)
+  }, [rows])
+
+  /*
+    The selection survives a refetch and dies with a change of question.
+
+    It used to be pruned to the loaded page on every requery, which would erase a
+    select-all the instant it happened. Editing does not change which rows match, so the
+    selection stays -- that is what makes "set the finish, then the condition, then stage
+    them" work. Changing a filter asks something else, and the answer to the old question
+    should not linger.
+
+    Sort is deliberately not part of the key: reordering the same rows is not a new
+    question, and clearing a selection because you sorted it would be its own small bug.
+  */
+  const filterKey = JSON.stringify({ ...filters, sort: '', dir: '', sort2: '', dir2: '' })
+  const lastFilterKey = useRef(filterKey)
+  useEffect(() => {
+    if (lastFilterKey.current === filterKey) return
+    lastFilterKey.current = filterKey
+    clearSelection()
+  }, [filterKey, clearSelection])
+
+  /** Every collection row in the selection, loaded or not. */
+  const selectedIds = useMemo(
+    () =>
+      [...selected]
+        .map((key) => idByKey.current.get(key) ?? null)
+        .filter((id): id is number => id !== null),
+    [selected]
+  )
+
+  const selectAllMatching = async (): Promise<void> => {
+    const answer = await guard(() => window.api.collection.matchingKeys(filters))
+    if (!answer) return
+    for (const row of answer.rows) idByKey.current.set(row.key, row.id)
+    replaceSelection(answer.rows.map((row) => row.key))
+    if (answer.truncated) toast('warn', t('coll.selectAllCapped', { count: answer.rows.length }))
+  }
 
   // Column headers drive the *primary* level only; whatever tie-breaker the sort
   // menu has set stays put.
@@ -172,43 +242,6 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     } else {
       setFilters({ sort: field, dir: field === 'name' || field === 'set_code' ? 'asc' : 'desc' })
     }
-  }
-
-  const toggleRow = (key: string): void => {
-    setSelected((current) => {
-      const next = new Set(current)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-    lastPicked.current = key
-  }
-
-  /**
-   * Gallery selection. Plain click opens the card, so selecting is Ctrl-click to
-   * toggle and Shift-click to take a range from the last card touched.
-   */
-  const selectRow = (key: string, mode: 'toggle' | 'range'): void => {
-    if (mode === 'toggle' || lastPicked.current === null) {
-      toggleRow(key)
-      return
-    }
-    const from = rows.findIndex((r) => r.key === lastPicked.current)
-    const to = rows.findIndex((r) => r.key === key)
-    if (from === -1 || to === -1) {
-      toggleRow(key)
-      return
-    }
-    const [start, end] = from <= to ? [from, to] : [to, from]
-    setSelected((current) => {
-      const next = new Set(current)
-      // Only real rows can be acted on, so a range never picks up deck copies.
-      for (let i = start; i <= end; i += 1) {
-        if (stageable(rows[i])) next.add(rows[i].key)
-      }
-      return next
-    })
-    lastPicked.current = key
   }
 
   /*
@@ -239,7 +272,12 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     while its overlay is open — scrolling with the keyboard, or the list
     re-querying underneath — and the overlay would vanish with it.
   */
-  const [zoom, setZoom] = useState<{ scryfallId: string; title: string } | null>(null)
+  const [zoom, setZoom] = useState<{
+    scryfallId: string
+    title: string
+    /** Whether the printing has a second face, from the helper the tiles use. */
+    hasBack: boolean
+  } | null>(null)
 
   /** The rows waiting on a deck and a quantity before they move. */
   const [pendingMove, setPendingMove] = useState<CollectionRow[] | null>(null)
@@ -408,6 +446,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
         currency={currency}
         mode={mode}
         onMode={(next) => setMode('collection', next)}
+        onSelectAll={() => void selectAllMatching()}
       />
       <FilterBar facets={facets} decks={decks} />
 
@@ -416,6 +455,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           open
           scryfallId={zoom.scryfallId}
           title={zoom.title}
+          hasBack={zoom.hasBack}
           onClose={() => setZoom(null)}
         />
       )}
@@ -461,7 +501,15 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
         {selectedRows.length > 0 && (
           <BulkBar
             rows={selectedRows}
-            onClear={() => setSelected(new Set())}
+            count={selected.size}
+            ids={selectedIds}
+            /*
+              Whether the selection reaches past what is drawn. Some actions need a whole
+              row rather than an id -- staging needs a quantity, a move needs what is
+              available -- and those are not knowable for a row the list has not loaded.
+            */
+            beyondLoaded={selected.size > selectedRows.length}
+            onClear={clearSelection}
             onAddToList={() => setListDialog(true)}
             onMove={() =>
             setPendingMove(selectedRows.filter((row) => row.id !== null && row.available > 0))
@@ -492,20 +540,18 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           rows={rows}
           currency={currency}
           selected={selected}
-          onToggleRow={toggleRow}
+          onPick={pick}
+          selectableCount={selectableRows.filter((row) => row.selectable).length}
           onToggleAll={() => {
-            const selectable = rows.filter(stageable)
-            setSelected(
-              selected.size === selectable.length
-                ? new Set()
-                : new Set(selectable.map((r) => r.key))
-            )
+            const selectable = selectableRows.filter((row) => row.selectable).length
+            if (selected.size === selectable) clearSelection()
+            else selectAllShown()
           }}
           sort={filters.sort}
           dir={filters.dir}
           onSort={toggleSort}
           onOpenCard={openCard}
-          onZoom={(scryfallId, title) => setZoom({ scryfallId, title })}
+          onZoom={(scryfallId, title, hasBack) => setZoom({ scryfallId, title, hasBack })}
           onChanged={invalidate}
         />
       ) : (
@@ -513,13 +559,14 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           rows={rows}
           currency={currency}
           selected={selected}
-          onSelect={selectRow}
+          onSelect={pick}
           onOpenCard={openCard}
         />
       )}
 
       {page && page.total > rows.length && (
-        <div className="shrink-0 border-t border-ink-800 px-5 py-2 text-center text-[11px] text-ink-500">
+        <div className="shrink-0 border-t border-ink-800 px-5 py-2 text-center text-[11px]
+          text-ink-500">
           {t('coll.showingFirst', { shown: count(rows.length), total: count(page.total) })}
         </div>
       )}
@@ -550,12 +597,15 @@ function Header({
   page,
   currency,
   mode,
-  onMode
+  onMode,
+  onSelectAll
 }: {
   page: CollectionPage | null
   currency: 'usd' | 'eur'
   mode: 'table' | 'gallery'
   onMode: (mode: 'table' | 'gallery') => void
+  /** Select every row the filters match, however many pages that is. */
+  onSelectAll: () => void
 }): React.ReactElement {
   const t = useT()
   const filters = useApp((s) => s.filters)
@@ -629,6 +679,27 @@ function Header({
           <LayoutGrid size={15} />
         </button>
       </div>
+
+      {/*
+        Always here, not only when the list is showing a fraction of the matches.
+
+        It first lived in the footer note that says "showing the first 200 of 1,247",
+        which reads well but hides the control from anyone whose collection fits on one
+        page -- and a select-all you cannot find on a small collection is not a
+        select-all. The gallery has no header row to hold a checkbox either, so this is
+        the only place that serves both modes.
+      */}
+      {page && page.total > 0 && (
+        <Button
+          size="sm"
+          icon={<CheckSquare size={13} />}
+          onClick={onSelectAll}
+          data-action="selectAllMatching"
+          title={t('coll.selectAllHint')}
+        >
+          {t('coll.selectAllMatching', { count: count(page.total) })}
+        </Button>
+      )}
 
       <Button size="sm" icon={<Download size={13} />} onClick={exportCsv}>
         {t('coll.export')}
@@ -867,12 +938,28 @@ function WhichDeckDialog({
 
 function BulkBar({
   rows,
+  count,
+  ids,
+  beyondLoaded,
   onAddToList,
   onMove,
   onClear,
   onDone
 }: {
+  /** The selected rows the list has actually loaded. */
   rows: CollectionRow[]
+  /** How many rows are selected, which is not `rows.length` after a select-all. */
+  count: number
+  /** Collection rows in the selection, loaded or not. What every edit applies to. */
+  ids: number[]
+  /**
+   * Whether the selection reaches past the loaded page.
+   *
+   * Two actions need a whole row rather than an id — staging needs a quantity, a move
+   * needs what is available — so they are not offered for rows nobody has loaded. Saying
+   * so is better than applying them to the fraction that happens to be on screen.
+   */
+  beyondLoaded: boolean
   /** Opens the dialog that asks which list, and what happens to the copies. */
   onAddToList: () => void
   /** Opens the dialog that moves the selection into a deck. */
@@ -891,15 +978,52 @@ function BulkBar({
 }): React.ReactElement {
   const t = useT()
   const toast = useApp((s) => s.toast)
+  const invalidate = useApp((s) => s.invalidate)
   /*
-    Only real collection rows can be edited or removed. A selection can now mix
-    them with derived deck rows, which have no id and mirror Archidekt, so `ids`
-    is what the editing actions apply to and `sleeved` is what they cannot touch.
+    Only real collection rows can be edited or removed. A selection can mix them with
+    derived deck rows, which have no id and mirror Archidekt, so `ids` is what the editing
+    actions apply to and `sleeved` is what they cannot touch.
   */
-  const ids = rows.map((r) => r.id).filter((id): id is number => id !== null)
-  const sleeved = rows.length - ids.length
+  const sleeved = count - ids.length
   const ownRows = rows.filter((row) => row.id !== null)
-  const allProxied = ownRows.length > 0 && ownRows.every((row) => row.proxied)
+  /*
+    Whether every selected row is already a proxy, which decides whether the control
+    reads "mark" or "unmark". Unknowable past the loaded page -- so past it, both actions
+    are offered explicitly rather than a toggle that guesses from a sample.
+  */
+  const allProxied = !beyondLoaded && ownRows.length > 0 && ownRows.every((row) => row.proxied)
+  /** The first async action on this bar: one Scryfall lookup per row. */
+  const [busy, setBusy] = useState(false)
+
+  const applyLanguage = async (lang: string): Promise<void> => {
+    if (ids.length === 0) return
+    setBusy(true)
+    const result = await guard(() => window.api.collection.setLanguages(ids, lang))
+    setBusy(false)
+    if (!result) return
+    const parts = [t('bulk.langSet', { count: result.converted, lang: lang.toUpperCase() })]
+    if (result.unavailable.length) {
+      parts.push(
+        t('bulk.langNoPrinting', {
+          count: result.unavailable.length,
+          lang: lang.toUpperCase()
+        })
+      )
+    }
+    if (result.gone) parts.push(t('bulk.langGone', { count: result.gone }))
+    if (result.failed) parts.push(t('bulk.langFailed', { count: result.failed }))
+    toast(
+      result.unavailable.length || result.failed ? 'warn' : 'success',
+      `${parts.join(', ')}.`
+    )
+    /*
+      Cleared, not kept, unlike every other action here. A language change repoints rows
+      and merges any that collide, so the ids in hand may no longer name anything -- the
+      same reason removal empties the selection on its own.
+    */
+    invalidate()
+    onClear()
+  }
 
   const applyFinish = async (finish: Finish): Promise<void> => {
     const ok = await guard(() => window.api.collection.bulkUpdate(ids, { finish }))
@@ -928,32 +1052,6 @@ function BulkBar({
       onDone()
     }
   }
-  /*
-    The two sides, joined. `ids[0]` survives: the row reached for first is the better
-    guess at which finish and condition are right, and the count kept is the larger of
-    the two, because two rows of one are one card.
-  */
-  const markSameCard = async (): Promise<void> => {
-    const result = await guard(() => window.api.collection.pairMerge(ids[0], ids[1]))
-    if (result) {
-      toast(
-        'success',
-        result.disagreed
-          ? t('coll.sameCardDoneDisagreed', { quantity: result.quantity })
-          : t('coll.sameCardDone', { quantity: result.quantity })
-      )
-      onDone()
-    }
-  }
-
-  const separate = async (): Promise<void> => {
-    const ok = await guard(() => window.api.collection.unpair(ids[0]))
-    if (ok) {
-      toast('success', t('coll.separateSidesDone'))
-      onDone()
-    }
-  }
-
   const applyProxied = async (proxied: boolean): Promise<void> => {
     const ok = await guard(() =>
       window.api.collection.bulkUpdate(ids, { proxied: proxied ? 1 : 0 })
@@ -998,7 +1096,7 @@ function BulkBar({
     >
       <div className="flex flex-wrap items-center gap-2.5 px-5 py-2.5">
         <span className="text-xs text-ink-200">
-          {t('common.selected', { count: rows.length })}
+          {t('common.selected', { count })}
           {sleeved > 0 && (
             <span className="ml-1.5 text-[11px] text-ink-400">
               {t('coll.sleevedNote', { count: sleeved })}
@@ -1011,54 +1109,38 @@ function BulkBar({
           dropdown that sits there permanently reads as a setting rather than as
           part of what you are about to do. Both questions live in the dialog now.
         */}
-        <Button
-          variant="primary"
-          size="sm"
-          icon={<ListChecks size={13} />}
-          onClick={onAddToList}
-          data-action="addToList"
-        >
-          {t('coll.addToPickList')}
-        </Button>
-        {/*
-          Two rows that are one card.
-
-          Offered only for exactly two editable rows, because that is the only
-          selection the question makes sense of. It is not a bulk edit -- it says the
-          two printings are the two sides of one object, which is a fact about the
-          cards rather than a change to the copies.
-        */}
-        {ids.length === 2 && rows.length === 2 && (
-          <Button
-            size="sm"
-            icon={<Combine size={13} />}
-            onClick={() => void markSameCard()}
-            data-action="sameCard"
-          >
-            {t('coll.sameCard')}
-          </Button>
+        {beyondLoaded ? (
+          <span className="text-[11px] text-ink-400">{t('coll.beyondLoaded')}</span>
+        ) : (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<ListChecks size={13} />}
+              onClick={onAddToList}
+              data-action="addToList"
+            >
+              {t('coll.addToPickList')}
+            </Button>
+            {/* Only real rows can go into a deck: a sleeved card is already in one. */}
+            {ids.length > 0 && (
+              <Button
+                size="sm"
+                icon={<ArrowRightLeft size={13} />}
+                onClick={onMove}
+                data-action="moveToDeck"
+              >
+                {t('coll.moveToDeck')}
+              </Button>
+            )}
+          </>
         )}
-        {/* And the way back, for a row that was paired by mistake. */}
-        {ids.length === 1 && rows.length === 1 && rows[0].paired !== null && (
-          <Button
-            size="sm"
-            icon={<Scissors size={13} />}
-            onClick={() => void separate()}
-            data-action="separateSides"
-          >
-            {t('coll.separateSides')}
-          </Button>
-        )}
-        {/* Only real rows can go into a deck: a sleeved card is already in one. */}
         {ids.length > 0 && (
-          <Button
-            size="sm"
-            icon={<ArrowRightLeft size={13} />}
-            onClick={onMove}
-            data-action="moveToDeck"
-          >
-            {t('coll.moveToDeck')}
-          </Button>
+          <LanguagePicker
+            busy={busy}
+            hint={t('bulk.languageHintCollection')}
+            onPick={(lang) => void applyLanguage(lang)}
+          />
         )}
         {/*
           Hidden rather than disabled when nothing editable is selected: these
@@ -1142,7 +1224,8 @@ function TableView({
   rows,
   currency,
   selected,
-  onToggleRow,
+  onPick,
+  selectableCount,
   onToggleAll,
   sort,
   dir,
@@ -1154,13 +1237,15 @@ function TableView({
   rows: CollectionRow[]
   currency: 'usd' | 'eur'
   selected: Set<string>
-  onToggleRow: (key: string) => void
+  onPick: (key: string, mode: PickMode) => void
+  /** How many rows on screen can be selected, so the header box can tell when all are. */
+  selectableCount: number
   onToggleAll: () => void
   sort: SortField
   dir: 'asc' | 'desc'
   onSort: (field: SortField) => void
   onOpenCard: (scryfallId: string, context?: CardContext) => void
-  onZoom: (scryfallId: string, title: string) => void
+  onZoom: (scryfallId: string, title: string, hasBack: boolean) => void
   onChanged: () => void
 }): React.ReactElement {
   const t = useT()
@@ -1175,9 +1260,15 @@ function TableView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
+        {/*
+          Against the count the toggle actually selects. This compared with
+          `rows.length`, while the handler compared with the selectable subset — so
+          with any sleeved row on screen the box never showed ticked after a
+          select-all, and clicking it again selected instead of clearing.
+        */}
         <input
           type="checkbox"
-          checked={selected.size > 0 && selected.size === rows.length}
+          checked={selectableCount > 0 && selected.size >= selectableCount}
           onChange={onToggleAll}
           className="accent-gold-500"
           aria-label={t('coll.selectAll')}
@@ -1230,12 +1321,15 @@ function TableView({
                   row={row}
                   currency={currency}
                   isSelected={selected.has(row.key)}
-                  onToggle={() => onToggleRow(row.key)}
+                  onPick={(mode) => onPick(row.key, mode)}
                   onOpenCard={() => onOpenCard(row.scryfall_id, collectionCardContext(row))}
                   onZoom={() =>
                     onZoom(
                       row.scryfall_id,
-                      row.printing.printed_name ?? row.printing.name
+                      row.printing.printed_name ?? row.printing.name,
+                      // The same helper the tiles ask, so nothing gets a second opinion
+                      // about what the back of a card is.
+                      twoSides(row.printing) !== null
                     )
                   }
                   onChanged={onChanged}
@@ -1253,7 +1347,7 @@ function CardRow({
   row,
   currency,
   isSelected,
-  onToggle,
+  onPick,
   onOpenCard,
   onZoom,
   onChanged
@@ -1261,7 +1355,7 @@ function CardRow({
   row: CollectionRow
   currency: 'usd' | 'eur'
   isSelected: boolean
-  onToggle: () => void
+  onPick: (mode: PickMode) => void
   onOpenCard: () => void
   onZoom: () => void
   onChanged: () => void
@@ -1271,6 +1365,22 @@ function CardRow({
   const printing = row.printing
   // A derived deck copy has no underlying row, so nothing here can be edited.
   const editable = row.source === 'collection' && row.id !== null
+  // Selectable is wider than editable: a sleeved deck row can be picked too, and
+  // in the gallery always could. Only the list disagreed.
+  const selectable = pickable(row)
+
+  /*
+    Plain click selects this row and nothing else, Ctrl adds or removes it, Shift
+    takes a range. The same gesture the Decks screen already uses, with one
+    addition: a plain click here did nothing at all before, so it is free to mean
+    something.
+  */
+  const onRowClick = (e: React.MouseEvent): void => {
+    if (!selectable) return
+    if (e.ctrlKey || e.metaKey) onPick('toggle')
+    else if (e.shiftKey) onPick('range')
+    else onPick('only')
+  }
 
   const setQuantity = async (quantity: number): Promise<void> => {
     if (row.id === null) return
@@ -1280,15 +1390,31 @@ function CardRow({
 
   return (
     <div
+      onClick={onRowClick}
+      /*
+        A stable hook for the live checks. Selection here is a modified click, and
+        the rows are virtualized, so a check that hunts for a named row's checkbox
+        finds nothing and reports the screen wrong rather than failing honestly.
+      */
+      data-collection-row={row.key}
       className={`flex h-full items-center gap-3 border-b border-ink-850 px-5 text-sm transition-colors ${
         isSelected ? 'bg-gold-500/[0.06]' : 'hover:bg-ink-850/60'
       }`}
     >
-      {editable ? (
+      {selectable ? (
         <input
           type="checkbox"
           checked={isSelected}
-          onChange={onToggle}
+          /*
+            Shift on the box takes a range too, as it does on a gallery tile. The
+            click is stopped so the row underneath does not also reduce the
+            selection to this one row.
+          */
+          onClick={(e) => {
+            e.stopPropagation()
+            onPick(e.shiftKey ? 'range' : 'toggle')
+          }}
+          onChange={() => undefined}
           className="accent-gold-500"
           aria-label={t('coll.selectRow', { name: printing.name })}
         />
@@ -1304,7 +1430,10 @@ function CardRow({
           so the affordance reads the same in both places.
         */}
         <button
-          onClick={onZoom}
+          onClick={(e) => {
+            e.stopPropagation()
+            onZoom()
+          }}
           title={t('coll.zoomHint')}
           aria-label={t('coll.zoomHint')}
           className="shrink-0 cursor-zoom-in rounded"
@@ -1318,20 +1447,20 @@ function CardRow({
         <div className="min-w-0 leading-tight">
           <p className="truncate text-ink-100">
             <button
-              onClick={onOpenCard}
+              onClick={(e) => {
+                e.stopPropagation()
+                // A modified click is a selection gesture wherever it lands, so the
+                // name hands it back to the row rather than opening a dialog over it.
+                if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                  onRowClick(e)
+                  return
+                }
+                onOpenCard()
+              }}
               className="underline-offset-2 hover:underline"
-              title={row.paired ? t('coll.pairedHint') : t('coll.cardDetails')}
+              title={t('coll.cardDetails')}
             >
-              {/*
-                Both tokens, one row. The `A // B` shape is the one Scryfall uses for a
-                card with two faces, which is exactly what this is physically -- even
-                though Scryfall files these two as unrelated printings.
-              */}
-              {row.paired
-                ? `${printing.printed_name ?? printing.name} // ${
-                    row.paired.printed_name ?? row.paired.name
-                  }`
-                : (printing.printed_name ?? printing.name)}
+              {printing.printed_name ?? printing.name}
             </button>
             {row.reserved > 0 && (
               <span
@@ -1374,9 +1503,7 @@ function CardRow({
         <span className="truncate">{printing.set_code}</span>
       </div>
       <div className="numeric w-14 text-xs text-ink-400">
-        {row.paired
-          ? `${printing.collector_number} // ${row.paired.collector_number}`
-          : printing.collector_number}
+        {printing.collector_number}
       </div>
       <div className="w-20 truncate text-xs text-ink-300">
         {printing.finishes.length > 1 || row.finish !== 'nonfoil' ? (
@@ -1401,7 +1528,14 @@ function CardRow({
       <div className="w-16">
         {row.deck_count > 0 ? (
           <button
-            onClick={onOpenCard}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                onRowClick(e)
+                return
+              }
+              onOpenCard()
+            }}
             title={t.p('coll.inDecksHint', row.deck_count)}
             className="inline-flex items-center gap-1 rounded bg-mana-u/15 px-1.5 py-0.5 text-[10px]
               font-semibold text-mana-u transition-colors hover:bg-mana-u/25"
@@ -1414,7 +1548,11 @@ function CardRow({
         )}
       </div>
 
-      <div className="w-28">
+      {/*
+        The stepper's own buttons stop here. Without this, nudging a quantity also
+        collapsed the selection to this one row.
+      */}
+      <div className="w-28" onClick={(e) => e.stopPropagation()}>
         {editable ? (
           <QuantityStepper
             value={row.quantity}
@@ -1455,7 +1593,8 @@ function CardRow({
       <div className="flex w-9 justify-end">
         {editable && (
           <button
-            onClick={async () => {
+            onClick={async (e) => {
+              e.stopPropagation()
               const ok = await guard(() => window.api.collection.remove(row.id as number))
               if (ok) {
                 toast('success', t('coll.rowRemoved'))
@@ -1502,14 +1641,14 @@ function GalleryView({
               "Cat Warrior" here: the table row learned about the other side and this
               tile is a different component that did not.
             */
-            title={bothSidesTitle(row.printing, row.paired)}
+            title={bothSidesTitle(row.printing)}
             /*
               The pair, flattened to primitives for the tile's memo. `twoSides` decides
               which kind of two-sidedness this is -- one printing with two faces, or two
               printings sharing a card -- and the tile does not need to know.
             */
-            backScryfallId={twoSides(row.printing, row.paired)?.back.scryfallId ?? null}
-            backFace={twoSides(row.printing, row.paired)?.back.face}
+            backScryfallId={twoSides(row.printing)?.back.scryfallId ?? null}
+            backFace={twoSides(row.printing)?.back.face}
             density={density}
             selected={selected.has(row.key)}
             selectable={stageable(row)}

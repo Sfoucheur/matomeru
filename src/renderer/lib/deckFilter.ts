@@ -1,4 +1,10 @@
-import { NO_LABEL, type DeckCardRow, type DeckFilters, type DeckSortField } from '@shared/types'
+import {
+  NO_LABEL,
+  allocateCopies,
+  type DeckCardRow,
+  type DeckFilters,
+  type DeckSortField
+} from '@shared/types'
 
 /**
  * Filtering and sorting for one deck, in the renderer.
@@ -59,8 +65,19 @@ export function matchesDeckFilters(card: DeckCardRow, filters: DeckFilters): boo
     if (!haystack.includes(term)) return false
   }
 
-  if (filters.ownership === 'owned' && card.held < card.quantity) return false
-  if (filters.ownership === 'missing' && card.held >= card.quantity) return false
+  /*
+    Three sets that partition the deck, on the same allocation the totals use.
+
+    `owned` asks the deck, not your collection: it used to read `held`, which added your
+    bulk in, so a card the deck holds none of sat in the Owned filter.
+  */
+  if (filters.ownership !== 'all') {
+    const { inDeck, missing } = allocateCopies(card)
+    const covered = inDeck >= card.quantity
+    if (filters.ownership === 'owned' && !covered) return false
+    if (filters.ownership === 'inCollection' && (covered || missing > 0)) return false
+    if (filters.ownership === 'missing' && missing === 0) return false
+  }
 
   // A card is kept if *any* of its categories is selected, not just its owning
   // group — filtering by "Ramp" should find a card tagged ["Ramp","Creature"]

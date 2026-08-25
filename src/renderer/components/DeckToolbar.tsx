@@ -41,6 +41,7 @@ export default function DeckToolbar({
   const OWNERSHIP_LABEL: Record<DeckOwnership, string> = {
     all: t('deck.ownershipAll'),
     owned: t('deck.ownershipOwned'),
+    inCollection: t('deck.ownershipInCollection'),
     missing: t('deck.ownershipMissing')
   }
   const labelOptions = [

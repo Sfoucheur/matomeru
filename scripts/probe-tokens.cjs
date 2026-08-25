@@ -68,7 +68,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   // dismiss anything modal, then Add cards -> Fast entry
   await ev(`(async () => {
     document.querySelector('[data-action="updateLater"]')?.click()
-    await new Promise((r) => setTimeout(r, 200))
+    /*
+      And anything modal. A card dialog left open by an earlier run keeps its state --
+      turning a card over now survives a refresh, by design -- so a second run found the
+      card already flipped and reported the front missing.
+    */
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 400))
     const nav = document.querySelector('nav') ?? document.querySelector('aside')
     const items = [...nav.querySelectorAll('button')]
     items[1].click()
@@ -81,22 +87,33 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   })()`)
 
   const typeLine = (line) => ev(`(async () => {
-    const input = document.querySelector('input[placeholder*="m10"]')
-    if (!input) throw new Error('fast entry input not found')
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value').set
-    setter.call(input, ${JSON.stringify(line)})
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 120))
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    const parts = ${JSON.stringify(line)}.trim().split(' ').filter(Boolean)
+    const put = (sel, value) => {
+      const el = document.querySelector(sel)
+      if (!el) throw new Error('no fast-entry field ' + sel)
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+        .set.call(el, value)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      return el
+    }
+    put('[data-field="set"]', parts[0])
+    const number = put('[data-field="number"]', parts[1] ?? '')
+    await new Promise((r) => setTimeout(r, 140))
+    number.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     return true
   })()`)
 
+  /*
+    Every line, not only the ones that start with a quantity.
+
+    A failed add logs "C17 8 — <why>", which the old filter discarded -- so an add that
+    errored looked exactly like an add that never happened, and the check reported the
+    empty list rather than the reason. The checks below still match on what they need.
+  */
   const logLines = () => ev(`(() => {
-    const rows = [...document.querySelectorAll('li, div')]
-      .map((e) => e.innerText || '')
-      .filter((t) => /^\\s*\\d+×/.test(t))
-      .map((t) => t.split('\\n')[0].trim())
+    const rows = [...document.querySelectorAll('li')]
+      .map((e) => (e.innerText || '').split('\\n')[0].trim())
+      .filter(Boolean)
     return JSON.stringify([...new Set(rows)])
   })()`)
 
@@ -176,41 +193,55 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   check('the double-faced token is in the collection and opens', opened.modal === true,
     JSON.stringify(opened))
 
+  /*
+    Both faces at once, because the card turns over rather than cutting between two
+    pictures: the dialog draws front and back inside one 3D container and rotates it.
+    So "which picture is showing" is not "the dialog's first img" -- that is always the
+    front -- it is which side the rotation has brought forward.
+  */
   const imageState = () => ev(`(() => {
     const dialog = document.querySelector('[role="dialog"]')
     if (!dialog) return JSON.stringify({ open: false })
-    const img = dialog.querySelector('img')
-    const flip = [...dialog.querySelectorAll('button')]
-      .find((b) => /Punchcard|Max Speed|Start Your Engines/i.test(b.innerText))
+    const face = (side) => dialog.querySelector('[data-flip-face="' + side + '"] img')
+    const front = face('front')
+    const back = face('back')
+    const card = dialog.querySelector('[data-flip="card"]')
     return JSON.stringify({
       open: true,
-      src: img ? img.getAttribute('src') : null,
-      w: img ? img.naturalWidth : 0,
-      flipLabel: flip ? flip.innerText.replace(/\\s+/g, ' ').trim() : null
+      front: front ? front.getAttribute('src') : null,
+      back: back ? back.getAttribute('src') : null,
+      backLoaded: back ? back.naturalWidth : 0,
+      turned: card ? card.dataset.turned : null,
+      hasControl: dialog.querySelector('[data-action="flipCard"]') !== null
     })
   })()`)
 
   const before = JSON.parse(await imageState())
-  console.log('        → front: ' + JSON.stringify(before))
+  console.log('        → at rest: ' + JSON.stringify(before))
   check('the front is showing, with no face in its URL',
-    before.src !== null && !before.src.includes('face='), String(before.src))
-  check('and a flip control is offered', before.flipLabel !== null, JSON.stringify(before))
+    before.front !== null && !before.front.includes('face='), String(before.front))
+  check('and the other side is the same printing at its second face',
+    String(before.back).includes('face=1'), String(before.back))
+  check('and a flip control is offered', before.hasControl === true, JSON.stringify(before))
+  check('at rest it is the front that is forward', before.turned === 'false',
+    String(before.turned))
 
-  // flip
   await ev(`(() => {
-    const dialog = document.querySelector('[role="dialog"]')
-    const flip = [...dialog.querySelectorAll('button')]
-      .find((b) => /Punchcard|Max Speed|Start Your Engines/i.test(b.innerText))
-    flip.click()
+    document.querySelector('[role="dialog"] [data-action="flipCard"]').click()
     return true
   })()`)
-  await sleep(3500)
+  await sleep(2500)
   const after = JSON.parse(await imageState())
-  console.log('        → back:  ' + JSON.stringify(after))
-  check('flipping asks for the second face', String(after.src).includes('face=1'),
-    String(after.src))
-  check('and that image actually loaded, rather than breaking',
-    after.w > 0, 'naturalWidth ' + after.w)
+  console.log('        → turned:  ' + JSON.stringify(after))
+  check('flipping brings the second face forward', after.turned === 'true',
+    String(after.turned))
+  /*
+    Not `naturalWidth`. Measured, it reads 0 for the *front* face too -- the one plainly
+    on screen -- because these images are loading="lazy" decoding="async" over a custom
+    matomeru:// protocol, so the property never settles for this probe to read. That the
+    back face is a real, different picture is proven below from the files on disk, which
+    is evidence rather than an inference.
+  */
 
   // the two faces are two files, and two different pictures
   const dir = path.join(PROFILE, 'images')

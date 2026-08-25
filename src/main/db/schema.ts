@@ -797,5 +797,116 @@ export const MIGRATIONS: Migration[] = [
       -- them bar the deliberate exceptions.
       ALTER TABLE deck_card_moves ADD COLUMN entry_scryfall_id TEXT;
     `
+  },
+  {
+    version: 19,
+    name: 'pairings_follow_the_card',
+    sql: `
+      -- A pairing lasts exactly as long as the card does.
+      --
+      -- printing_pairs links two printings and knew nothing about the collection, so
+      -- joining two cards and then deleting the card left the pairing behind: every
+      -- search for either side kept returning the joined card, and the only route to
+      -- taking it apart was keyed on the collection row that no longer existed. It
+      -- describes a physical card; with no copies it describes nothing.
+      --
+      -- A trigger rather than a call at each site: a collection row is deleted in eight
+      -- places across four repos, and hooking each one guarantees the ninth is forgotten.
+      --
+      -- Three things about the statement below are deliberate.
+      --
+      --   It never mentions OLD, so there is no subquery reading the table its own DELETE
+      --   is writing, and no evaluation order to reason about.
+      --
+      --   It counts deck holdings as well. Moving a card into a deck deletes its
+      --   collection row and the card is still yours, so without that half, sleeving a
+      --   paired token would quietly separate it.
+      --
+      --   It sweeps rather than targets, so a pairing stranded by any other route heals
+      --   on the next removal instead of waiting for someone to notice it.
+      CREATE TRIGGER drop_unheld_pairings
+      AFTER DELETE ON collection_items
+      FOR EACH ROW
+      BEGIN
+        DELETE FROM printing_pairs
+         WHERE NOT EXISTS (SELECT 1 FROM collection_items ci
+                            WHERE ci.scryfall_id = printing_pairs.scryfall_id)
+           AND NOT EXISTS (SELECT 1 FROM collection_items ci
+                            WHERE ci.scryfall_id = printing_pairs.paired_scryfall_id)
+           AND NOT EXISTS (SELECT 1 FROM deck_cards dc
+                            WHERE dc.quantity > 0
+                              AND dc.scryfall_id = printing_pairs.scryfall_id)
+           AND NOT EXISTS (SELECT 1 FROM deck_cards dc
+                            WHERE dc.quantity > 0
+                              AND dc.scryfall_id = printing_pairs.paired_scryfall_id);
+      END;
+
+      -- And the pairings that could not be made today at all.
+      --
+      -- Joining is now refused unless both sides are tokens: two printings share one
+      -- physical object exactly when they are the two faces of a token sheet. Nothing
+      -- enforced that before, and one real collection held a Cat Warrior token joined to
+      -- Teferi's Protection -- which the sweep below would *not* have cleared, because the
+      -- Teferi's Protection is sitting in a deck and is therefore still held. Held or not,
+      -- it is not a pairing, so it goes.
+      DELETE FROM printing_pairs
+       WHERE EXISTS (
+             SELECT 1 FROM printings p
+              WHERE p.scryfall_id IN (printing_pairs.scryfall_id,
+                                      printing_pairs.paired_scryfall_id)
+                AND COALESCE(p.layout, 'normal') NOT LIKE '%token%');
+
+      -- And once now, for the pairings already stranded. One real collection had two: a
+      -- Cat joined to a Rat with three copies still held, which stays, and a Cat Warrior
+      -- joined to Teferi's Protection with none, which goes -- a pairing that could not be
+      -- reached, undone, or explained.
+      DELETE FROM printing_pairs
+       WHERE NOT EXISTS (SELECT 1 FROM collection_items ci
+                          WHERE ci.scryfall_id = printing_pairs.scryfall_id)
+         AND NOT EXISTS (SELECT 1 FROM collection_items ci
+                          WHERE ci.scryfall_id = printing_pairs.paired_scryfall_id)
+         AND NOT EXISTS (SELECT 1 FROM deck_cards dc
+                          WHERE dc.quantity > 0
+                            AND dc.scryfall_id = printing_pairs.scryfall_id)
+         AND NOT EXISTS (SELECT 1 FROM deck_cards dc
+                          WHERE dc.quantity > 0
+                            AND dc.scryfall_id = printing_pairs.paired_scryfall_id);
+    `
+  },
+  {
+    version: 20,
+    name: 'no_hand_made_two_sided_cards',
+    sql: `
+      -- Joining two printings into one card by hand is gone, and so is what it wrote.
+      --
+      -- The idea was sound and the feature was not. A token sheet really does print a
+      -- Cat Warrior on one side and a Rat on the other, Scryfall really does file those
+      -- as two unrelated cards, and no field in its data links them -- so the app had to
+      -- be told. Told, it then had a claim about a physical object that nothing else in
+      -- the app could check, and every screen had to carry it:
+      --
+      --   It could be told nonsense. A token joined to Teferi's Protection, in a real
+      --   collection, unexplainable after the fact. Migration 19 added a guard.
+      --
+      --   It outlived the cards. Remove the copies and the claim stayed, so a search for
+      --   a plain Rat kept returning "Cat Warrior // Rat" with no way to take it apart --
+      --   the row the Separate action needed was the row that had been deleted. Migration
+      --   19 added a trigger.
+      --
+      --   It reached where it did not belong. Attached to search results it renamed cards
+      --   in the catalogue that had nothing to do with anyone's collection.
+      --
+      -- Each fix was small and each one was another rule to hold. What remains is the
+      -- two-sided card Scryfall publishes -- transform, modal_dfc, double_faced_token,
+      -- reversible_card, art_series -- which stacks and flips exactly as before, needs
+      -- nobody to maintain it, and cannot be wrong.
+      --
+      -- Nothing in a collection is lost. printing_pairs held no copies, only the claim
+      -- that two printings were one card; the rows filed under either side keep their
+      -- quantities and simply read as the printing they name.
+      DROP TRIGGER IF EXISTS drop_unheld_pairings;
+      DROP INDEX IF EXISTS idx_printing_pairs_paired;
+      DROP TABLE IF EXISTS printing_pairs;
+    `
   }
 ]

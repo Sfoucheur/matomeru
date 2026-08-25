@@ -1,5 +1,5 @@
 import { motion } from 'motion/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ExternalLink,
   Layers,
@@ -49,15 +49,6 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
   const currency = settings?.currency ?? 'usd'
 
   const [printing, setPrinting] = useState<Printing | null>(null)
-  /*
-    The other side, when this card has a different token on each face.
-
-    Its own printing rather than a second image on this one: Scryfall files a
-    Commander 2017 Cat Warrior and the Rat on its back as two unrelated cards, so
-    "the back" here is simply another printing -- which makes flipping easier, not
-    harder. Null for every ordinary card.
-  */
-  const [paired, setPaired] = useState<Printing | null>(null)
   const [locations, setLocations] = useState<CardLocations | null>(null)
   const [loading, setLoading] = useState(true)
   const [face, setFace] = useState(0)
@@ -71,24 +62,46 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
   const [settled, setSettled] = useState(0)
   const [zoomed, setZoomed] = useState(false)
 
+  /*
+    Turning back to the front belongs to changing the card, not to refreshing it.
+
+    This used to sit in the fetch below, which re-runs on every `dataVersion` bump --
+    so bumping a quantity while looking at the back of a card silently turned it over.
+  */
   useEffect(() => {
-    setLoading(true)
     setFace(0)
     setSettled(0)
+  }, [scryfallId])
+
+  /** The card whose data is on screen, so a refetch can tell itself from a first load. */
+  const loadedFor = useRef<string | null>(null)
+
+  useEffect(() => {
+    /*
+      The skeleton is for a first load, not a refetch.
+
+      This raised `loading` unconditionally, which swapped the whole body for the
+      skeleton every time anything invalidated -- and editing a quantity here
+      invalidates by design, to keep the screens behind the dialog honest. The
+      scrolling column was unmounted and remounted, and the scroll position went with
+      it: you nudged a quantity and the dialog jumped back to the top.
+
+      A refresh of the card already on screen now replaces the data underneath a
+      mounted body, and only a card with nothing on screen yet gets the skeleton.
+    */
+    if (loadedFor.current !== scryfallId) setLoading(true)
     Promise.all([
       window.api.cards.printing(scryfallId),
-      window.api.collection.locations(scryfallId),
-      window.api.cards.paired(scryfallId)
+      window.api.collection.locations(scryfallId)
     ])
-      .then(([p, l, other]) => {
+      .then(([p, l]) => {
         setPrinting(p)
         setLocations(l)
-        setPaired(other)
+        loadedFor.current = scryfallId
       })
       .catch(() => {
         setPrinting(null)
         setLocations(null)
-        setPaired(null)
       })
       .finally(() => setLoading(false))
   }, [scryfallId, dataVersion])
@@ -109,34 +122,18 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
 
     `turned` is the intent -- someone pressed the control -- and `settled` is what the
     words beside the card follow, updated as the rotation passes edge-on. Without the
-    second one the rules text changed before the picture had moved.
+    second one the rules text changed before the picture had started moving.
   */
   const nameFaces = printing?.printed_name?.split(' // ') ?? printing?.name.split(' // ') ?? []
   /*
-    Two kinds of two-sidedness, and they need different handling.
-
-    A transform card is one printing with two pictures, so its faces come out of its
-    own name and the flip moves an index. A paired token is *two printings*, so its
-    faces are the two cards' names and the flip swaps which printing is on screen --
-    picture, rules text, set and number together, because all of that genuinely
-    belongs to the other card.
-  */
-  /*
     The two sides, from the one helper every card tile already uses, so the dialog and the
-    grid can never disagree about what the back of a card is. It answers for both kinds:
-    one printing with two faces, and two printings that share a physical card.
+    grid can never disagree about what the back of a card is.
   */
-  const sides = printing ? twoSides(printing, paired) : null
+  const sides = printing ? twoSides(printing) : null
   const faces = sides ? [sides.front.title, sides.back.title] : nameFaces
   const isTwoFaced = faces.length > 1
 
   const turned = isTwoFaced && face % 2 === 1
-  const showingBack = isTwoFaced && settled % 2 === 1
-  // A split or adventure card has two names and one picture: the control still turns its
-  // words over, and `sides` is null, so there is nothing to rotate.
-  const flipped = showingBack && paired !== null
-  const shown = flipped ? paired : printing
-  const shownId = flipped && paired ? paired.scryfall_id : scryfallId
 
   return (
     /*
@@ -148,12 +145,19 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
       open
       onClose={() => close(null)}
       title={title}
-      width="max-w-4xl"
-      height="h-[min(85vh,36rem)]"
-      scrollBody={false}
+      /*
+        As tall as the card needs, and no taller than the window can show.
+
+        This was a fixed 92vh for every card, which left a short card sitting in a lot of
+        empty space. It grows with its content now and stops at the window -- and it still
+        cannot move while you are using it: turning a card over never changes the height,
+        because both faces' text occupies one grid cell and the taller of the two sets it.
+      */
+      width="max-w-[110rem]"
+      maxHeight="max-h-[92vh]"
     >
       {loading ? (
-        <div className="grid gap-5 p-5 sm:grid-cols-[16rem_1fr]">
+        <div className="grid gap-5 p-5 sm:grid-cols-[minmax(14rem,24rem)_1fr]">
           <div className="skeleton aspect-[488/680] rounded-xl" />
           <div className="space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -162,17 +166,75 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
           </div>
         </div>
       ) : (
-        <div className="grid gap-5 p-5 sm:h-full sm:grid-cols-[16rem_1fr]">
-          <div className="space-y-2.5">
+        <div className="grid gap-5 p-5 sm:grid-cols-[auto_1fr]">
+          {/*
+            The artwork scales to the row rather than setting it.
+
+            A card image is tall, so a column sized by its own width would make every
+            dialog nearly window-height whatever the card -- which is the empty space this
+            change is undoing. `min-h-0` plus a height-bounded image lets the details
+            column decide the row, and the picture fits itself into it, between a floor
+            that keeps it recognisable and a ceiling that stops it dominating a wordy card.
+          */}
+          {/*
+            The column states its own width.
+
+            It was `w-auto` between a min and a max, which worked while the picture was in
+            flow and wanted width. The picture is absolutely positioned now, so nothing in
+            here asks for any -- the column collapsed to its 14rem floor and the artwork
+            came out smaller than before the dialog ever grew. Stated in rem with a viewport
+            cap so the card scales with the window without ever crowding the words.
+          */}
+          <div className="flex min-h-0 w-[min(24rem,60vw)] flex-col gap-2.5
+            sm:h-full sm:w-[32rem] sm:max-w-[30vw]">
             {/* The artwork is the obvious thing to want a closer look at, so it
                 is the control: click for a full-size view, which also offers the
                 copy. */}
-            <button
-              onClick={() => setZoomed(true)}
-              title={t('zoom.open')}
-              className="group relative block w-full cursor-zoom-in overflow-hidden rounded-xl
-                ring-1 ring-ink-700 transition-all hover:ring-gold-500"
-            >
+            {/*
+              The picture takes the room that is left, and asks for none of its own.
+
+              This is the whole trick behind a dialog that follows its content. The button
+              is absolutely positioned, so this box contributes nothing to the grid row --
+              the details column alone decides how tall the dialog is, and the artwork then
+              fills whatever that turned out to be. Sized directly below `sm:`, where the
+              columns stack and there is no row to fill.
+
+              An earlier attempt used `h-full` on the image instead, which resolves to
+              `auto` against an indefinite height: every card came out at the 92vh ceiling
+              because the picture's intrinsic 936px was setting the row.
+            */}
+            <div className="relative h-[26rem] min-h-0 sm:h-auto sm:flex-1">
+              <button
+                onClick={() => setZoomed(true)}
+                title={t('zoom.open')}
+                /* The framed element, so a check can measure the shape it draws. */
+                data-card-frame=""
+                /*
+                  Card-shaped, not box-shaped.
+
+                  This was `inset-0`, which filled the whole box -- the column's width by
+                  whatever height the details column came out as -- so the ring and the
+                  rounded corners wrapped a tall rectangle with the picture letterboxed
+                  inside it. `object-contain` keeps the *picture's* proportions and says
+                  nothing about the frame around it.
+
+                  Still absolute, and that is load-bearing rather than incidental: out of
+                  flow is what stops the artwork contributing height, which is the whole
+                  mechanism behind a dialog that follows its content.
+
+                  The height comes from the width, not the other way round. Deriving the
+                  width from `h-full` does not work: an explicit height wins against
+                  `aspect-ratio`, so as soon as `max-w-full` clamped the width the ratio
+                  was simply violated -- measured at 224x716, a ratio of 0.313 against the
+                  0.718 a card is. The column is the binding constraint in this layout
+                  anyway (capped at 24rem against a row of 500-800px), so `w-full` plus the
+                  ratio is the honest way round, with `max-h-full` as the guard for a row
+                  short enough to bind instead.
+                */
+                className="group absolute left-0 top-0 block aspect-[488/680] w-full
+                  max-h-full cursor-zoom-in overflow-hidden rounded-xl ring-1 ring-ink-700
+                  transition-all hover:ring-gold-500"
+              >
               {/*
                 The card turns over rather than cutting between two pictures.
 
@@ -186,9 +248,9 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 that stills the rotation, so the card simply appears turned.
               */}
               {sides ? (
-                <div className="[perspective:1400px]" data-flip="stage">
+                <div className="h-full [perspective:1400px]" data-flip="stage">
                   <motion.div
-                    className="relative [transform-style:preserve-3d]"
+                    className="relative h-full [transform-style:preserve-3d]"
                     animate={{ rotateY: turned ? 180 : 0 }}
                     transition={{ type: 'spring', stiffness: 260, damping: 26 }}
                     onUpdate={(latest: { rotateY?: number | string }) => {
@@ -198,13 +260,21 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                       setSettled((current) => (current % 2 === half ? current : current + 1))
                     }}
                     data-flip="card"
+                    /*
+                      The intent, on the element, so a probe can tell "it was asked to turn
+                      and did not" from "it was never asked" -- which is the difference this
+                      cost an hour to work out by inference.
+                    */
+                    data-turned={String(turned)}
+                    data-face={face}
+                    data-faces={faces.length}
                   >
-                    <div className="[backface-visibility:hidden]" data-flip-face="front">
+                    <div className="h-full [backface-visibility:hidden]" data-flip-face="front">
                       <CardImage
                         scryfallId={sides.front.scryfallId}
                         size="large"
                         face={sides.front.face}
-                        className="aspect-[488/680] w-full"
+                        className="h-full w-full object-contain"
                         alt={sides.front.title}
                       />
                     </div>
@@ -217,7 +287,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                         scryfallId={sides.back.scryfallId}
                         size="large"
                         face={sides.back.face}
-                        className="aspect-[488/680] w-full"
+                        className="h-full w-full object-contain"
                         alt={sides.back.title}
                       />
                     </div>
@@ -225,21 +295,23 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 </div>
               ) : (
                 <CardImage
-                  scryfallId={shownId}
+                  scryfallId={scryfallId}
                   size="large"
-                  className="aspect-[488/680] w-full"
+                  className="h-full w-full object-contain"
                   alt={title}
                 />
               )}
-              <span
-                className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-lg
-                  bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
-              >
-                <ZoomIn size={14} />
-              </span>
-            </button>
+                <span
+                  className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-lg
+                    bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <ZoomIn size={14} />
+                </span>
+              </button>
+            </div>
             {isTwoFaced && (
               <button
+                data-action="flipCard"
                 onClick={() => setFace((f) => (f + 1) % faces.length)}
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg border
                   border-ink-700 py-1.5 text-xs text-ink-300 transition-colors
@@ -249,9 +321,9 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 {faces[(face + 1) % faces.length]}
               </button>
             )}
-            {shown && (
+            {printing && (
               <a
-                href={`https://scryfall.com/card/${shown.set_code}/${shown.collector_number}/${shown.lang}`}
+                href={`https://scryfall.com/card/${printing.set_code}/${printing.collector_number}/${printing.lang}`}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center justify-center gap-1.5 text-[11px] text-ink-500
@@ -264,13 +336,50 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
           </div>
 
           {/*
-            The column that scrolls, so the artwork stays put while a wordy card is read.
-            Only from `sm:`, where there are two columns at all: below that the two stack
-            past the fixed height and the body keeps its own scroll instead.
+            The column that sets the height.
+
+            It used to own a scroll inside a fixed-height dialog. The dialog grows with its
+            content now, so this simply is as tall as it is and the body scrolls only once
+            the whole thing reaches the window's ceiling.
           */}
-          <div className="min-w-0 space-y-4 sm:min-h-0 sm:overflow-y-auto sm:pr-1">
-            {/* The side on screen, so the rules text and the set follow the flip. */}
-            {shown && <Identity printing={shown} face={flipped ? 0 : face} />}
+          <div className="min-w-0 space-y-4">
+            {/*
+              The side on screen, so the rules text and the set follow the flip -- and
+              they fade across rather than cutting, because the card beside them is
+              turning over rather than cutting. `settled` is what advances as the
+              rotation passes edge-on, so the swap lands with the far side arriving.
+
+              Keyed on the face, which is what makes AnimatePresence treat the two sides
+              as different children rather than one child with new text.
+            */}
+            {printing &&
+              (isTwoFaced ? (
+                /*
+                  Both faces in one grid cell, one of them faded out.
+
+                  Not a swap. The dialog is as tall as its content now, so mounting only
+                  the side being read would make the height follow the text -- and turning
+                  a card over would move the dialog under the pointer, which is the
+                  complaint this whole flip started from. One cell takes the height of the
+                  taller side and keeps it, whichever way the card is facing.
+                */
+                <div className="grid">
+                  {[0, 1].map((side) => (
+                    <motion.div
+                      key={side}
+                      className="[grid-area:1/1]"
+                      animate={{ opacity: settled % 2 === side ? 1 : 0 }}
+                      transition={{ duration: 0.16 }}
+                      aria-hidden={settled % 2 !== side}
+                      style={{ pointerEvents: settled % 2 === side ? 'auto' : 'none' }}
+                    >
+                      <Identity printing={printing} face={side} />
+                    </motion.div>
+                  ))}
+                </div>
+              ) : (
+                <Identity printing={printing} face={0} />
+              ))}
             {context && printing && (
               <PrintingPicker
                 name={printing.name}
@@ -281,7 +390,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 onChanged={reload}
               />
             )}
-            {shown && <PriceTable printing={shown} />}
+            {printing && <PriceTable printing={printing} />}
             {printing && (
               <WhereToGetIt
                 scryfallId={scryfallId}
@@ -313,10 +422,13 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
         </div>
       )}
       <CardZoom
-        scryfallId={shownId}
+        scryfallId={scryfallId}
         title={title}
         open={zoomed}
         onClose={() => setZoomed(false)}
+        /* The side on screen, so a closer look is a closer look at what you turned to. */
+        face={(settled % 2) as 0 | 1}
+        hasBack={sides !== null}
       />
     </Modal>
   )

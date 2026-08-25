@@ -236,6 +236,34 @@ export default function FilterBar({
           }
         />
 
+        {/*
+          Where the copies are, in the row rather than behind More. It decides whether
+          you are looking at loose bulk, at cards sleeved in decks, or at both, which
+          is a question you ask constantly while sorting a pile.
+
+          Bare, like the proxy filter beside it: every control in this row states
+          itself through a label prop or a placeholder, and "Bulk and decks" is what
+          this one reads while it is not filtering. The tooltip comes with it — it
+          explains that deck copies carry no condition, so a condition filter only ever
+          matches cards you entered yourself, which is a real interaction between two
+          filters and exactly the kind of note that evaporates in a move.
+        */}
+        {/* `data-filter` so a check can find this without reading a translated label. */}
+        <span title={t('filters.conditionHint')} data-filter="source">
+          <Select
+            className="w-44"
+            value={filters.source ?? ''}
+            onChange={(value) =>
+              setFilters({ source: value === '' ? null : (value as 'collection' | 'deck') })
+            }
+            placeholder={t('filters.whereCopies')}
+            options={[
+              { value: 'collection', label: t('filters.bulkOnly') },
+              { value: 'deck', label: t('filters.inDecksOnly') }
+            ]}
+          />
+        </span>
+
         <Button
           variant={advanced ? 'primary' : 'subtle'}
           size="sm"
@@ -302,25 +330,6 @@ export default function FilterBar({
                     { value: 'in', label: t('filters.inADeck') },
                     { value: 'out', label: t('filters.notInAnyDeck') },
                     ...decks.map((deck) => ({ value: String(deck.id), label: deck.name }))
-                  ]}
-                />
-              </label>
-
-              <label
-                className="flex flex-col gap-1 text-[11px] text-ink-400"
-                title={t('filters.conditionHint')}
-              >
-                {t('filters.whereCopies')}
-                <Select
-                  className="w-44"
-                  value={filters.source ?? ''}
-                  onChange={(value) =>
-                    setFilters({ source: value === '' ? null : (value as 'collection' | 'deck') })
-                  }
-                  placeholder={t('filters.bulkAndDecks')}
-                  options={[
-                    { value: 'collection', label: t('filters.bulkOnly') },
-                    { value: 'deck', label: t('filters.inDecksOnly') }
                   ]}
                 />
               </label>

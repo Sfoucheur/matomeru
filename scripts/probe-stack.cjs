@@ -7,9 +7,9 @@
  *
  * Give it a scratch profile: it adds cards.
  *
- * Two kinds of two-sided card go through the same tile and both are checked here -- a
- * paired token, whose sides are two printings, and a transform card, whose sides are two
- * faces of one printing. The tile is not told which it has.
+ * A two-sided card is one printing with two pictures -- transform, modal_dfc,
+ * double_faced_token, reversible_card, art_series -- and the tile draws both without
+ * being told which layout it has.
  *
  * The tile does not turn cards over -- the detail dialog does, and `probe-flip.cjs`
  * checks that. What is left is what a still stack has to get right: it fits one card's
@@ -60,8 +60,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       }))
     })
 
-  // a paired token, and an ordinary card to compare against
-  for (const line of ['c17 008/011 // 003', 'm10 146']) {
+  // a two-faced card, and an ordinary card to compare against
+  for (const line of ['ecl 61', 'm10 146']) {
     await ev(`(async () => {
       document.querySelector('[data-action="updateLater"]')?.click()
       const nav = document.querySelector('nav') ?? document.querySelector('aside')
@@ -70,13 +70,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       ;[...document.querySelectorAll('button')]
         .filter((b) => /rapide|Fast/i.test(b.innerText))[0]?.click()
       await new Promise((r) => setTimeout(r, 400))
-      const input = document.querySelector('input[placeholder*="m10"]')
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value').set
-      setter.call(input, ${JSON.stringify(line)})
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 120))
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      // Fast entry is four fields now; the old single line split the same way.
+      const parts = ${JSON.stringify(line)}.trim().split(' ').filter(Boolean)
+      const put = (sel, value) => {
+        const el = document.querySelector(sel)
+        if (!el) throw new Error('no fast-entry field ' + sel)
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+          .set.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return el
+      }
+      put('[data-field="set"]', parts[0])
+      const number = put('[data-field="number"]', parts[1] ?? '')
+      await new Promise((r) => setTimeout(r, 140))
+      number.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       return true
     })()`)
     await sleep(8000)
@@ -84,6 +91,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
   // the collection, in gallery mode
   const tiles = JSON.parse(await ev(`(async () => {
+    /*
+      Anything modal goes first. These measurements are hit tests, and a dialog left open
+      by whatever ran before answers them instead of the tile -- which is exactly how this
+      probe once reported the tile's name buried under its own artwork.
+    */
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 400))
     const nav = document.querySelector('nav') ?? document.querySelector('aside')
     ;[...nav.querySelectorAll('button')][0].click()
     await new Promise((r) => setTimeout(r, 1000))
@@ -106,34 +120,35 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   })()`))
   console.log('        → ' + JSON.stringify(tiles).slice(0, 260))
 
-  check('the paired card draws a stack', tiles.stacks.length >= 1, JSON.stringify(tiles.stacks))
+  check('the two-faced card draws a stack', tiles.stacks.length >= 1,
+    JSON.stringify(tiles.stacks))
   const stack = tiles.stacks[0] ?? { images: [] }
+  /*
+    Two *different* pictures, compared with the query string kept. The two faces of one
+    printing share an id and differ only by `?face=`, so stripping the query -- which an
+    earlier version of this did, when the sides were two separate printings -- collapses
+    them to one and the check passes on a tile drawing the same art twice.
+  */
   check('with two different pictures in it',
-    stack.images.length === 2 && new Set(stack.images.map((s) => s.split('?')[0])).size === 2,
+    stack.images.length === 2 && new Set(stack.images).size === 2,
     JSON.stringify(stack.images))
   check('an ordinary card still draws exactly one picture',
     tiles.plainImageCounts.length > 0 && tiles.plainImageCounts.every((n) => n === 1),
     JSON.stringify(tiles.plainImageCounts))
 
-  // the hover swap: which one is on top
-  const swap = JSON.parse(await ev(`(async () => {
+  // both sides at one size. The tile does not react to the pointer at all.
+  const layers = JSON.parse(await ev(`(() => {
     const art = document.querySelector('[data-stack]')
-    const read = () => [...art.querySelectorAll('img')].map((i) => ({
-      id: (i.getAttribute('src') || '').replace('matomeru://image/', '').split('?')[0].slice(0, 8),
+    return JSON.stringify([...art.querySelectorAll('img')].map((i) => ({
+      id: (i.getAttribute('src') || '').replace('matomeru://image/', '').slice(-14),
       z: getComputedStyle(i).zIndex,
       area: i.getBoundingClientRect().width * i.getBoundingClientRect().height
-    }))
-    const before = read()
-    art.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
-    art.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 400))
-    const after = read()
-    return JSON.stringify({ before, after })
+    })))
   })()`))
-  console.log('        → hover: ' + JSON.stringify(swap))
+  console.log('        → layers: ' + JSON.stringify(layers))
   check('both cards are drawn at the same size, so the pair reads as a pair',
-    swap.before.length === 2 && Math.abs(swap.before[0].area - swap.before[1].area) < 2,
-    JSON.stringify(swap.before))
+    layers.length === 2 && Math.abs(layers[0].area - layers[1].area) < 2,
+    JSON.stringify(layers))
 
   // ----------------------------------------------------------------------------
   // Where the cards actually are. Everything above says which pictures a tile asks

@@ -666,9 +666,9 @@ function PickGrid({
         <CardTile
           key={item.id}
           scryfallId={item.scryfall_id}
-          title={bothSidesTitle(item, item.paired)}
-          backScryfallId={twoSides(item, item.paired)?.back.scryfallId ?? null}
-          backFace={twoSides(item, item.paired)?.back.face}
+          title={bothSidesTitle(item)}
+          backScryfallId={twoSides(item)?.back.scryfallId ?? null}
+          backFace={twoSides(item)?.back.face}
           density={density}
           selectable={false}
           onOpen={() => onOpenCard(item.scryfall_id)}

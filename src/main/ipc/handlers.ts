@@ -17,9 +17,8 @@ import {
   bulkUpdate,
   cardLocations,
   forceItemLanguage,
-  pairAndMerge,
-  unpairItem,
   queryCollection,
+  matchingRowKeys,
   queryFacets,
   removeItem,
   setItemPrinting,
@@ -50,6 +49,7 @@ import {
   forceCardLanguage,
   listDecks,
   recomputeLabelPossession,
+  recordDeckError,
   setCardFinish,
   setCardPrinting,
   setCardProxied
@@ -66,11 +66,10 @@ import {
   suggestNames
 } from '../services/addCards.js'
 import { getPrinting } from '../db/repos/printings.js'
-import { pairedWith } from '../db/repos/pairs.js'
 import { cachedImage } from '../services/imageCache.js'
 import { addDeckByUrl, syncUserDecks } from '../services/deckSync.js'
 import { clearCardsLanguage, setCardsLanguage } from '../services/deckLanguage.js'
-import { setItemLanguage } from '../services/collectionLanguage.js'
+import { setItemLanguage, setItemsLanguage } from '../services/collectionLanguage.js'
 import {
   boosterOddsFor,
   collectionBoosterSets,
@@ -96,7 +95,6 @@ import {
   deckOverrideScopes,
   pickListScopes,
   scryfallScope,
-  pairScopes,
   scryfallScopeMany
 } from '../db/undoScopes.js'
 import {
@@ -189,6 +187,14 @@ export function registerHandlers(): void {
     queryFacets(filters, getSettings().currency)
   )
   /*
+    Every row the filters match, for a select-all that means what it says.
+
+    Read-only and not undoable: it answers a question, it changes nothing.
+  */
+  handle('collection:matchingKeys', (filters: CollectionFilters) =>
+    matchingRowKeys(filters, getSettings().currency)
+  )
+  /*
     Scoped on the UNIQUE (scryfall_id, finish, condition) key rather than on an
     id, because the row may not exist yet — that is the whole point of an add.
     Getting this wrong is the one way a before/after journal fails silently, so
@@ -268,8 +274,33 @@ export function registerHandlers(): void {
       () => setItemPrinting(itemId, scryfallId)
     )
   )
+  /*
+    A language change is a *repoint*: the row moves onto the printing that is in that
+    language, which Scryfall has to be asked for first.
+
+    Two things about the wrapper, both of which were wrong here. It has to be
+    `undoableAsync`, because `undoable` snapshots the after-image the moment the function
+    returns -- and an async function returns a promise before it has written anything, so
+    the two images were identical and redo did nothing. And the scope has to go through
+    `withPickItems`, because a repoint can merge two rows and delete one, which an open
+    list's `collection_item_id` follows with ON DELETE SET NULL.
+  */
   handle('collection:setLanguage', (itemId: number, lang: string) =>
-    undoable('undo.setLanguage', [scryfallScope(itemId)], () => setItemLanguage(itemId, lang))
+    undoableAsync('undo.setLanguage', withPickItems(scryfallScope(itemId)), () =>
+      setItemLanguage(itemId, lang)
+    )
+  )
+  /*
+    The same, for the rows you selected.
+
+    Whole-table scope, for the reason `moveScopes` gives: the printings these rows end up
+    on come back from Scryfall and are not knowable from the arguments, so a scope built
+    from the ids in hand would cover where the rows started and not where they land.
+  */
+  handle('collection:setLanguages', (itemIds: number[], lang: string) =>
+    undoableAsync('undo.bulkSetLanguage', withPickItems(wholeTable('collection_items')), () =>
+      setItemsLanguage(itemIds, lang, broadcast)
+    )
   )
   handle(
     'collection:forceLanguage',
@@ -278,21 +309,6 @@ export function registerHandlers(): void {
         forceItemLanguage(itemId, lang, name)
         return true
       })
-  )
-
-  /*
-    Two rows that are one card. `pairMerge` is undoable as one action because it is one
-    decision: the pairing and the merge are useless apart, and an undo that put the row
-    back while leaving the pairing behind would re-collapse it on the next add.
-  */
-  handle('collection:pairMerge', (keep: number, absorb: number) =>
-    undoable('undo.pairMerge', pairScopes([keep, absorb]), () => pairAndMerge(keep, absorb))
-  )
-  handle('collection:unpair', (itemId: number) =>
-    undoable('undo.unpair', pairScopes([itemId]), () => {
-      unpairItem(itemId)
-      return true
-    })
   )
 
   // ---------- Cards ----------
@@ -327,23 +343,16 @@ export function registerHandlers(): void {
   })
   handle('cards:printing', (scryfallId: string) => getPrinting(scryfallId))
   /*
-    The printing on the other side of the card, for a double-sided token whose two
-    faces are two separate Scryfall cards. Null for everything else, which is why it
-    is its own call rather than a field on the one above.
-  */
-  handle('cards:paired', (scryfallId: string) => {
-    const other = pairedWith(scryfallId)
-    return other === null ? null : getPrinting(other)
-  })
-  /*
     Copy a card's artwork to the system clipboard.
     Done here rather than in the renderer because the renderer cannot get at the
     bytes: `matomeru://` is allowed as an image source but not by `connect-src`, so
     `fetch` on it fails, and drawing to a canvas to read it back would taint the
     canvas across origins. The main process already has the file on disk.
   */
-  handle('cards:copyImage', async (scryfallId: string) => {
-    const path = await cachedImage(scryfallId, 'large')
+  handle('cards:copyImage', async (scryfallId: string, face: 0 | 1 = 0) => {
+    // The face matters: what lands on the clipboard has to be the side being looked at,
+    // and `cachedImage` already keys on it so the front is never handed back for a back.
+    const path = await cachedImage(scryfallId, 'large', face)
     if (!path) return false
     const image = nativeImage.createFromPath(path)
     if (image.isEmpty()) return false
@@ -497,6 +506,42 @@ export function registerHandlers(): void {
     */
     setRawSetting(KEY_LAST_AT, null)
     return result
+  })
+  /*
+    One deck, re-fetched now.
+
+    `addDeckByUrl` is the sequence rather than `syncOneDeck` on its own, deliberately:
+    `syncOneDeck` leaves `cacheDeckPrintings` and `recomputeLabelPossession` to its callers,
+    and skipping the first leaves deck cards with no printing row — no images, no prices.
+    Reusing the wrapper means a fourth step added tomorrow reaches this path too. Its name
+    says "add"; what it does is fetch one deck properly, and `upsertDeck` conflicts on
+    (source, external_id) so it refreshes rather than duplicating.
+
+    It also never consults the unchanged-skip `syncUserDecks` applies, which is the whole
+    point of a button: a deck whose labels changed in Archidekt without its `updatedAt`
+    moving is otherwise skipped by the all-decks sync indefinitely.
+  */
+  handle('decks:syncOne', async (externalId: string) => {
+    try {
+      const result = await addDeckByUrl(externalId, broadcast)
+      clearUndoHistory()
+      // The backup marker goes with it, for the reason `decks:syncUser` gives.
+      setRawSetting(KEY_LAST_AT, null)
+      return result
+    } catch (error) {
+      /*
+        Recorded on the deck, not merely thrown. A toast disappears; the lock icon and the
+        note beside the deck are what tell you tomorrow that this one is private or gone,
+        and the all-decks sync already works that way.
+      */
+      const archidekt = error as { message?: string; likelyPrivate?: boolean }
+      recordDeckError(
+        externalId,
+        { is_private: archidekt.likelyPrivate ?? false },
+        archidekt.message ?? String(error)
+      )
+      throw error
+    }
   })
   handle('decks:addByUrl', async (input: string) => {
     const result = await addDeckByUrl(input, broadcast)

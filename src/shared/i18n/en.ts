@@ -144,7 +144,6 @@ export const en = {
   'filters.inADeck': 'In a deck',
   'filters.notInAnyDeck': 'Not in any deck (loose bulk)',
   'filters.whereCopies': 'Where the copies are',
-  'filters.bulkAndDecks': 'Bulk and decks',
   'filters.bulkOnly': 'Bulk only',
   'filters.inDecksOnly': 'In decks only',
   'filters.onlyReserved': 'Only reserved by a pick list',
@@ -158,6 +157,7 @@ export const en = {
   // --------------------------------------------------------------- deck view
   'deck.ownershipAll': 'Owned and missing',
   'deck.ownershipOwned': 'Owned only',
+  'deck.ownershipInCollection': 'In my collection, not in the deck',
   'deck.ownershipMissing': 'Missing only',
   'deck.category': 'Category',
   'deck.categoryNotInDeck': '{name} (not in deck)',
@@ -228,6 +228,13 @@ export const en = {
   'bulk.finishDone': 'Set {count} card(s) to {finish}.',
   'bulk.finishCleared': 'Returned {count} card(s) to Archidekt’s finish.',
   'bulk.clearOverride': 'Clear override',
+  'bulk.languageHintCollection':
+    'One lookup per card. A card with no printing in that language keeps the one it has '
+    + 'and is reported, and rows that end up on the same printing merge.',
+  'bulk.langSet': '{count} set to {lang}',
+  'bulk.langNoPrinting': '{count} have no {lang} printing',
+  'bulk.langGone': '{count} were no longer in your collection',
+  'bulk.langFailed': '{count} failed',
   'bulk.languageHint': 'One lookup per card. Any card with no printing in that language keeps the one it has and is flagged.',
 
   // ------------------------------------------------------------ booster odds
@@ -374,6 +381,7 @@ export const en = {
   'csv.exported': 'Exported {count} rows to {path}',
   'zoom.open': 'Click for a closer look',
   'zoom.copy': 'Copy image',
+  'zoom.flip': 'Turn over',
   'zoom.copied': 'Copied',
   'detail.card': 'Card',
   'detail.viewOnScryfall': 'View on Scryfall',
@@ -430,16 +438,22 @@ export const en = {
   'add.foilIs': 'This printing’s foil is {treatment}',
   'add.finishOnly': '{finish} only',
   'add.owned': 'own {count}',
-  'add.badFormat':
-    'Format is: SET NUMBER [LANG] [xN] — for example "m10 146 ja x3", or '
-    + '"c17 008/011" straight off the card.',
+  'add.badFormat': 'A set code and a collector number are both needed.',
   'add.quickIntro':
-    'The fastest way to log a physical pile. Type the set code, the collector number, '
-    + 'and the language, then press Enter. This route is the only one that reliably '
-    + 'reaches a specific language printing. Type the number exactly as printed — '
-    + '008/011 — and the total tells the app which sheet you are holding, which is how '
-    + 'a token is told apart from the card at the same number.',
-  'add.quickLabel': 'Set · number · language · quantity',
+    'The fastest way to log a physical pile. Set the set code and the language once, '
+    + 'then type numbers and press Enter for each card. This route is the only one that '
+    + 'reliably reaches a specific language printing. Type the number exactly as '
+    + 'printed — 008/011 — and the total tells the app which sheet you are holding, '
+    + 'which is how a token is told apart from the card at the same number.',
+  'add.setCode': 'Set',
+  'add.number': 'Number',
+  'add.language': 'Language',
+  'add.keepFields': 'Keep set, language and quantity',
+  'add.keepFieldsHint':
+    'On, only the number clears after each card — which is what you want with a pile '
+    + 'from one set in front of you. Off, every field resets.',
+  'add.clearLog': 'Clear',
+  'add.clearLogHint': 'Empties this list. Nothing is removed from your collection.',
   'add.adding': 'Adding…',
   'add.add': 'Add',
   'add.logEmptyTitle': 'Nothing logged yet',
@@ -462,6 +476,16 @@ export const en = {
   'coll.whichDeckHint':
     'These cards sit in more than one deck, so the pull has to say which one each copy comes out of. Nothing is taken from a deck until you validate the pull.',
   'coll.whichDeckConfirm': 'Stage these',
+  'coll.selectAllMatching': 'Select all {count}',
+  'coll.selectAllHint':
+    'Selects every row the filters match, not only the ones on screen — so a bulk edit '
+    + 'reaches all of them.',
+  'coll.selectAllCapped':
+    'Selected the first {count}. That is as many as one selection carries — narrow the '
+    + 'filters if you need the rest.',
+  'coll.beyondLoaded':
+    'Pick lists and decks need copies you can see — narrow the filters, or select rows '
+    + 'from the list.',
   'coll.showingFirst':
     'Showing the first {shown} of {total} rows — narrow the filters to see the rest.',
   'add.cacheNote':
@@ -549,6 +573,8 @@ export const en = {
   'decks.sidebarTitle': 'Archidekt decks',
   'decks.syncing': 'Syncing…',
   'decks.syncUser': 'Sync {username}',
+  'decks.syncOne': 'Re-fetch this deck from Archidekt',
+  'decks.syncedOne': 'Synced “{name}”.',
   'decks.setUsernameFirst': 'Set username first',
   'decks.addUsernameHint': 'Add your Archidekt username in Settings to sync automatically.',
   'decks.labelMeanings': 'Label meanings',
@@ -576,6 +602,11 @@ export const en = {
   'decks.remove': 'Remove',
   'decks.syncErrorNote': '{error}. Private decks return 404 to any unauthenticated request, so this one cannot be read. Unlisted decks work if you add them by URL.',
   'decks.owned': '{count} owned',
+  'decks.inCollection': '{count} in collection',
+  'decks.inCollectionHint':
+    'Copies you own but the deck does not hold — loose in your bulk. They cost nothing to '
+    + 'find, so they are not in the missing pile, but the deck is not finished either.',
+  'decks.inBulk': '· {count} in bulk',
   'decks.missing': '{count} missing',
   'decks.missingPile': 'Missing pile ≈ ',
   'decks.entries': '{count} entries',
@@ -604,9 +635,6 @@ export const en = {
   'decks.ownedInArchidekt': 'Marked as a card you own in Archidekt — counts towards your collection',
   'decks.notOwnedInArchidekt': 'Marked as a card you do not own in Archidekt',
   'decks.notOwnedButHeld': ' — your {held} copies are loose in your bulk',
-  'decks.langSet': '{count} set to {lang}',
-  'decks.langNoPrinting': '{count} have no {lang} printing',
-  'decks.langFailed': '{count} failed',
   'decks.clearedOverrides': '{count} back to what Archidekt says.',
   'common.removeFilter': 'Remove filter',
   'common.decrease': 'Decrease',
@@ -646,9 +674,8 @@ export const en = {
   'undo.bulkRemove': 'Bulk remove',
   'undo.setPrinting': 'Change a printing',
   'undo.setLanguage': 'Change a language',
+  'undo.bulkSetLanguage': 'Set a language on several cards',
   'undo.forceLanguage': 'Set a language by hand',
-  'undo.pairMerge': 'Mark two cards as one',
-  'undo.unpair': 'Separate two sides',
   'undo.createList': 'Create a pick list',
   'undo.renameList': 'Rename a pick list',
   'undo.stage': 'Add to a pick list',
@@ -698,25 +725,6 @@ export const en = {
   'err.pickProxy':
     'That deck slot is filled by a proxy. Adding it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
   'err.itemNotFound': 'Collection item not found.',
-  'coll.sameCard': 'One card, two sides',
-  'coll.sameCardDone':
-    'Marked as one card. Kept {quantity} — the two sides are one object, so one copy '
-    + 'of each is one card.',
-  'coll.sameCardDoneDisagreed':
-    'Marked as one card, keeping {quantity}. The two rows disagreed about how many you '
-    + 'had, so the larger count was kept.',
-  'coll.separateSides': 'Separate the sides',
-  'coll.separateSidesDone':
-    'Separated. The copies stayed where they are — the two printings are simply no '
-    + 'longer treated as one card.',
-  'coll.pairedHint':
-    'One physical card with a different token on each side. Scryfall files the two as '
-    + 'unrelated cards, so this pairing is yours.',
-  'err.pairSameCard': 'A card cannot be its own other side.',
-  'err.pairNeedsTwo': 'Select exactly two cards to mark them as one card.',
-  'err.pairReserved':
-    'An open pick list is holding copies of {name}. Close or revert it first — '
-    + 'merging the two sides now would leave the list pointing at a card that no longer exists.',
   'err.notCached': 'That printing is not cached yet — look the card up first.',
   'err.noLangAnchor': 'That deck entry has no printing to anchor a language to.',
   'err.noFinishAnchor': 'That deck entry has no printing to anchor a finish to.',

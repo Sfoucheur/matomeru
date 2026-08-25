@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, Copy, X } from 'lucide-react'
+import { Check, Copy, RefreshCw, X } from 'lucide-react'
 import { guard } from '../store/app'
 import { useT } from '../hooks/useT'
 
@@ -26,16 +26,41 @@ export default function CardZoom({
   scryfallId,
   title,
   open,
-  onClose
+  onClose,
+  face = 0,
+  hasBack = false
 }: {
   scryfallId: string
   title: string
   open: boolean
   onClose: () => void
+  /** Which side to open on — the one the caller is showing, not always the front. */
+  face?: 0 | 1
+  /** Whether there is another side to turn to at all. */
+  hasBack?: boolean
 }): React.ReactElement | null {
   const t = useT()
   const [copied, setCopied] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  /*
+    Which side is up in here, seeded from the caller.
+
+    Opening always showed the front, so turning a card over in the dialog and then
+    clicking the artwork to see it properly showed the side you had just turned away
+    from. Seeding from the caller is the fix; keeping it in state is what lets this view
+    turn the card over on its own.
+  */
+  const [shown, setShown] = useState<0 | 1>(face)
+
+  useEffect(() => {
+    if (open) setShown(face)
+  }, [open, face])
+
+  // A face that has not been fetched yet has nothing on disk, so the skeleton comes back
+  // while it downloads rather than leaving the previous side up.
+  useEffect(() => {
+    setLoaded(false)
+  }, [shown])
 
   useEffect(() => {
     if (!open) setLoaded(false)
@@ -60,7 +85,9 @@ export default function CardZoom({
   }, [open])
 
   const copy = async (): Promise<void> => {
-    const ok = await guard(() => window.api.cards.copyImage(scryfallId))
+    // The side on screen, not the front: copying what you are not looking at is a bug
+    // you only notice after pasting it somewhere.
+    const ok = await guard(() => window.api.cards.copyImage(scryfallId, shown))
     if (ok) {
       setCopied(true)
       // A tick that fades on its own reads better here than a toast, which would
@@ -116,7 +143,7 @@ export default function CardZoom({
                 />
               )}
               <img
-                src={window.api.imageUrl(scryfallId, 'large')}
+                src={window.api.imageUrl(scryfallId, 'large', shown)}
                 alt={title}
                 onLoad={() => setLoaded(true)}
                 style={{ maxWidth: MAX_W, maxHeight: MAX_H }}
@@ -132,6 +159,18 @@ export default function CardZoom({
             onClick={(e) => e.stopPropagation()}
             className="absolute right-5 top-5 flex items-center gap-2"
           >
+            {hasBack && (
+              <button
+                onClick={() => setShown((s) => (s === 0 ? 1 : 0))}
+                title={t('zoom.flip')}
+                data-action="flipZoom"
+                className="flex items-center gap-1.5 rounded-lg bg-ink-850/90 px-3 py-1.5 text-xs
+                  text-ink-100 ring-1 ring-ink-600 transition-colors hover:bg-ink-800"
+              >
+                <RefreshCw size={13} />
+                {t('zoom.flip')}
+              </button>
+            )}
             <button
               onClick={() => void copy()}
               title={t('zoom.copy')}

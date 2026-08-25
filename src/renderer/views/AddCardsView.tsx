@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, Search, Sparkles, Zap } from 'lucide-react'
+import { Check, Search, Sparkles, Trash2, Zap } from 'lucide-react'
 import {
   CONDITIONS,
   FINISHES,
+  LANGUAGES,
   bothSidesTitle,
   effectiveFinishFor,
   foilTreatmentLabel,
@@ -24,6 +25,7 @@ import { matchesPrintingFilters } from '../lib/printingFilter'
 import Popover from '../components/Popover'
 import {
   Button,
+  CardImage,
   EmptyState,
   StackedArt,
   LangChip,
@@ -31,9 +33,9 @@ import {
   RarityPip,
   Select
 } from '../components/primitives'
-import { FINISH_LABEL, count, foilLabelForDensity, money } from '../lib/format'
+import { FINISH_LABEL, count, foilLabelForDensity, languageName, money } from '../lib/format'
 import { useT } from '../hooks/useT'
-import { parseQuickEntry } from '@shared/quickEntry'
+import { parseCollectorNumber } from '@shared/quickEntry'
 
 export default function AddCardsView({ active }: ViewProps): React.ReactElement {
   const t = useT()
@@ -369,8 +371,11 @@ function PrintingTile({
   // is telling the printings apart while browsing. Keyed off `effective` it would
   // vanish whenever Normal was selected, which is the default.
   const treatment = foilTreatmentOf(printing, 'foil')
-  // Computed once: it is read three times below, and it is pure.
-  const sides = twoSides(printing, printing.paired)
+  /*
+    Two faces of one printing, which is Scryfall's own data -- a transform card, a
+    double-faced token.
+  */
+  const sides = twoSides(printing)
 
   return (
     <button
@@ -385,10 +390,8 @@ function PrintingTile({
       }`}
     >
       {/*
-        A search result is a printing, so the pairing it might have is looked up with it
-        -- see `paired` on PrintingChoice. Either kind of two-sidedness stacks here for
-        the same reason it does in the collection: a card with two sides looks like two
-        cards everywhere else.
+        A two-faced printing stacks here for the same reason it does in the collection:
+        a card with two sides looks like two cards everywhere else.
       */}
       <StackedArt
         scryfallId={printing.scryfall_id}
@@ -403,7 +406,7 @@ function PrintingTile({
         {density === 'full' && (
           <>
             <p className="truncate text-[11px] font-medium text-white">
-              {bothSidesTitle(printing, printing.paired)}
+              {bothSidesTitle(printing)}
             </p>
             <p className="truncate text-[10px] text-white/60">
               {printing.set_code.toUpperCase()} · #{printing.collector_number}
@@ -470,17 +473,37 @@ interface QuickLogEntry {
   id: number
   ok: boolean
   text: string
+  /**
+   * The card that was added, for the thumbnail.
+   *
+   * Absent on a failure: there is no card to show, and the line is the message. Seeing
+   * the picture is the point — it is the only way to notice that "c17 8" put Teferi's
+   * Protection in your collection when you were holding a Cat Warrior.
+   */
+  scryfallId?: string
 }
 
 function QuickTab({ active }: { active: boolean }): React.ReactElement {
   const t = useT()
   const invalidate = useApp((s) => s.invalidate)
   const toast = useApp((s) => s.toast)
-  const [line, setLine] = useState('')
+  const [setCode, setSetCode] = useState('')
+  const [number, setNumber] = useState('')
+  const [lang, setLang] = useState('en')
+  const [quantity, setQuantity] = useState(1)
+  /*
+    Whether the set, the language and the quantity survive an add.
+
+    On by default, because the case this screen exists for is a pile from one set: you
+    set those once and then type numbers. Off, every field clears, which is right when
+    you are working through a box of mixed singles.
+  */
+  const [keepFields, setKeepFields] = useState(true)
   const [finish, setFinish] = useState<Finish>('nonfoil')
   const [condition, setCondition] = useState<Condition>('NM')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<QuickLogEntry[]>([])
+  /** The number field: where the focus belongs between cards. */
   const inputRef = useRef<HTMLInputElement>(null)
   const logId = useRef(0)
 
@@ -489,22 +512,24 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
   }, [active])
 
   const submit = async (): Promise<void> => {
-    const parsed = parseQuickEntry(line)
-    if (!parsed) {
+    const set = setCode.trim().toLowerCase()
+    // The number still carries the printed fraction, which is the whole reason the
+    // number is a text field and not a spinner.
+    const { collectorNumber, sheetTotal } = parseCollectorNumber(number.trim())
+    if (!set || !collectorNumber) {
       toast('warn', t('add.badFormat'))
       return
     }
     setBusy(true)
     try {
       const result = await window.api.cards.quickAdd({
-        set: parsed.set,
-        collectorNumber: parsed.collectorNumber,
-        lang: parsed.lang,
+        set,
+        collectorNumber,
+        lang: lang.toLowerCase(),
         finish,
         condition,
-        quantity: parsed.quantity,
-        sheetTotal: parsed.sheetTotal,
-        backNumber: parsed.backNumber
+        quantity: Math.max(1, quantity),
+        sheetTotal
       })
       const printing = result.printing
       setLog((current) => [
@@ -517,23 +542,35 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
             the one thing worth checking. Tokens are marked for the same reason -- it
             is the confirmation that the sheet, not the card at that number, was added.
           */
+          scryfallId: printing.scryfall_id,
           text:
-            `${parsed.quantity}× ${printing.printed_name ?? printing.name}` +
-            (result.paired
-              ? ` // ${result.paired.printed_name ?? result.paired.name}`
-              : '') +
+            `${Math.max(1, quantity)}× ${printing.printed_name ?? printing.name}` +
             ` · ${printing.lang.toUpperCase()}` +
             ` · ${printing.set_code.toUpperCase()} #${printing.collector_number}` +
-            (result.paired ? ` // #${result.paired.collector_number}` : '') +
             (printing.layout.includes('token') ? ' · token' : '')
         },
         ...current.slice(0, 40)
       ])
-      setLine('')
+      /*
+        Only the number, unless you asked for more. The set and the language are the
+        two things a pile has in common, so clearing them after every card is what made
+        this screen slower than it needed to be.
+      */
+      setNumber('')
+      if (!keepFields) {
+        setSetCode('')
+        setLang('en')
+        setQuantity(1)
+      }
+      inputRef.current?.focus()
       invalidate()
     } catch (err) {
       setLog((current) => [
-        { id: ++logId.current, ok: false, text: `${line} — ${(err as Error).message}` },
+        {
+          id: ++logId.current,
+          ok: false,
+          text: `${setCode.trim().toUpperCase()} ${number.trim()} — ${(err as Error).message}`
+        },
         ...current.slice(0, 40)
       ])
     } finally {
@@ -548,18 +585,60 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
         <p className="text-xs leading-relaxed text-ink-400">{t('add.quickIntro')}</p>
 
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-1 flex-col gap-1 text-[11px] text-ink-400">
-            {t('add.quickLabel')}
+          {/*
+            Enter submits from any field, so the whole form is usable without the mouse:
+            set once, then number-Enter-number-Enter down the pile.
+          */}
+          <label className="flex w-24 flex-col gap-1 text-[11px] text-ink-400">
+            {t('add.setCode')}
             <input
-              ref={inputRef}
-              value={line}
-              onChange={(e) => setLine(e.target.value)}
+              data-field="set"
+              value={setCode}
+              onChange={(e) => setSetCode(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !busy) void submit()
               }}
-              placeholder="m10 146 ja x3"
+              placeholder="m10"
+              spellCheck={false}
+              className="field font-mono text-sm uppercase outline-none placeholder:text-ink-600"
+            />
+          </label>
+          <label className="flex w-28 flex-col gap-1 text-[11px] text-ink-400">
+            {t('add.number')}
+            <input
+              data-field="number"
+              ref={inputRef}
+              value={number}
+              onChange={(e) => setNumber(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !busy) void submit()
+              }}
+              placeholder="008/011"
               spellCheck={false}
               className="field font-mono text-sm outline-none placeholder:text-ink-600"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] text-ink-400">
+            {t('add.language')}
+            <Select
+              className="w-32"
+              value={lang}
+              onChange={setLang}
+              options={LANGUAGES.map((code) => ({ value: code, label: languageName(code) }))}
+            />
+          </label>
+          <label className="flex w-20 flex-col gap-1 text-[11px] text-ink-400">
+            {t('add.quantity')}
+            <input
+              data-field="qty"
+              type="number"
+              min={1}
+              value={quantity}
+              onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !busy) void submit()
+              }}
+              className="field numeric text-sm outline-none"
             />
           </label>
           <label className="flex flex-col gap-1 text-[11px] text-ink-400">
@@ -584,9 +663,38 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
             {busy ? t('add.adding') : t('add.add')}
           </Button>
         </div>
+
+        <label
+          className="flex items-center gap-2 text-xs text-ink-300"
+          title={t('add.keepFieldsHint')}
+        >
+          <input
+            type="checkbox"
+            checked={keepFields}
+            onChange={(e) => setKeepFields(e.target.checked)}
+            data-action="keepFields"
+            className="accent-gold-500"
+          />
+          {t('add.keepFields')}
+        </label>
       </div>
 
-      <div className="mt-5 min-h-0 flex-1 overflow-y-auto">
+      {log.length > 0 && (
+        <div className="mt-4 flex max-w-2xl items-center justify-end">
+          <Button
+            size="sm"
+            variant="subtle"
+            icon={<Trash2 size={13} />}
+            onClick={() => setLog([])}
+            data-action="clearLog"
+            title={t('add.clearLogHint')}
+          >
+            {t('add.clearLog')}
+          </Button>
+        </div>
+      )}
+
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
         {log.length === 0 ? (
           <EmptyState
             icon={<Zap size={28} />}
@@ -604,13 +712,20 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.18 }}
-                  className={`rounded-lg border px-3 py-1.5 text-xs ${
+                  className={`flex items-center gap-2.5 rounded-lg border px-3 py-1.5 text-xs ${
                     entry.ok
                       ? 'border-good/25 bg-good/[0.07] text-ink-200'
                       : 'border-bad/30 bg-bad/[0.07] text-bad'
                   }`}
                 >
-                  {entry.text}
+                  {entry.scryfallId && (
+                    <CardImage
+                      scryfallId={entry.scryfallId}
+                      className="h-8 w-6 shrink-0 rounded"
+                      alt=""
+                    />
+                  )}
+                  <span className="min-w-0">{entry.text}</span>
                 </motion.li>
               ))}
             </AnimatePresence>

@@ -146,7 +146,6 @@ export const fr: Record<keyof typeof en, string> = {
 	"filters.inADeck": "Dans un deck",
 	"filters.notInAnyDeck": "Dans aucun deck (vrac)",
 	"filters.whereCopies": "Où sont les exemplaires",
-	"filters.bulkAndDecks": "Vrac et decks",
 	"filters.bulkOnly": "Vrac uniquement",
 	"filters.inDecksOnly": "En deck uniquement",
 	"filters.onlyReserved": "Uniquement réservées par une liste de prélèvement",
@@ -161,6 +160,7 @@ export const fr: Record<keyof typeof en, string> = {
 	// --------------------------------------------------------------- deck view
 	"deck.ownershipAll": "Possédées et manquantes",
 	"deck.ownershipOwned": "Possédées uniquement",
+	"deck.ownershipInCollection": "Dans ma collection, pas dans le deck",
 	"deck.ownershipMissing": "Manquantes uniquement",
 	"deck.category": "Catégorie",
 	"deck.categoryNotInDeck": "{name} (hors deck)",
@@ -232,6 +232,12 @@ export const fr: Record<keyof typeof en, string> = {
 	"bulk.finishDone": "{count} carte(s) passée(s) en {finish}.",
 	"bulk.finishCleared": "{count} carte(s) revenue(s) au finish d’Archidekt.",
 	"bulk.clearOverride": "Effacer le remplacement",
+	"bulk.languageHintCollection":
+		"Une recherche par carte. Une carte sans édition dans cette langue conserve la sienne et est signalée, et les lignes qui aboutissent à la même édition sont fusionnées.",
+	"bulk.langSet": "{count} passées en {lang}",
+	"bulk.langNoPrinting": "{count} n’ont pas d’édition {lang}",
+	"bulk.langGone": "{count} ne sont plus dans votre collection",
+	"bulk.langFailed": "{count} en échec",
 	"bulk.languageHint": "Une recherche par carte. Toute carte sans édition dans cette langue conserve la sienne et est signalée.",
 
 	// ------------------------------------------------------------ booster odds
@@ -376,6 +382,7 @@ export const fr: Record<keyof typeof en, string> = {
 	"csv.wroteRejects": "{count} lignes non résolues écrites dans {path}",
 	"csv.exported": "{count} lignes exportées vers {path}",
 	"zoom.open": "Cliquez pour agrandir",
+	"zoom.flip": "Retourner",
 	"zoom.copy": "Copier l’image",
 	"zoom.copied": "Copiée",
 	"detail.card": "Carte",
@@ -435,11 +442,17 @@ export const fr: Record<keyof typeof en, string> = {
 	"add.foilIs": "Le foil de cette édition est {treatment}",
 	"add.finishOnly": "{finish} uniquement",
 	"add.owned": "{count} en stock",
-	"add.badFormat":
-		"Le format est : ÉDITION NUMÉRO [LANGUE] [xN] — par exemple « m10 146 ja x3 », ou « c17 008/011 » tel qu’imprimé sur la carte.",
+	"add.badFormat": "Un code d’édition et un numéro de collection sont tous deux requis.",
 	"add.quickIntro":
-		"Le moyen le plus rapide de saisir un tas de cartes. Tapez le code d’édition, le numéro de collection et la langue, puis appuyez sur Entrée. C’est la seule voie qui atteint de façon fiable une édition dans une langue précise. Saisissez le numéro exactement comme il est imprimé — 008/011 — et le total indique à l’application quelle planche vous tenez, ce qui distingue un jeton de la carte portant le même numéro.",
-	"add.quickLabel": "Édition · numéro · langue · quantité",
+		"Le moyen le plus rapide de saisir un tas de cartes. Renseignez le code d’édition et la langue une fois, puis tapez les numéros en appuyant sur Entrée pour chaque carte. C’est la seule voie qui atteint de façon fiable une édition dans une langue précise. Saisissez le numéro exactement comme il est imprimé — 008/011 — et le total indique à l’application quelle planche vous tenez, ce qui distingue un jeton de la carte portant le même numéro.",
+	"add.setCode": "Édition",
+	"add.number": "Numéro",
+	"add.language": "Langue",
+	"add.keepFields": "Conserver édition, langue et quantité",
+	"add.keepFieldsHint":
+		"Activé, seul le numéro est effacé après chaque carte — ce qu’il faut quand un tas d’une même édition est devant vous. Désactivé, tous les champs sont réinitialisés.",
+	"add.clearLog": "Vider",
+	"add.clearLogHint": "Vide cette liste. Rien n’est retiré de votre collection.",
 	"add.adding": "Ajout…",
 	"add.add": "Ajouter",
 	"add.logEmptyTitle": "Rien de saisi pour l’instant",
@@ -461,6 +474,13 @@ export const fr: Record<keyof typeof en, string> = {
 	"coll.whichDeckTitle": "De quel deck sortent-elles ?",
 	"coll.whichDeckHint": "Ces cartes se trouvent dans plusieurs decks : le prélèvement doit donc indiquer duquel chaque exemplaire sort. Rien ne quitte un deck avant la validation du prélèvement.",
 	"coll.whichDeckConfirm": "Mettre de côté",
+	"coll.selectAllMatching": "Tout sélectionner ({count})",
+	"coll.selectAllHint":
+		"Sélectionne toutes les lignes correspondant aux filtres, pas seulement celles affichées : une modification en lot les atteint toutes.",
+	"coll.selectAllCapped":
+		"Les {count} premières ont été sélectionnées : c’est le maximum pour une sélection. Affinez les filtres pour atteindre le reste.",
+	"coll.beyondLoaded":
+		"Les listes de prélèvement et les decks ont besoin d’exemplaires visibles : affinez les filtres, ou sélectionnez des lignes dans la liste.",
 	"coll.showingFirst": "Affichage des {shown} premières lignes sur {total} — affinez les filtres pour voir le reste.",
 	"add.cacheNote": "Chaque édition est mise en cache localement au fur et à mesure, pour rester consultable hors ligne.",
 	"app.credits": "Données des cartes : Scryfall. Decks : Archidekt.",
@@ -543,6 +563,8 @@ export const fr: Record<keyof typeof en, string> = {
 	"decks.sidebarTitle": "Decks Archidekt",
 	"decks.syncing": "Synchronisation…",
 	"decks.syncUser": "Synchroniser {username}",
+	"decks.syncOne": "Récupérer ce deck depuis Archidekt",
+	"decks.syncedOne": "« {name} » synchronisé.",
 	"decks.setUsernameFirst": "Renseignez d’abord un pseudo",
 	"decks.addUsernameHint": "Ajoutez votre pseudo Archidekt dans les réglages pour synchroniser automatiquement.",
 	"decks.labelMeanings": "Sens des étiquettes",
@@ -570,6 +592,10 @@ export const fr: Record<keyof typeof en, string> = {
 	"decks.remove": "Retirer",
 	"decks.syncErrorNote": "{error}. Les decks privés renvoient 404 à toute requête non authentifiée, donc celui-ci ne peut pas être lu. Les decks non listés fonctionnent si vous les ajoutez par URL.",
 	"decks.owned": "{count} possédées",
+	"decks.inCollection": "{count} en collection",
+	"decks.inCollectionHint":
+		"Des exemplaires que vous possédez mais que le deck ne contient pas : ils sont en vrac. Ils ne coûtent rien à retrouver, donc ils ne figurent pas dans le total manquant, mais le deck n’est pas complet pour autant.",
+	"decks.inBulk": "· {count} en vrac",
 	"decks.missing": "{count} manquantes",
 	"decks.missingPile": "Pile manquante ≈ ",
 	"decks.entries": "{count} entrées",
@@ -598,9 +624,6 @@ export const fr: Record<keyof typeof en, string> = {
 	"decks.ownedInArchidekt": "Marquée comme une carte à vous dans Archidekt — compte dans votre collection",
 	"decks.notOwnedInArchidekt": "Marquée comme une carte qui n’est pas à vous dans Archidekt",
 	"decks.notOwnedButHeld": " — vos {held} exemplaires sont en vrac",
-	"decks.langSet": "{count} passées en {lang}",
-	"decks.langNoPrinting": "{count} n’ont pas d’édition {lang}",
-	"decks.langFailed": "{count} en échec",
 	"decks.clearedOverrides": "{count} revenues à ce que dit Archidekt.",
 	"common.removeFilter": "Retirer le filtre",
 	"common.decrease": "Diminuer",
@@ -645,9 +668,8 @@ export const fr: Record<keyof typeof en, string> = {
 	"undo.bulkRemove": "Retrait en lot",
 	"undo.setPrinting": "Changement d’édition",
 	"undo.setLanguage": "Changement de langue",
+	"undo.bulkSetLanguage": "Langue appliquée à plusieurs cartes",
 	"undo.forceLanguage": "Langue définie à la main",
-	"undo.pairMerge": "Deux cartes marquées comme une seule",
-	"undo.unpair": "Faces séparées",
 	"undo.createList": "Création d’une liste de prélèvement",
 	"undo.renameList": "Renommage d’une liste",
 	"undo.stage": "Ajout à une liste de prélèvement",
@@ -690,21 +712,6 @@ export const fr: Record<keyof typeof en, string> = {
 	"err.pickProxy":
 		"Cet emplacement du deck est occupé par un proxy. L’ajouter à la collection le fusionnerait avec vos vrais exemplaires de la même édition et les marquerait aussi comme proxys : ce n’est donc pas autorisé.",
 	"err.itemNotFound": "Ligne de collection introuvable.",
-	"coll.sameCard": "Une carte, deux faces",
-	"coll.sameCardDone":
-		"Marquée comme une seule carte. {quantity} conservé(s) : les deux faces ne font qu’un objet, donc un exemplaire de chacune fait une carte.",
-	"coll.sameCardDoneDisagreed":
-		"Marquée comme une seule carte, {quantity} conservé(s). Les deux lignes ne s’accordaient pas sur la quantité : le plus grand nombre a été retenu.",
-	"coll.separateSides": "Séparer les faces",
-	"coll.separateSidesDone":
-		"Faces séparées. Les exemplaires n’ont pas bougé : les deux éditions ne sont simplement plus traitées comme une seule carte.",
-	"coll.pairedHint":
-		"Une seule carte physique, avec un jeton différent de chaque côté. Scryfall les classe comme deux cartes distinctes : cet appariement est le vôtre.",
-	"err.pairSameCard": "Une carte ne peut pas être son propre verso.",
-	"err.pairNeedsTwo":
-		"Sélectionnez exactement deux cartes pour les marquer comme une seule carte.",
-	"err.pairReserved":
-		"Une liste de prélèvement ouverte réserve des exemplaires de {name}. Fermez-la ou annulez-la d’abord : fusionner les deux faces maintenant laisserait la liste pointer vers une carte qui n’existe plus.",
 	"err.notCached": "Cette édition n’est pas encore en cache — cherchez d’abord la carte.",
 	"err.noLangAnchor": "Cette entrée de deck n’a aucune édition sur laquelle fixer une langue.",
 	"err.noFinishAnchor": "Cette entrée de deck n’a aucune édition sur laquelle fixer un finish.",

@@ -3,8 +3,6 @@ import { priceExpr } from './printings.js'
 import {
   DECK_FINISH,
   DECK_OVERRIDE_JOIN,
-  DECK_PAIR_COLUMNS,
-  DECK_PAIR_JOIN,
   DECK_PRINTING,
   DECK_PROXIED,
   DECK_TRAITS_JOIN,
@@ -159,7 +157,6 @@ function snapshotOfDeckEntry(db: Sql, deckId: number, oracleId: string): PickSna
   const row = db.get(
     `SELECT ${DECK_PRINTING} AS scryfall_id, ${DECK_FINISH} AS finish,
             p.layout AS layout,
-            ${DECK_PAIR_COLUMNS},
             ${DECK_TREATMENT} AS foil_treatment,
             ${DECK_PROXIED} AS proxied,
             dc.label_possession AS label_possession,
@@ -168,7 +165,6 @@ function snapshotOfDeckEntry(db: Sql, deckId: number, oracleId: string): PickSna
      FROM deck_cards dc
      ${DECK_OVERRIDE_JOIN}
      ${DECK_TRAITS_JOIN}
-     ${DECK_PAIR_JOIN}
      JOIN printings p ON p.scryfall_id = ${DECK_PRINTING}
      WHERE dc.deck_id = ? AND dc.oracle_id = ? AND ${DECK_PRINTING} IS NOT NULL
      LIMIT 1`,

@@ -417,6 +417,7 @@ export function Modal({
   children,
   width = 'max-w-2xl',
   height,
+  maxHeight,
   scrollBody = true
 }: {
   open: boolean
@@ -433,6 +434,13 @@ export function Modal({
    * dialog under the pointer.
    */
   height?: string
+  /**
+   * A different ceiling, for a dialog that grows with its content but not past a point.
+   *
+   * `height` says "exactly this tall whatever is in you"; this says "as tall as you need,
+   * up to here". A caller wants one or the other, never both.
+   */
+  maxHeight?: string
   /**
    * Whether the body scrolls. Set false when a fixed-height dialog has a column that
    * should own the scrolling instead, so the two do not fight over one gesture.
@@ -470,8 +478,17 @@ export function Modal({
             // sit above the overlay rather than below it.
             role="dialog"
             aria-modal="true"
-            className={`panel-floating flex max-h-[85vh] w-full flex-col overflow-hidden
-              shadow-2xl shadow-black/60 ${width} ${height ?? ''}`}
+            /*
+              The cap yields to an explicit height.
+
+              A caller that states a height has already answered the question the cap
+              exists to answer, and two answers is how the stated one gets lost: the card
+              dialog asked for 88vh and was drawn at 85 for weeks, because `max-h` wins
+              against `h` and nothing said so out loud.
+            */
+            className={`panel-floating flex w-full flex-col overflow-hidden shadow-2xl
+              shadow-black/60 ${height ? '' : (maxHeight ?? 'max-h-[85vh]')} ${width}
+              ${height ?? ''}`}
           >
             <header className="flex shrink-0 items-center justify-between border-b border-ink-700 px-5 py-3.5">
               <h2 className="text-sm font-semibold text-ink-100">{title}</h2>

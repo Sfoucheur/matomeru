@@ -72,25 +72,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       ;[...document.querySelectorAll('button')]
         .filter((b) => /rapide|Fast/i.test(b.innerText))[0]?.click()
       await new Promise((r) => setTimeout(r, 400))
-      const input = document.querySelector('input[placeholder*="m10"]')
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value').set
-      setter.call(input, ${JSON.stringify(line)})
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 120))
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      // Fast entry is four fields now; the old single line split the same way.
+      const parts = ${JSON.stringify(line)}.trim().split(' ').filter(Boolean)
+      const put = (sel, value) => {
+        const el = document.querySelector(sel)
+        if (!el) throw new Error('no fast-entry field ' + sel)
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+          .set.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return el
+      }
+      put('[data-field="set"]', parts[0])
+      const number = put('[data-field="number"]', parts[1] ?? '')
+      await new Promise((r) => setTimeout(r, 140))
+      number.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       return true
     })()`)
     await sleep(8000)
   }
 
   /*
-    A transform card, a paired token, and an ordinary card with a lot of rules text -- the
-    third one is what proves the size does not follow the content.
+    A transform card, an ordinary card with almost no rules text, and one with a great
+    deal of it. The last two are what prove the size does not follow the content.
   */
   await add('ecl 61')
-  await add('c17 008/011 // 003')
   await add('m10 146')
+  await add('c17 8')
 
   const closeDialog = () => ev(`(() => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -118,11 +125,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     if (!d) return JSON.stringify({ open: false })
     const r = d.getBoundingClientRect()
     const card = d.querySelector('[data-flip="card"]')
-    const flip = [...d.querySelectorAll('button')].find((b) => /^[^\\n]{2,60}$/.test(
-      (b.innerText || '').trim()) && b.querySelector('svg') && !b.getAttribute('aria-label'))
     return JSON.stringify({
       open: true,
       box: { w: Math.round(r.width), h: Math.round(r.height) },
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      // Both: the intent the component holds, and what the browser actually drew. A
+      // failure reporting turned=true with no rotation is the animation; one reporting
+      // turned=false after a click is the control. (No backticks here: this comment is
+      // inside a template literal, and one would end it.)
+      turned: card ? card.dataset.turned : null,
       transform: card ? getComputedStyle(card).transform : null,
       faces: d.querySelectorAll('[data-flip-face]').length,
       backfaces: [...d.querySelectorAll('[data-flip-face]')]
@@ -130,10 +141,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     })
   })()`)
 
+  /*
+    By its handle, not by shape. This used to hunt for "a button with an icon, some text
+    and no aria-label", which in a dialog full of icon buttons is a guess.
+  */
   const clickFlip = () => ev(`(() => {
-    const d = document.querySelector('[role="dialog"]')
-    const btn = [...d.querySelectorAll('button')].find((b) => b.querySelector('svg') &&
-      (b.innerText || '').trim().length > 1 && !b.getAttribute('aria-label'))
+    const btn = document.querySelector('[role="dialog"] [data-action="flipCard"]')
     if (!btn) throw new Error('no flip control')
     btn.click()
     return true
@@ -182,52 +195,243 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   await closeDialog()
   await sleep(700)
 
-  // ---- 4. and the same size for a different card entirely
-  for (const [needle, label] of [
-    ['Cat Warrior', 'a paired token'],
-    ['Lightning Bolt', 'a one-sided card']
-  ]) {
-    await openCard(needle)
-    const other = JSON.parse(await dialog())
-    console.log(`        → ${label} ` + JSON.stringify(other.box))
-    check(`${label} opens at exactly the same size`,
-      other.box.w === front.box.w && other.box.h === front.box.h,
-      JSON.stringify({ reference: front.box, got: other.box }))
-    await closeDialog()
-    await sleep(700)
+  /*
+    ---- 3b. the ceiling.
+
+    The dialog follows its content and stops at 92% of the window. On the default window
+    every card's details are taller than that, so what is measured here is the ceiling --
+    against the window rather than a pixel count, which is the only way it catches a clamp:
+    `Modal` used to carry a hardcoded max-h-[85vh] alongside the height a caller stated, and
+    max-h beats h, so the dialog asked for 88vh and was drawn at 85 with nothing to say so.
+  */
+  {
+    const cap = Math.round(front.viewport.h * 0.92)
+    check('the dialog never grows past the window ceiling',
+      front.box.h <= cap + 2,
+      JSON.stringify({ got: front.box.h, cap, viewport: front.viewport.h }))
+    check('and it uses the width of the window it is in',
+      front.box.w >= Math.min(front.viewport.w - 48, 1120),
+      JSON.stringify({ got: front.box.w, viewport: front.viewport.w }))
   }
 
   /*
-    And the column that scrolls is the words, not the card. With a fixed dialog the
-    alternative is either clipped text or a scrollbar that carries the artwork away.
+    ---- 3c. the card is card-shaped.
+
+    A Magic card is 488x680, ratio 0.7176. `object-contain` keeps the *picture's* ratio but
+    says nothing about the frame around it: the rounded corners and the ring belong to the
+    box, and when that box is the column's width by the details column's height, the result
+    is a card floating in a tall letterbox. Measured on the framed element itself, because
+    that is the thing whose shape you see.
+  */
+  {
+    // Opens its own card: the section above closes the dialog, and a check that measures
+    // whatever the previous one left behind is a check that reports its own ordering.
+    await openCard('Oko')
+    const frame = JSON.parse(await ev(`(() => {
+      const el = document.querySelector('[role="dialog"] [data-card-frame]')
+      if (!el) return JSON.stringify({ found: false })
+      const r = el.getBoundingClientRect()
+      const body = el.closest('[role="dialog"]').getBoundingClientRect()
+      const column = el.parentElement.parentElement.getBoundingClientRect()
+      return JSON.stringify({
+        found: true,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        ratio: Number((r.width / r.height).toFixed(3)),
+        column: Math.round(column.width),
+        viewport: window.innerWidth,
+        insideWidth: r.right <= body.right + 1,
+        insideHeight: r.bottom <= body.bottom + 1
+      })
+    })()`))
+    console.log('        → frame ' + JSON.stringify(frame))
+    check('the framed card keeps a card its shape',
+      frame.found && Math.abs(frame.ratio - 488 / 680) <= 0.02,
+      JSON.stringify(frame))
+    check('and it stays inside the dialog on both axes',
+      frame.insideWidth === true && frame.insideHeight === true, JSON.stringify(frame))
+    /*
+      And it is actually big. Taking the picture out of the layout flow -- which is what
+      lets the dialog follow its content -- left nothing in that column asking for width,
+      so it collapsed to its floor and the card came out at 224px, smaller than before the
+      dialog was ever made to grow. A ratio check alone passes happily on a tiny card.
+    */
+    check('it fills the column it is in, rather than sitting in a letterbox',
+      frame.w >= frame.column - 2, JSON.stringify(frame))
+    if (frame.viewport >= 1200) {
+      check('and on a wide window it is a card you can actually read',
+        frame.w >= 320, JSON.stringify(frame))
+    }
+    await closeDialog()
+    await sleep(500)
+  }
+
+  /*
+    ---- 4. and below the ceiling it follows its content.
+
+    Measured in a taller viewport on purpose. On the default window every card's details
+    exceed the ceiling, so three cards agree at 92vh and a check there would pass whether
+    the height followed the content or ignored it entirely -- which is exactly what it did
+    before this: one fixed size for every card, leaving a short card in a lot of empty
+    space. With room to breathe, a card with two lines of rules text must not produce the
+    same dialog as one with a paragraph.
+  */
+  {
+    await send('Emulation.setDeviceMetricsOverride',
+      { width: front.viewport.w, height: 1500, deviceScaleFactor: 1, mobile: false })
+    await sleep(700)
+    const heights = {}
+    for (const [needle, label] of [
+      ['Lightning Bolt', 'short'],
+      ['Teferi', 'wordy']
+    ]) {
+      await openCard(needle)
+      const seen = JSON.parse(await dialog())
+      heights[label] = seen.box.h
+      const cap = Math.round(seen.viewport.h * 0.92)
+      console.log(`        → ${label}: ` + JSON.stringify({ h: seen.box.h, cap }))
+      check(`a ${label} card sits under the ceiling when there is room for it`,
+        seen.box.h < cap, JSON.stringify({ got: seen.box.h, cap }))
+      await closeDialog()
+      await sleep(500)
+    }
+    check('a card with less to say gets a shorter dialog',
+      heights.short < heights.wordy, JSON.stringify(heights))
+    await send('Emulation.clearDeviceMetricsOverride', {})
+    await sleep(500)
+  }
+
+  /*
+    And when the content does exceed the ceiling, one thing scrolls, not two.
+
+    The details column used to own a scroll inside a fixed-height dialog, which kept the
+    artwork still. The dialog follows its content now, so the body is the scroller and the
+    two columns move together -- what must not happen is two nested scrollers fighting over
+    one gesture, which is what a leftover `overflow-y-auto` on the column would produce.
   */
   await openCard('Oko')
   const scrolled = JSON.parse(await ev(`(() => {
     const d = document.querySelector('[role="dialog"]')
     const art = d.querySelector('[data-flip="stage"]') ?? d.querySelector('img')
-    // The details column is the scrollable one beside the art.
-    const col = [...d.querySelectorAll('div')].find(
+    const scrollers = [...d.querySelectorAll('div')].filter(
       (e) => e.scrollHeight > e.clientHeight + 4 && e.clientHeight > 200
     )
-    if (!col) return JSON.stringify({ scrollable: false })
+    if (!scrollers.length) return JSON.stringify({ scrollable: false })
+    const body = scrollers[0]
     const before = Math.round(art.getBoundingClientRect().top)
-    col.scrollTop = col.scrollHeight
-    const after = Math.round(art.getBoundingClientRect().top)
+    body.scrollTop = body.scrollHeight
     return JSON.stringify({
       scrollable: true,
-      moved: col.scrollTop > 0,
+      scrollers: scrollers.length,
+      moved: body.scrollTop > 0,
       artBefore: before,
-      artAfter: after
+      artAfter: Math.round(art.getBoundingClientRect().top)
     })
   })()`))
   console.log('        \u2192 scroll ' + JSON.stringify(scrolled))
   if (scrolled.scrollable) {
-    check('the details column scrolls', scrolled.moved === true, JSON.stringify(scrolled))
-    check('and the artwork stays where it is while it does',
-      scrolled.artBefore === scrolled.artAfter, JSON.stringify(scrolled))
+    check('the dialog scrolls when its content passes the ceiling',
+      scrolled.moved === true, JSON.stringify(scrolled))
+    check('and exactly one thing scrolls, so no two scrollers fight over the gesture',
+      scrolled.scrollers === 1, JSON.stringify(scrolled))
+    check('and the columns move together, the artwork with the words',
+      scrolled.artBefore !== scrolled.artAfter, JSON.stringify(scrolled))
   } else {
-    console.log('        (no card here is long enough to need scrolling)')
+    console.log('        (nothing here is long enough to need scrolling)')
   }
+
+  /*
+    ---- 6. editing a quantity does not throw you back to the top.
+
+    The fetch effect raised `loading` on every invalidation, and editing a quantity here
+    invalidates by design -- so the body was replaced by the skeleton, the scrolling
+    column was remounted, and the scroll position went with it. The face went too, since
+    the same effect reset it: bump a quantity while looking at the back of a card and it
+    turned itself over.
+  */
+  await openCard('Oko')
+  await sleep(400)
+  await clickFlip()
+  await sleep(900)
+  const held = JSON.parse(await ev(`(async () => {
+    const d = document.querySelector('[role="dialog"]')
+    const col = [...d.querySelectorAll('div')].find((el) => el.scrollHeight > el.clientHeight + 20)
+    if (!col) return JSON.stringify({ scrollable: false })
+    col.scrollTop = 90
+    await new Promise((r) => setTimeout(r, 200))
+    const before = { top: col.scrollTop, turned: d.querySelector('[data-flip=\"card\"]').dataset.turned }
+    const plus = [...d.querySelectorAll('button')].find((b) =>
+      /augmenter|increase/i.test(b.getAttribute('aria-label') || ''))
+    if (!plus) return JSON.stringify({ scrollable: true, stepper: false, before })
+    plus.click()
+    // Long enough for the round trip and the refetch it triggers.
+    await new Promise((r) => setTimeout(r, 2200))
+    const same = [...document.querySelectorAll('[role="dialog"] div')]
+      .find((el) => el.scrollHeight > el.clientHeight + 20)
+    return JSON.stringify({
+      scrollable: true,
+      stepper: true,
+      before,
+      after: {
+        top: same ? same.scrollTop : -1,
+        turned: document.querySelector('[data-flip=\"card\"]')?.dataset.turned ?? null
+      }
+    })
+  })()`))
+  console.log('        \u2192 quantity: ' + JSON.stringify(held))
+  if (held.stepper) {
+    check('editing a quantity keeps the details column where it was',
+      held.after.top === held.before.top,
+      JSON.stringify({ before: held.before.top, after: held.after.top }))
+    check('and keeps the card on the side you had turned it to',
+      held.after.turned === held.before.turned,
+      JSON.stringify({ before: held.before.turned, after: held.after.turned }))
+  } else {
+    check('a copy is held, so the quantity control is there to press',
+      false, JSON.stringify(held))
+  }
+
+  /*
+    ---- 7. the zoomed view opens on the side you were looking at, and turns over too.
+
+    Clicking the artwork of a card you had flipped showed the front, because the zoom was
+    handed a scryfall id and nothing else.
+  */
+  const zoomState = () => ev(`(() => {
+    const img = document.querySelector('.fixed.inset-0.flex img[src*="matomeru://image/"]')
+    const flip = document.querySelector('[data-action="flipZoom"]')
+    return JSON.stringify({
+      open: !!img,
+      src: img ? img.getAttribute('src') : null,
+      canFlip: !!flip
+    })
+  })()`)
+  await ev(`(() => {
+    document.querySelector('[role="dialog"] [data-flip="stage"]')?.closest('button')?.click()
+    return true
+  })()`)
+  await sleep(900)
+  const zoomBack = JSON.parse(await zoomState())
+  console.log('        \u2192 zoom: ' + JSON.stringify(zoomBack))
+  check('the zoom opens on the side the dialog was showing',
+    zoomBack.open && String(zoomBack.src).includes('face=1'), JSON.stringify(zoomBack))
+  check('and offers to turn the card over in there too', zoomBack.canFlip === true,
+    JSON.stringify(zoomBack))
+  await ev(`(() => { document.querySelector('[data-action="flipZoom"]').click(); return true })()`)
+  await sleep(700)
+  const zoomFront = JSON.parse(await zoomState())
+  console.log('        \u2192 zoom flipped: ' + JSON.stringify(zoomFront))
+  check('turning it over in the zoom shows the other side',
+    zoomFront.open && !String(zoomFront.src).includes('face='), JSON.stringify(zoomFront))
+  // Escape closes the zoom without closing the dialog under it.
+  await ev(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    return true
+  })()`)
+  await sleep(400)
+
+  // Leave nothing open: the next probe's hit tests would answer through it.
+  await closeDialog()
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed')
   ws.close()
