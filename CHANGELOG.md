@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/Sfoucheur/matomeru/compare/v0.2.2...v0.3.0) (2026-08-25)
+
+
+### Bug Fixes
+
+* all ([f37e053](https://github.com/Sfoucheur/matomeru/commit/f37e053255c1307972486dd56c5a587523f55caa))
+
 ## [0.2.2](https://github.com/Sfoucheur/matomeru/compare/v0.2.1...v0.2.2) (2026-08-25)
 
 
