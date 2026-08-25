@@ -13,7 +13,7 @@ import {
   Undo2,
   X
 } from 'lucide-react'
-import { foilTreatmentLabel } from '@shared/types'
+import { bothSidesTitle, foilTreatmentLabel, twoSides } from '@shared/types'
 import { useT } from '../hooks/useT'
 import type { PickList, PickListItem } from '@shared/types'
 import { guard, useApp } from '../store/app'
@@ -666,7 +666,9 @@ function PickGrid({
         <CardTile
           key={item.id}
           scryfallId={item.scryfall_id}
-          title={item.printed_name ?? item.name}
+          title={bothSidesTitle(item, item.paired)}
+          backScryfallId={twoSides(item, item.paired)?.back.scryfallId ?? null}
+          backFace={twoSides(item, item.paired)?.back.face}
           density={density}
           selectable={false}
           onOpen={() => onOpenCard(item.scryfall_id)}

@@ -1,6 +1,12 @@
 import { getDb } from '../connection.js'
 import { priceExpr } from './printings.js'
-import { DECK_FINISH, DECK_OVERRIDE_JOIN, DECK_PRINTING } from './decks.js'
+import {
+  DECK_FINISH,
+  DECK_OVERRIDE_JOIN,
+  DECK_PRINTING,
+  DECK_PROXIED,
+  DECK_TRAITS_JOIN
+} from './decks.js'
 import { getSettings } from './settings.js'
 import type { Stats } from '@shared/types'
 
@@ -27,9 +33,10 @@ const ROWS = `
   WHERE ci.quantity > 0
   UNION ALL
   SELECT 'deck', ${DECK_PRINTING}, ${DECK_FINISH}, SUM(dc.quantity),
-         MAX(COALESCE(o.proxied, 0))
+         MAX(${DECK_PROXIED})
   FROM deck_cards dc
   ${DECK_OVERRIDE_JOIN}
+  ${DECK_TRAITS_JOIN}
   WHERE dc.label_possession = 'owned' AND ${DECK_PRINTING} IS NOT NULL
   GROUP BY ${DECK_PRINTING}, ${DECK_FINISH}
   -- A slot whose copies have all been moved out is kept on the deck screen, so the

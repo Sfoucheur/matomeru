@@ -27,7 +27,11 @@
 		"check:features": "node scripts/check-features.cjs",
 		"probe:thranduil": "esbuild scripts/probe-thranduil.ts --bundle --platform=node --format=cjs --target=node24 --outfile=.probe-thr.cjs --alias:@shared=./src/shared --external:node-sqlite3-wasm --log-level=warning && node .probe-thr.cjs",
 		"icon": "electron scripts/make-icon.cjs && node scripts/check-icon.cjs",
-		"probe:update": "node scripts/probe-update.cjs",
+		"probe:flip": "node scripts/probe-flip.cjs",
+    "probe:stack": "node scripts/probe-stack.cjs",
+    "probe:pairs": "node scripts/probe-pairs.cjs",
+    "probe:tokens": "node scripts/probe-tokens.cjs",
+    "probe:update": "node scripts/probe-update.cjs",
 		"check:themes": "node scripts/check-themes.cjs"
 	},
 	"dependencies": {

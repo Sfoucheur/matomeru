@@ -430,8 +430,15 @@ export const en = {
   'add.foilIs': 'This printing’s foil is {treatment}',
   'add.finishOnly': '{finish} only',
   'add.owned': 'own {count}',
-  'add.badFormat': 'Format is: SET NUMBER [LANG] [xN] — for example "m10 146 ja x3".',
-  'add.quickIntro': 'The fastest way to log a physical pile. Type the set code, the collector number, and the language, then press Enter. This route is the only one that reliably reaches a specific language printing.',
+  'add.badFormat':
+    'Format is: SET NUMBER [LANG] [xN] — for example "m10 146 ja x3", or '
+    + '"c17 008/011" straight off the card.',
+  'add.quickIntro':
+    'The fastest way to log a physical pile. Type the set code, the collector number, '
+    + 'and the language, then press Enter. This route is the only one that reliably '
+    + 'reaches a specific language printing. Type the number exactly as printed — '
+    + '008/011 — and the total tells the app which sheet you are holding, which is how '
+    + 'a token is told apart from the card at the same number.',
   'add.quickLabel': 'Set · number · language · quantity',
   'add.adding': 'Adding…',
   'add.add': 'Add',
@@ -640,6 +647,8 @@ export const en = {
   'undo.setPrinting': 'Change a printing',
   'undo.setLanguage': 'Change a language',
   'undo.forceLanguage': 'Set a language by hand',
+  'undo.pairMerge': 'Mark two cards as one',
+  'undo.unpair': 'Separate two sides',
   'undo.createList': 'Create a pick list',
   'undo.renameList': 'Rename a pick list',
   'undo.stage': 'Add to a pick list',
@@ -689,6 +698,25 @@ export const en = {
   'err.pickProxy':
     'That deck slot is filled by a proxy. Adding it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
   'err.itemNotFound': 'Collection item not found.',
+  'coll.sameCard': 'One card, two sides',
+  'coll.sameCardDone':
+    'Marked as one card. Kept {quantity} — the two sides are one object, so one copy '
+    + 'of each is one card.',
+  'coll.sameCardDoneDisagreed':
+    'Marked as one card, keeping {quantity}. The two rows disagreed about how many you '
+    + 'had, so the larger count was kept.',
+  'coll.separateSides': 'Separate the sides',
+  'coll.separateSidesDone':
+    'Separated. The copies stayed where they are — the two printings are simply no '
+    + 'longer treated as one card.',
+  'coll.pairedHint':
+    'One physical card with a different token on each side. Scryfall files the two as '
+    + 'unrelated cards, so this pairing is yours.',
+  'err.pairSameCard': 'A card cannot be its own other side.',
+  'err.pairNeedsTwo': 'Select exactly two cards to mark them as one card.',
+  'err.pairReserved':
+    'An open pick list is holding copies of {name}. Close or revert it first — '
+    + 'merging the two sides now would leave the list pointing at a card that no longer exists.',
   'err.notCached': 'That printing is not cached yet — look the card up first.',
   'err.noLangAnchor': 'That deck entry has no printing to anchor a language to.',
   'err.noFinishAnchor': 'That deck entry has no printing to anchor a finish to.',

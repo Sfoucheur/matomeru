@@ -9,7 +9,9 @@ import {
   LayoutGrid,
   Copy,
   ArrowRightLeft,
+  Combine,
   ListChecks,
+  Scissors,
   MapPin,
   Rows3,
   Trash2
@@ -33,7 +35,9 @@ import {
   FINISHES,
   FOIL_TREATMENTS,
   SORT_FIELDS,
-  foilTreatmentLabel
+  bothSidesTitle,
+  foilTreatmentLabel,
+  twoSides
 } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import { useT } from '../hooks/useT'
@@ -924,6 +928,32 @@ function BulkBar({
       onDone()
     }
   }
+  /*
+    The two sides, joined. `ids[0]` survives: the row reached for first is the better
+    guess at which finish and condition are right, and the count kept is the larger of
+    the two, because two rows of one are one card.
+  */
+  const markSameCard = async (): Promise<void> => {
+    const result = await guard(() => window.api.collection.pairMerge(ids[0], ids[1]))
+    if (result) {
+      toast(
+        'success',
+        result.disagreed
+          ? t('coll.sameCardDoneDisagreed', { quantity: result.quantity })
+          : t('coll.sameCardDone', { quantity: result.quantity })
+      )
+      onDone()
+    }
+  }
+
+  const separate = async (): Promise<void> => {
+    const ok = await guard(() => window.api.collection.unpair(ids[0]))
+    if (ok) {
+      toast('success', t('coll.separateSidesDone'))
+      onDone()
+    }
+  }
+
   const applyProxied = async (proxied: boolean): Promise<void> => {
     const ok = await guard(() =>
       window.api.collection.bulkUpdate(ids, { proxied: proxied ? 1 : 0 })
@@ -990,6 +1020,35 @@ function BulkBar({
         >
           {t('coll.addToPickList')}
         </Button>
+        {/*
+          Two rows that are one card.
+
+          Offered only for exactly two editable rows, because that is the only
+          selection the question makes sense of. It is not a bulk edit -- it says the
+          two printings are the two sides of one object, which is a fact about the
+          cards rather than a change to the copies.
+        */}
+        {ids.length === 2 && rows.length === 2 && (
+          <Button
+            size="sm"
+            icon={<Combine size={13} />}
+            onClick={() => void markSameCard()}
+            data-action="sameCard"
+          >
+            {t('coll.sameCard')}
+          </Button>
+        )}
+        {/* And the way back, for a row that was paired by mistake. */}
+        {ids.length === 1 && rows.length === 1 && rows[0].paired !== null && (
+          <Button
+            size="sm"
+            icon={<Scissors size={13} />}
+            onClick={() => void separate()}
+            data-action="separateSides"
+          >
+            {t('coll.separateSides')}
+          </Button>
+        )}
         {/* Only real rows can go into a deck: a sleeved card is already in one. */}
         {ids.length > 0 && (
           <Button
@@ -1261,9 +1320,18 @@ function CardRow({
             <button
               onClick={onOpenCard}
               className="underline-offset-2 hover:underline"
-              title={t('coll.cardDetails')}
+              title={row.paired ? t('coll.pairedHint') : t('coll.cardDetails')}
             >
-              {printing.printed_name ?? printing.name}
+              {/*
+                Both tokens, one row. The `A // B` shape is the one Scryfall uses for a
+                card with two faces, which is exactly what this is physically -- even
+                though Scryfall files these two as unrelated printings.
+              */}
+              {row.paired
+                ? `${printing.printed_name ?? printing.name} // ${
+                    row.paired.printed_name ?? row.paired.name
+                  }`
+                : (printing.printed_name ?? printing.name)}
             </button>
             {row.reserved > 0 && (
               <span
@@ -1305,7 +1373,11 @@ function CardRow({
         <SetIcon code={printing.set_code} size={11} />
         <span className="truncate">{printing.set_code}</span>
       </div>
-      <div className="numeric w-14 text-xs text-ink-400">{printing.collector_number}</div>
+      <div className="numeric w-14 text-xs text-ink-400">
+        {row.paired
+          ? `${printing.collector_number} // ${row.paired.collector_number}`
+          : printing.collector_number}
+      </div>
       <div className="w-20 truncate text-xs text-ink-300">
         {printing.finishes.length > 1 || row.finish !== 'nonfoil' ? (
           <span
@@ -1425,7 +1497,19 @@ function GalleryView({
           <CardTile
             key={row.key}
             scryfallId={row.scryfall_id}
-            title={row.printing.printed_name ?? row.printing.name}
+            /*
+              Both sides, like the table row. A merged Cat Warrior // Rat read as
+              "Cat Warrior" here: the table row learned about the other side and this
+              tile is a different component that did not.
+            */
+            title={bothSidesTitle(row.printing, row.paired)}
+            /*
+              The pair, flattened to primitives for the tile's memo. `twoSides` decides
+              which kind of two-sidedness this is -- one printing with two faces, or two
+              printings sharing a card -- and the tile does not need to know.
+            */
+            backScryfallId={twoSides(row.printing, row.paired)?.back.scryfallId ?? null}
+            backFace={twoSides(row.printing, row.paired)?.back.face}
             density={density}
             selected={selected.has(row.key)}
             selectable={stageable(row)}

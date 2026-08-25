@@ -435,9 +435,10 @@ export const fr: Record<keyof typeof en, string> = {
 	"add.foilIs": "Le foil de cette édition est {treatment}",
 	"add.finishOnly": "{finish} uniquement",
 	"add.owned": "{count} en stock",
-	"add.badFormat": "Le format est : ÉDITION NUMÉRO [LANGUE] [xN] — par exemple « m10 146 ja x3 ».",
+	"add.badFormat":
+		"Le format est : ÉDITION NUMÉRO [LANGUE] [xN] — par exemple « m10 146 ja x3 », ou « c17 008/011 » tel qu’imprimé sur la carte.",
 	"add.quickIntro":
-		"Le moyen le plus rapide de saisir un tas de cartes. Tapez le code d’édition, le numéro de collection et la langue, puis appuyez sur Entrée. C’est la seule voie qui atteint de façon fiable une édition dans une langue précise.",
+		"Le moyen le plus rapide de saisir un tas de cartes. Tapez le code d’édition, le numéro de collection et la langue, puis appuyez sur Entrée. C’est la seule voie qui atteint de façon fiable une édition dans une langue précise. Saisissez le numéro exactement comme il est imprimé — 008/011 — et le total indique à l’application quelle planche vous tenez, ce qui distingue un jeton de la carte portant le même numéro.",
 	"add.quickLabel": "Édition · numéro · langue · quantité",
 	"add.adding": "Ajout…",
 	"add.add": "Ajouter",
@@ -645,6 +646,8 @@ export const fr: Record<keyof typeof en, string> = {
 	"undo.setPrinting": "Changement d’édition",
 	"undo.setLanguage": "Changement de langue",
 	"undo.forceLanguage": "Langue définie à la main",
+	"undo.pairMerge": "Deux cartes marquées comme une seule",
+	"undo.unpair": "Faces séparées",
 	"undo.createList": "Création d’une liste de prélèvement",
 	"undo.renameList": "Renommage d’une liste",
 	"undo.stage": "Ajout à une liste de prélèvement",
@@ -687,6 +690,21 @@ export const fr: Record<keyof typeof en, string> = {
 	"err.pickProxy":
 		"Cet emplacement du deck est occupé par un proxy. L’ajouter à la collection le fusionnerait avec vos vrais exemplaires de la même édition et les marquerait aussi comme proxys : ce n’est donc pas autorisé.",
 	"err.itemNotFound": "Ligne de collection introuvable.",
+	"coll.sameCard": "Une carte, deux faces",
+	"coll.sameCardDone":
+		"Marquée comme une seule carte. {quantity} conservé(s) : les deux faces ne font qu’un objet, donc un exemplaire de chacune fait une carte.",
+	"coll.sameCardDoneDisagreed":
+		"Marquée comme une seule carte, {quantity} conservé(s). Les deux lignes ne s’accordaient pas sur la quantité : le plus grand nombre a été retenu.",
+	"coll.separateSides": "Séparer les faces",
+	"coll.separateSidesDone":
+		"Faces séparées. Les exemplaires n’ont pas bougé : les deux éditions ne sont simplement plus traitées comme une seule carte.",
+	"coll.pairedHint":
+		"Une seule carte physique, avec un jeton différent de chaque côté. Scryfall les classe comme deux cartes distinctes : cet appariement est le vôtre.",
+	"err.pairSameCard": "Une carte ne peut pas être son propre verso.",
+	"err.pairNeedsTwo":
+		"Sélectionnez exactement deux cartes pour les marquer comme une seule carte.",
+	"err.pairReserved":
+		"Une liste de prélèvement ouverte réserve des exemplaires de {name}. Fermez-la ou annulez-la d’abord : fusionner les deux faces maintenant laisserait la liste pointer vers une carte qui n’existe plus.",
 	"err.notCached": "Cette édition n’est pas encore en cache — cherchez d’abord la carte.",
 	"err.noLangAnchor": "Cette entrée de deck n’a aucune édition sur laquelle fixer une langue.",
 	"err.noFinishAnchor": "Cette entrée de deck n’a aucune édition sur laquelle fixer un finish.",

@@ -94,7 +94,21 @@ const api = {
       ),
     /** Asserts a language Scryfall has no printing for; null clears it. */
     forceLanguage: (itemId: number, lang: string | null, name?: string | null) =>
-      call<boolean>('collection:forceLanguage', itemId, lang, name)
+      call<boolean>('collection:forceLanguage', itemId, lang, name),
+    /**
+     * Marks two rows as the two sides of one physical card and merges them.
+     *
+     * `keep` survives with its own finish and condition; `absorb` is deleted. The
+     * quantity kept is the larger of the two, because two rows of one are one card.
+     */
+    pairMerge: (keep: number, absorb: number) =>
+      call<{ itemId: number; quantity: number; disagreed: boolean }>(
+        'collection:pairMerge',
+        keep,
+        absorb
+      ),
+    /** Forgets a pairing. The copies stay where they are. */
+    unpair: (itemId: number) => call<boolean>('collection:unpair', itemId)
   },
 
   cards: {
@@ -109,11 +123,18 @@ const api = {
     quickResolve: (set: string, collectorNumber: string, lang: string) =>
       call<PrintingChoice | null>('cards:quickResolve', set, collectorNumber, lang),
     quickAdd: (input: QuickAddInput) =>
-      call<{ itemId: number; printing: PrintingChoice }>('cards:quickAdd', input),
+      call<{
+        itemId: number
+        printing: PrintingChoice
+        /** The other side, when the line named one. Null otherwise. */
+        paired: PrintingChoice | null
+      }>('cards:quickAdd', input),
     /** One cached printing, for the card detail view. */
     /** Puts the card's artwork on the system clipboard. */
     copyImage: (scryfallId: string) => call<boolean>('cards:copyImage', scryfallId),
-    printing: (scryfallId: string) => call<Printing | null>('cards:printing', scryfallId)
+    printing: (scryfallId: string) => call<Printing | null>('cards:printing', scryfallId),
+    /** The printing on the other side of a double-sided token card, or null. */
+    paired: (scryfallId: string) => call<Printing | null>('cards:paired', scryfallId)
   },
 
   pickLists: {
@@ -177,8 +198,23 @@ const api = {
     pullSources: (scryfallId: string, finish: string) =>
       call<DeckSource[]>('decks:pullSources', scryfallId, finish),
     choices: () => call<{ deck_id: number; deck_name: string }[]>('decks:choices'),
-    moveToCollection: (deckId: number, oracleId: string, quantity: number) =>
-      call<{ moved: number }>('decks:moveToCollection', deckId, oracleId, quantity),
+    /**
+     * Takes copies out of one deck entry. `scryfallId` names the entry, because a deck
+     * can hold two printings of one card and the row you clicked is one of them.
+     */
+    moveToCollection: (
+      deckId: number,
+      oracleId: string,
+      quantity: number,
+      scryfallId?: string | null
+    ) =>
+      call<{ moved: number }>(
+        'decks:moveToCollection',
+        deckId,
+        oracleId,
+        quantity,
+        scryfallId ?? null
+      ),
     moveToDeck: (deckId: number, itemId: number, quantity: number) =>
       call<{ moved: number }>('decks:moveToDeck', deckId, itemId, quantity),
     revertMove: (moveId: number) =>
@@ -322,9 +358,18 @@ const api = {
     return () => ipcRenderer.removeListener('app:progress', handler)
   },
 
-  /** URL for a locally cached card image, served by the main process. */
-  imageUrl: (scryfallId: string, size: 'small' | 'normal' | 'large' = 'small'): string =>
-    `matomeru://image/${scryfallId}?size=${size}`
+  /**
+   * URL for a locally cached card image, served by the main process.
+   *
+   * `face` is left off for the front, so every URL the app built before a card
+   * could be flipped still means what it meant.
+   */
+  imageUrl: (
+    scryfallId: string,
+    size: 'small' | 'normal' | 'large' = 'small',
+    face: 0 | 1 = 0
+  ): string =>
+    `matomeru://image/${scryfallId}?size=${size}${face === 1 ? '&face=1' : ''}`
 }
 
 export type MatomeruApi = typeof api

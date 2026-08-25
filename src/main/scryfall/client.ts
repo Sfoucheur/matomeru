@@ -156,6 +156,10 @@ export interface ScryfallCard {
   lang: string
   set: string
   set_name: string
+  /** Read by `holdable`: 'alchemy' is digital-only and cannot be in a paper binder. */
+  set_type?: string
+  /** Also read by `holdable`. Set on cards that exist only in Arena or MTGO. */
+  digital?: boolean
   collector_number: string
   rarity: string
   mana_cost?: string
@@ -197,8 +201,15 @@ interface ScryfallList<T> {
 /** English name suggestions for the search box. */
 export async function autocomplete(query: string): Promise<string[]> {
   if (query.trim().length < 2) return []
+  /*
+    `include_extras` is what makes a token suggestable at all. Scryfall leaves
+    extras out by default, so typing "Cat Warri" offered "Cat Warriors" and
+    "Mirri, Cat Warrior" -- every card with that name except the token actually in
+    your hand. Face names are indexed too, so the back of a double-faced token
+    finds it: "Max Speed" returns "Start Your Engines! // Max Speed".
+  */
   const result = await request<{ data: string[] }>(
-    `/cards/autocomplete?q=${encodeURIComponent(query.trim())}`,
+    `/cards/autocomplete?q=${encodeURIComponent(query.trim())}&include_extras=true`,
     { allowNotFound: true }
   )
   return result?.data ?? []
@@ -208,7 +219,13 @@ export async function autocomplete(query: string): Promise<string[]> {
  * Every printing of a card, in every language.
  *
  * `include_multilingual=true` is what surfaces the non-English printings — the
- * default search only returns English.
+ * default search only returns English. `include_extras=true` is the same story for
+ * tokens: without it `!"Cat Warrior"` is a 404 rather than the four token printings
+ * it has, so a token could be added by number and then never found by name again.
+ *
+ * The cost is small and measured: `!"Lightning Bolt"` goes from 158 printings to
+ * 170, the additions being 8 memorabilia, 2 art series, 1 alchemy and 1 draft
+ * innovation. `holdable` in the mappers is what keeps the digital-only ones out.
  */
 export async function printingsForName(
   name: string
@@ -218,7 +235,8 @@ export async function printingsForName(
   // Newest first: when the cap bites, recent printings are the ones somebody is
   // most likely to be holding, and `sortPrintings` reorders for display anyway.
   let path: string | null =
-    `/cards/search?q=${query}&unique=prints&include_multilingual=true&order=released&dir=desc`
+    `/cards/search?q=${query}&unique=prints&include_multilingual=true` +
+    `&include_extras=true&order=released&dir=desc`
 
   let total = 0
   let pages = 0
@@ -244,7 +262,11 @@ export async function searchCards(query: string, multilingual = true): Promise<S
     q: query,
     unique: 'prints',
     order: 'released',
-    dir: 'asc'
+    dir: 'asc',
+    // Same reason as the exact route above: a token is an extra to Scryfall, and a
+    // search that cannot return one leaves a token row's printing picker listing
+    // unrelated cards that merely share its name.
+    include_extras: 'true'
   })
   if (multilingual) params.set('include_multilingual', 'true')
   const page = await request<ScryfallList<ScryfallCard>>(`/cards/search?${params}`, {

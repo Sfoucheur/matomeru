@@ -17,6 +17,8 @@ import {
   bulkUpdate,
   cardLocations,
   forceItemLanguage,
+  pairAndMerge,
+  unpairItem,
   queryCollection,
   queryFacets,
   removeItem,
@@ -64,6 +66,7 @@ import {
   suggestNames
 } from '../services/addCards.js'
 import { getPrinting } from '../db/repos/printings.js'
+import { pairedWith } from '../db/repos/pairs.js'
 import { cachedImage } from '../services/imageCache.js'
 import { addDeckByUrl, syncUserDecks } from '../services/deckSync.js'
 import { clearCardsLanguage, setCardsLanguage } from '../services/deckLanguage.js'
@@ -93,6 +96,7 @@ import {
   deckOverrideScopes,
   pickListScopes,
   scryfallScope,
+  pairScopes,
   scryfallScopeMany
 } from '../db/undoScopes.js'
 import {
@@ -276,6 +280,21 @@ export function registerHandlers(): void {
       })
   )
 
+  /*
+    Two rows that are one card. `pairMerge` is undoable as one action because it is one
+    decision: the pairing and the merge are useless apart, and an undo that put the row
+    back while leaving the pairing behind would re-collapse it on the next add.
+  */
+  handle('collection:pairMerge', (keep: number, absorb: number) =>
+    undoable('undo.pairMerge', pairScopes([keep, absorb]), () => pairAndMerge(keep, absorb))
+  )
+  handle('collection:unpair', (itemId: number) =>
+    undoable('undo.unpair', pairScopes([itemId]), () => {
+      unpairItem(itemId)
+      return true
+    })
+  )
+
   // ---------- Cards ----------
   handle('cards:suggest', (query: string) => suggestNames(query))
   handle('cards:printings', (name: string) => printingsFor(name))
@@ -307,6 +326,15 @@ export function registerHandlers(): void {
     )
   })
   handle('cards:printing', (scryfallId: string) => getPrinting(scryfallId))
+  /*
+    The printing on the other side of the card, for a double-sided token whose two
+    faces are two separate Scryfall cards. Null for everything else, which is why it
+    is its own call rather than a field on the one above.
+  */
+  handle('cards:paired', (scryfallId: string) => {
+    const other = pairedWith(scryfallId)
+    return other === null ? null : getPrinting(other)
+  })
   /*
     Copy a card's artwork to the system clipboard.
     Done here rather than in the renderer because the renderer cannot get at the
@@ -515,10 +543,12 @@ export function registerHandlers(): void {
     lossless: the card is yours before and after, it has only changed where it
     lives — which is what makes it a different act from a pick list.
   */
-  handle('decks:moveToCollection', (deckId: number, oracleId: string, quantity: number) =>
-    undoable('undo.moveToCollection', moveScopes(deckId), () =>
-      moveToCollection(deckId, oracleId, quantity)
-    )
+  handle(
+    'decks:moveToCollection',
+    (deckId: number, oracleId: string, quantity: number, scryfallId?: string | null) =>
+      undoable('undo.moveToCollection', moveScopes(deckId), () =>
+        moveToCollection(deckId, oracleId, quantity, scryfallId)
+      )
   )
   handle('decks:moveToDeck', (deckId: number, itemId: number, quantity: number) =>
     undoable('undo.moveToDeck', moveScopes(deckId), () => moveToDeck(deckId, itemId, quantity))

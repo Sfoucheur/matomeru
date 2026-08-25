@@ -24,6 +24,7 @@ import {
   type DeckBreakdown,
   type CardContext,
   foilTreatmentLabel,
+  twoSides,
   type DeckCardRow,
   type DeckFilters,
   type PickDestination,
@@ -551,7 +552,9 @@ function DeckDetail({
       // One at a time: a batch call would abort on the first refusal, and a mixed
       // selection is exactly when this is used.
       const result = await window.api.decks
-        .moveToCollection(deck.id, card.oracle_id as string, 1)
+        // The row that was selected, not just the card: the deck can hold two printings
+        // of it, and taking the other one out is not what was asked for.
+        .moveToCollection(deck.id, card.oracle_id as string, 1, card.scryfall_id)
         .catch(() => null)
       if (result) moved += result.moved
       else refused += 1
@@ -1194,12 +1197,32 @@ const DeckGridTile = memo(function DeckGridTile({
   const openCard = useApp((s) => s.openCard)
   const held = card.held
   const complete = held >= card.quantity
+  // Computed once per tile: pure, and read four times below.
+  const sides =
+    card.scryfall_id === null
+      ? null
+      : twoSides(
+          {
+            scryfall_id: card.scryfall_id,
+            name: card.name,
+            printed_name: null,
+            layout: card.layout
+          },
+          card.paired
+        )
   const blocked = deckCardSelectable(card)
 
   return (
     <CardTile
       scryfallId={card.scryfall_id}
-      title={card.name}
+      /*
+        `card.name` is already "A // B" for a transform card, which Archidekt reports as
+        the whole name; only a paired token needs composing. Both go through the same
+        helper so no screen has to remember which is which.
+      */
+      title={sides ? `${sides.front.title} // ${sides.back.title}` : card.name}
+      backScryfallId={sides?.back.scryfallId ?? null}
+      backFace={sides?.back.face}
       density={density}
       selected={selected}
       disabledReason={blocked ?? undefined}

@@ -79,6 +79,10 @@ import {
   pkcePair
 } from '../src/main/services/oauth.js'
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
+import { chooseSets, numberVariants, parseQuickEntry } from '../src/shared/quickEntry.js'
+import { bothSidesTitle, hasTwoImages, twoSides } from '../src/shared/types.js'
+import { pairPrintings, pairedWith, unpairPrinting } from '../src/main/db/repos/pairs.js'
+import { ownedCount, ownedCounts, pairAndMerge } from '../src/main/db/repos/collection.js'
 import {
   isNewerVersion,
   notesToText,
@@ -110,6 +114,7 @@ import {
 import {
   collectionKeyScope,
   moveScopes,
+  pairScopes,
   pickListScopes,
   scryfallScopeMany
 } from '../src/main/db/undoScopes.js'
@@ -481,6 +486,559 @@ async function main(): Promise<void> {
   })
 
   // ------------------------------------------------------------------ searching
+  section('Fast entry: the line, and the sheet it names')
+  {
+    const parse = parseQuickEntry
+
+    /*
+      The regression that matters most. `c17 8` is Teferi's Protection, and it has to
+      stay Teferi's Protection -- the point of this work was a wrong card landing
+      silently, so trading it for a different wrong card would be no fix at all.
+    */
+    check('a plain line parses exactly as it always did',
+      JSON.stringify(parse('m10 146 ja x3')) ===
+        JSON.stringify({ set: 'm10', collectorNumber: '146', lang: 'ja', quantity: 3,
+          sheetTotal: null, backNumber: null, backSheetTotal: null }),
+      JSON.stringify(parse('m10 146 ja x3')))
+    check('and asks for no sheet, so nothing about its resolution changes',
+      parse('c17 8')?.sheetTotal === null && parse('c17 8')?.collectorNumber === '8')
+
+    // ---- the number as printed on the card
+    check('the printed fraction keeps the number and remembers the total',
+      JSON.stringify(parse('c17 008/011')) ===
+        JSON.stringify({ set: 'c17', collectorNumber: '8', lang: 'en', quantity: 1,
+          sheetTotal: 11, backNumber: null, backSheetTotal: null }),
+      JSON.stringify(parse('c17 008/011')))
+    check('a quantity still follows a fraction',
+      parse('c17 008/011 x2')?.quantity === 2 && parse('c17 008/011 x2')?.sheetTotal === 11,
+      JSON.stringify(parse('c17 008/011 x2')))
+    check('and so does a language',
+      JSON.stringify(parse('c17 008/011 fr 3x')) ===
+        JSON.stringify({ set: 'c17', collectorNumber: '8', lang: 'fr', quantity: 3,
+          sheetTotal: 11, backNumber: null, backSheetTotal: null }),
+      JSON.stringify(parse('c17 008/011 fr 3x')))
+
+    // ---- leading zeros, which the API rejects outright
+    check('leading zeros are stripped, because Scryfall 404s on them',
+      parse('blb 008')?.collectorNumber === '8', JSON.stringify(parse('blb 008')))
+    check('but only the zeros, so a suffix survives',
+      parse('lci 008a')?.collectorNumber === '8a', JSON.stringify(parse('lci 008a')))
+    check('a number that is already bare is untouched',
+      parse('lci 301a')?.collectorNumber === '301a')
+    check('and a star is not a digit',
+      parse('sld 12\u2605')?.collectorNumber === '12\u2605',
+      JSON.stringify(parse('sld 12\u2605')))
+    check('a zero-only number is left alone rather than emptied',
+      parse('xyz 0')?.collectorNumber === '0', JSON.stringify(parse('xyz 0')))
+
+    /*
+      Only digits either side counts as a fraction. No collector number among 512
+      sampled from the oddest-numbered sets -- memorabilia, promos, tokens, funny --
+      contains a slash at all, so this costs nothing today and leaves room for one.
+    */
+    check('a slash with anything but digits is part of the number, not a fraction',
+      parse('xyz 1/2a')?.collectorNumber === '1/2a' && parse('xyz 1/2a')?.sheetTotal === null,
+      JSON.stringify(parse('xyz 1/2a')))
+
+    /*
+      Case, which is not something anyone reads off a card. Scryfall is strict and
+      inconsistent about it -- unf/200a exists and unf/200A does not, plst/TDFT-14
+      exists and plst/tdft-14 does not -- so the typed form is tried first and the
+      others only on the way to a failure.
+    */
+    check('the number as typed is always tried first',
+      numberVariants('200a')[0] === '200a' && numberVariants('TDFT-14')[0] === 'TDFT-14')
+    check('and both cases are tried, since neither convention covers the other',
+      numberVariants('tdft-14').includes('TDFT-14') &&
+        numberVariants('200A').includes('200a'),
+      JSON.stringify(numberVariants('tdft-14')))
+    check('a number with no letters costs exactly one attempt',
+      numberVariants('146').length === 1, JSON.stringify(numberVariants('146')))
+
+    check('a line with nothing but a set is refused',
+      parse('c17') === null && parse('c17 x3') === null && parse('') === null)
+
+    // ---- which sheet the total names
+    const C17 = [
+      { code: 'c17', total: 309 },
+      { code: 'tc17', total: 11 }
+    ]
+    check('the token sheet is chosen when the total is the sheet size',
+      JSON.stringify(chooseSets(C17, 'c17', 11)) === JSON.stringify(['tc17', 'c17']),
+      JSON.stringify(chooseSets(C17, 'c17', 11)))
+    check('the typed set is chosen when the total is its own size',
+      JSON.stringify(chooseSets(C17, 'c17', 309)) === JSON.stringify(['c17']),
+      JSON.stringify(chooseSets(C17, 'c17', 309)))
+    /*
+      A null total is not a total of null. The sibling here has an unknown size, so
+      without the early return an untyped line would start matching it.
+    */
+    check('no total means no choice at all, which is how it behaved before',
+      JSON.stringify(chooseSets(
+        [{ code: 'c17', total: 309 }, { code: 'tc17', total: null }], 'c17', null)) ===
+        JSON.stringify(['c17']),
+      JSON.stringify(chooseSets(
+        [{ code: 'c17', total: 309 }, { code: 'tc17', total: null }], 'c17', null)))
+    /*
+      The rule that keeps this safe. Bloomburrow prints /261 and Scryfall counts 398,
+      so a total matching nothing is normal for an ordinary card and must not stop it
+      being added.
+    */
+    check('a total that matches nothing still adds the card that was typed',
+      JSON.stringify(chooseSets([{ code: 'blb', total: 398 }], 'blb', 261)) ===
+        JSON.stringify(['blb']),
+      JSON.stringify(chooseSets([{ code: 'blb', total: 398 }], 'blb', 261)))
+    check('an empty set cache degrades to the typed set rather than refusing',
+      JSON.stringify(chooseSets([], 'c17', 11)) === JSON.stringify(['c17']))
+    check('a sheet the same size as its parent never steals the exact match',
+      JSON.stringify(chooseSets(
+        [{ code: 'zzz', total: 20 }, { code: 'tzzz', total: 20 }], 'zzz', 20)) ===
+        JSON.stringify(['tzzz', 'zzz']),
+      'the typed set must be tried first when both match')
+    check('and the order does not depend on the order rows arrived in',
+      JSON.stringify(chooseSets(
+        [{ code: 'tb', total: 7 }, { code: 'ta', total: 7 }], 'x', 7)) ===
+        JSON.stringify(['ta', 'tb', 'x']),
+      JSON.stringify(chooseSets([{ code: 'tb', total: 7 }, { code: 'ta', total: 7 }], 'x', 7)))
+    check('an unknown size never matches, not even a null total',
+      JSON.stringify(chooseSets([{ code: 'q', total: null }], 'q', 11)) ===
+        JSON.stringify(['q']))
+  }
+
+  section('Both sides of a double-faced card')
+  {
+    /*
+      Which layouts have a picture per face, and which merely have two names.
+
+      Measured against Scryfall, because the distinction is not the one the names
+      suggest: a battle is filed under `transform`, while split, flip, adventure and
+      meld cards are all called "A // B" and have exactly one image. Getting this
+      list wrong in the generous direction shows the front twice and calls it a flip.
+    */
+    for (const layout of ['transform', 'modal_dfc', 'double_faced_token',
+      'reversible_card', 'art_series']) {
+      check(`${layout} has a picture per face`, hasTwoImages(layout))
+    }
+    for (const layout of ['split', 'flip', 'adventure', 'meld', 'normal', 'token', 'saga']) {
+      check(`${layout} does not, however its name reads`, !hasTwoImages(layout),
+        'the flip would show the front twice')
+    }
+    check('and an unknown or missing layout is not assumed to flip',
+      !hasTwoImages(null) && !hasTwoImages(undefined) && !hasTwoImages('whatever-is-next'))
+
+    /*
+      The compatibility rule, as a tripwire on the files.
+
+      Every cached image on disk and every URL already built name the front without
+      saying so. If the face were appended unconditionally, the whole cache would be
+      orphaned and silently re-downloaded -- which no unit test would notice, because
+      the app would still work.
+    */
+    {
+      const cache = readFileSync(joinPath('src', 'main', 'services', 'imageCache.ts'), 'utf8')
+      check('face 0 keeps the filename it has always had',
+        /face === 0 [?] '' :/.test(cache),
+        'every already-cached image would be orphaned')
+      check('the route treats a missing face as the front',
+        /searchParams\.get\('face'\) === '1' [?] 1 : 0/.test(cache),
+        'an old URL would change meaning')
+      check('and the in-flight key includes the face, or both sides share a download',
+        /\$\{scryfallId\}:\$\{size\}:\$\{face\}/.test(cache),
+        'the front download would be handed back for the back')
+
+      const preload = readFileSync(joinPath('src', 'preload', 'index.ts'), 'utf8')
+      check('and the URL only mentions a face when it is not the front',
+        /face === 1 [?] '&face=1' : ''/.test(preload),
+        'every image URL in the app would change shape')
+    }
+  }
+
+  section('One physical card, two tokens')
+  {
+    const parse = parseQuickEntry
+
+    /*
+      The line that names both sides.
+
+      A Commander 2017 token card is a Cat Warrior on the front and a Rat on the back,
+      and Scryfall files those as two unrelated printings -- so adding both the ordinary
+      way claims two cards when one is in the binder.
+    */
+    check('the line can name the other side',
+      JSON.stringify(parse('c17 008/011 // 003')) ===
+        JSON.stringify({ set: 'c17', collectorNumber: '8', lang: 'en', quantity: 1,
+          sheetTotal: 11, backNumber: '3', backSheetTotal: null }),
+      JSON.stringify(parse('c17 008/011 // 003')))
+    check('unspaced reads the same, since nothing else uses a double slash',
+      JSON.stringify(parse('c17 008/011//003')) === JSON.stringify(parse('c17 008/011 // 003')),
+      JSON.stringify(parse('c17 008/011//003')))
+    check('the back may carry its own denominator',
+      parse('c17 008/011 // 003/011')?.backSheetTotal === 11 &&
+        parse('c17 008/011 // 003/011')?.backNumber === '3',
+      JSON.stringify(parse('c17 008/011 // 003/011')))
+    /*
+      Two sides of one card are on one sheet by definition, so denominators that
+      disagree are a typo. Guessing which was meant would put a card in the collection
+      nobody asked for, which is the whole failure this feature exists to avoid.
+    */
+    check('and two denominators that disagree are refused rather than guessed at',
+      parse('c17 008/011 // 003/021') === null,
+      JSON.stringify(parse('c17 008/011 // 003/021')))
+    check('language and quantity still trail the whole line',
+      JSON.stringify(parse('c17 008/011 // 003 fr x2')) ===
+        JSON.stringify({ set: 'c17', collectorNumber: '8', lang: 'fr', quantity: 2,
+          sheetTotal: 11, backNumber: '3', backSheetTotal: null }),
+      JSON.stringify(parse('c17 008/011 // 003 fr x2')))
+    check('a separator with nothing after it is not a card',
+      parse('c17 008/011 //') === null && parse('c17 008 // ') === null,
+      JSON.stringify(parse('c17 008/011 //')))
+    check('and a line with no back is unchanged',
+      parse('m10 146 ja x3')?.backNumber === null)
+
+    // ---- the pairing, and the row it collapses onto
+    {
+      const db = getDb()
+      /*
+        Two printings of two *different* cards.
+
+        Not merely two spare rows: the first pair this picked were two languages of
+        one card, so "searching the back finds the row" passed by matching the front's
+        own name. It kept passing with the paired-name clause deleted, which is a check
+        that proves nothing.
+      */
+      const spare = db.all(
+        `SELECT scryfall_id, name FROM printings
+          WHERE scryfall_id NOT IN (SELECT scryfall_id FROM collection_items)
+            AND name IS NOT NULL
+          GROUP BY name
+          ORDER BY MIN(scryfall_id) LIMIT 2`
+      ) as { scryfall_id: string; name: string }[]
+
+      if (spare.length < 2) {
+        check('two spare printings are cached to pair', false, 'nothing to pair')
+      } else {
+        const [front, back] = spare
+        const copy = (scryfallId: string, quantity: number): void => {
+          addToCollection({ scryfall_id: scryfallId, finish: 'nonfoil', condition: 'NM', quantity })
+        }
+        const rowsFor = (ids: string[]): { scryfall_id: string; quantity: number }[] =>
+          db.all(
+            `SELECT scryfall_id, quantity FROM collection_items
+              WHERE scryfall_id IN (${ids.map(() => '?').join(',')})`,
+            ids
+          ) as { scryfall_id: string; quantity: number }[]
+        const ids = [front.scryfall_id, back.scryfall_id]
+
+        pairPrintings(front.scryfall_id, back.scryfall_id)
+        check('a pairing reads the same from either side',
+          pairedWith(front.scryfall_id) === back.scryfall_id &&
+            pairedWith(back.scryfall_id) === front.scryfall_id)
+        check('and a card is never its own other side',
+          (() => {
+            try {
+              pairPrintings(front.scryfall_id, front.scryfall_id)
+              return false
+            } catch {
+              return true
+            }
+          })(),
+          'a card was paired with itself')
+
+        /*
+          The collapse, which is what makes one card one row. Either side met second
+          joins the row that already exists, so the order they were sorted in stops
+          mattering.
+        */
+        copy(front.scryfall_id, 1)
+        copy(back.scryfall_id, 1)
+        let rows = rowsFor(ids)
+        check('both sides of one card make one row, not two',
+          rows.length === 1, JSON.stringify(rows))
+        check('and that row counts two copies, because two cards were added',
+          rows[0]?.quantity === 2, JSON.stringify(rows))
+        check('the row is filed under the side that was met first',
+          rows[0]?.scryfall_id === front.scryfall_id, JSON.stringify(rows))
+
+        // ---- the back's name and number reach the row, and the search
+        const page = queryCollection(filters({ search: back.name }), 'usd', 100, 0)
+        const found = page.rows.find((row) => row.scryfall_id === front.scryfall_id)
+        check('searching the back of the card finds the row it is filed under',
+          found !== undefined,
+          `searched "${back.name}", got ${page.rows.length} rows`)
+        check('and the row names both sides',
+          found?.paired?.scryfall_id === back.scryfall_id &&
+            found?.paired?.name === back.name,
+          JSON.stringify(found?.paired))
+
+        /*
+          The owned badge. One card with a Rat on the back means you own a Rat, and the
+          Add-cards tile that says otherwise flatly contradicts the collection.
+        */
+        check('the back reads as owned, not as missing',
+          ownedCount(back.scryfall_id) === 2, String(ownedCount(back.scryfall_id)))
+        check('and asking for many at once answers for the side that was asked about',
+          ownedCounts([back.scryfall_id]).get(back.scryfall_id) === 2,
+          JSON.stringify([...ownedCounts([back.scryfall_id]).entries()]))
+
+        // ---- and none of it touches a card with no other side
+        unpairPrinting(front.scryfall_id)
+        check('unpairing leaves the copies where they are',
+          rowsFor(ids).length === 1 && rowsFor(ids)[0].quantity === 2,
+          JSON.stringify(rowsFor(ids)))
+        check('and the back stops reading as owned once it is not that card any more',
+          ownedCount(back.scryfall_id) === 0, String(ownedCount(back.scryfall_id)))
+
+        // reverse order: the same one row, filed the other way round
+        db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, ids)
+        pairPrintings(front.scryfall_id, back.scryfall_id)
+        copy(back.scryfall_id, 1)
+        copy(front.scryfall_id, 1)
+        rows = rowsFor(ids)
+        check('meeting the two sides in the other order still makes one row',
+          rows.length === 1 && rows[0].quantity === 2, JSON.stringify(rows))
+        check('filed under whichever side was met first, which is now the back',
+          rows[0]?.scryfall_id === back.scryfall_id, JSON.stringify(rows))
+
+        /*
+          Both sides already have a row, and the pairing arrives afterwards -- which is
+          what happens when a line names the back for a card whose two sides were added
+          separately and never merged. A further copy belongs on its own row: jumping it
+          onto the partner's would move copies the user can see.
+        */
+        db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, ids)
+        unpairPrinting(front.scryfall_id)
+        copy(front.scryfall_id, 1)
+        copy(back.scryfall_id, 1)
+        pairPrintings(front.scryfall_id, back.scryfall_id)
+        copy(front.scryfall_id, 1)
+        const bothRows = rowsFor(ids)
+        check('a copy joins its own row when both sides already have one',
+          bothRows.length === 2 &&
+            bothRows.find((r) => r.scryfall_id === front.scryfall_id)?.quantity === 2 &&
+            bothRows.find((r) => r.scryfall_id === back.scryfall_id)?.quantity === 1,
+          JSON.stringify(bothRows))
+
+        // ---- the merge, for rows that were added before the pairing was known
+        db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, ids)
+        unpairPrinting(front.scryfall_id)
+        copy(front.scryfall_id, 1)
+        copy(back.scryfall_id, 1)
+        const before = rowsFor(ids)
+        check('two rows exist while the pairing is unknown',
+          before.length === 2, JSON.stringify(before))
+        const keep = (db.get(
+          'SELECT id FROM collection_items WHERE scryfall_id = ?', [front.scryfall_id]
+        ) as { id: number }).id
+        const absorb = (db.get(
+          'SELECT id FROM collection_items WHERE scryfall_id = ?', [back.scryfall_id]
+        ) as { id: number }).id
+        const merged = pairAndMerge(keep, absorb)
+        check('merging two rows of one leaves one card, not two',
+          merged.quantity === 1 && !merged.disagreed, JSON.stringify(merged))
+        check('and one row',
+          rowsFor(ids).length === 1, JSON.stringify(rowsFor(ids)))
+        check('with the pairing recorded, so the next copy knows',
+          pairedWith(front.scryfall_id) === back.scryfall_id)
+
+        // a disagreement keeps the larger count and says so
+        db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, ids)
+        unpairPrinting(front.scryfall_id)
+        copy(front.scryfall_id, 3)
+        copy(back.scryfall_id, 1)
+        const keep2 = (db.get(
+          'SELECT id FROM collection_items WHERE scryfall_id = ?', [front.scryfall_id]
+        ) as { id: number }).id
+        const absorb2 = (db.get(
+          'SELECT id FROM collection_items WHERE scryfall_id = ?', [back.scryfall_id]
+        ) as { id: number }).id
+        const merged2 = pairAndMerge(keep2, absorb2)
+        check('rows that disagree keep the larger count, and report that they did',
+          merged2.quantity === 3 && merged2.disagreed, JSON.stringify(merged2))
+
+        // clean up, so later sections see the collection they expect
+        db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, ids)
+        unpairPrinting(front.scryfall_id)
+        check('and nothing is left behind for the sections that follow',
+          rowsFor(ids).length === 0 && pairedWith(front.scryfall_id) === null)
+      }
+    }
+  }
+
+  section('Naming a card that has two sides')
+  {
+    const KEFKA = {
+      scryfall_id: 'kefka',
+      name: 'Kefka, Court Mage // Kefka, Ruler of Ruin',
+      printed_name: null,
+      layout: 'transform'
+    }
+    const CAT = { scryfall_id: 'cat', name: 'Cat Warrior', printed_name: null, layout: 'token' }
+    const RAT = { scryfall_id: 'rat', name: 'Rat', printed_name: null }
+    const BOLT = { scryfall_id: 'bolt', name: 'Lightning Bolt', printed_name: null,
+      layout: 'normal' }
+    const SPLIT = { scryfall_id: 'split', name: 'Yeah Nah // Nah Yeah', printed_name: null,
+      layout: 'split' }
+
+    // ---- two printings, one card
+    const pairSides = twoSides(CAT, RAT)
+    check('a paired token has two sides, one per printing',
+      pairSides?.front.scryfallId === 'cat' && pairSides?.back.scryfallId === 'rat',
+      JSON.stringify(pairSides))
+    check('and both are front faces, because they are two separate cards',
+      pairSides?.front.face === 0 && pairSides?.back.face === 0, JSON.stringify(pairSides))
+
+    // ---- one printing, two faces
+    const kefkaSides = twoSides(KEFKA, null)
+    check('a transform card has two sides on one printing',
+      kefkaSides?.front.scryfallId === 'kefka' && kefkaSides?.back.scryfallId === 'kefka',
+      JSON.stringify(kefkaSides))
+    check('and the second picture is its second face',
+      kefkaSides?.front.face === 0 && kefkaSides?.back.face === 1, JSON.stringify(kefkaSides))
+    check('its names come from either side of the separator',
+      kefkaSides?.front.title === 'Kefka, Court Mage' &&
+        kefkaSides?.back.title === 'Kefka, Ruler of Ruin',
+      JSON.stringify(kefkaSides))
+
+    /*
+      The trap the layout list exists for: a split card is named "A // B" and has
+      exactly one picture, so a stack drawn from the name alone would show the same
+      art twice and call it a flip.
+    */
+    check('a split card has one side, however its name reads',
+      twoSides(SPLIT, null) === null, JSON.stringify(twoSides(SPLIT, null)))
+    check('and an ordinary card has one side',
+      twoSides(BOLT, null) === null)
+    check('a pairing wins over a layout, being a fact about a physical object',
+      twoSides({ ...KEFKA }, RAT)?.back.scryfallId === 'rat',
+      JSON.stringify(twoSides({ ...KEFKA }, RAT)))
+
+    // ---- the name a tile shows
+    check('a paired token is named for both its sides',
+      bothSidesTitle(CAT, RAT) === 'Cat Warrior // Rat', bothSidesTitle(CAT, RAT))
+    check('a transform card keeps the name Scryfall already gave it',
+      bothSidesTitle(KEFKA, null) === 'Kefka, Court Mage // Kefka, Ruler of Ruin',
+      bothSidesTitle(KEFKA, null))
+    check('and a one-sided card is named once',
+      bothSidesTitle(BOLT, null) === 'Lightning Bolt' &&
+        bothSidesTitle(SPLIT, null) === 'Yeah Nah // Nah Yeah',
+      `${bothSidesTitle(BOLT, null)} | ${bothSidesTitle(SPLIT, null)}`)
+    check('a localized name is preferred, on both sides',
+      bothSidesTitle(
+        { ...CAT, printed_name: 'Guerrier chat' },
+        { ...RAT, printed_name: 'Rat' }
+      ) === 'Guerrier chat // Rat')
+
+    /*
+      The three primitives a tile is handed, from the shape a row actually has.
+
+      The views flatten `twoSides` into `backScryfallId` / `backFace` / `hiddenTitle`
+      rather than passing an object, because `CardTile` is memoized and a fresh object
+      each render defeats that. This is that flattening, on both kinds of two-sidedness.
+    */
+    {
+      const pairSidesAgain = twoSides(CAT, RAT)
+      check('a paired token hands the tile the other printing at face 0',
+        pairSidesAgain?.back.scryfallId === 'rat' && pairSidesAgain?.back.face === 0)
+      const kefka = twoSides(KEFKA, null)
+      check('a transform card hands it the same id at face 1',
+        kefka?.back.scryfallId === 'kefka' && kefka?.back.face === 1)
+      check('and the name shown on hover is the side that goes behind',
+        kefka?.front.title === 'Kefka, Court Mage' &&
+          pairSidesAgain?.front.title === 'Cat Warrior')
+      check('a one-sided card hands it nothing, so the tile draws one image',
+        twoSides(BOLT, null) === null && twoSides(SPLIT, null) === null)
+    }
+
+    /*
+      And the tile actually asks. The table row was taught about the other side and
+      the gallery tile is a different component that was not, so a merged card read as
+      "Cat Warrior" in the one view a card is usually looked at in.
+    */
+    {
+      const view = readFileSync(joinPath('src', 'renderer', 'views', 'CollectionView.tsx'), 'utf8')
+      check('the gallery tile names the card through the helper, not from one printing',
+        /title=\{bothSidesTitle\(row\.printing, row\.paired\)\}/.test(view),
+        'the gallery tile would show one name for a two-sided card')
+
+      const tile = readFileSync(joinPath('src', 'renderer', 'components', 'CardTile.tsx'), 'utf8')
+      check('and the tile draws through the stack rather than a single image',
+        tile.includes('<StackedArt') && !tile.includes('<CardImage'),
+        'a two-sided card would render as one picture')
+
+      const art = readFileSync(joinPath('src', 'renderer', 'components', 'primitives.tsx'), 'utf8')
+      /*
+        Two facts that are harmless apart and broke the layout together.
+
+        `CardImage` hardcodes `relative` on its own wrapper, and `StackedArt` used to hand
+        it `absolute` through the same `className`. Equal specificity, one element, and
+        Tailwind emits `.relative` after `.absolute` -- so the later rule won however the
+        classes were ordered in the attribute, every card laid out in normal flow, and the
+        tile grew to twice the height of its neighbours.
+
+        Stated as a pair because either one alone is fine. The positioning belongs on the
+        wrapper `StackedArt` owns, which is what the `data-side` elements are.
+      */
+      check('CardImage still positions itself, so nothing may pass it a position',
+        /className=\{`relative overflow-hidden/.test(art),
+        'CardImage no longer sets relative -- this check has lost its subject')
+      {
+        const stacked = art.slice(art.indexOf('export function StackedArt'),
+          art.indexOf('export function CardImage'))
+        /*
+          The stack is its own stacking context.
+
+          Without `isolate` its z-10 and z-20 compete with the tile's own name, footer and
+          badges -- which are later siblings with no z-index -- and win, so the card
+          covered the information printed over it.
+        */
+        check('the stack is isolated, so its layers cannot cover the tile itself',
+          /className=\{`relative isolate/.test(stacked),
+          'the cards would paint over the name and the badges again')
+        /*
+          And the tile is still. Turning cards over on hover came out: the detail dialog
+          flips the card properly, so a grid that reacted to the pointer crossing it was
+          movement for its own sake.
+        */
+        check('the stack does not react to the pointer at all',
+          // Variants, not the word: the comment above the component explains that the
+          // hover came out, and a bare /hover/ matched its own prose.
+          !/(group-hover|peer-hover|hover:)/.test(stacked) && !/data-shield/.test(stacked),
+          'the tile is turning cards over again')
+        check('and the stack positions its own wrappers rather than the cards',
+          /data-side="back"/.test(stacked) && /data-side="front"/.test(stacked) &&
+            // Attributes only: `[^>]*` stops at the element's own closing bracket, so the
+            // next wrapper's `absolute` cannot be mistaken for the card's.
+            !/<CardImage[^>]*absolute/.test(stacked),
+          'a position handed to CardImage is silently overridden by its own relative')
+      }
+      /*
+        The dialog's size, and where the two sides come from.
+
+        It used to be as tall as its contents, so turning a card over -- which swaps the
+        rules text -- moved the dialog under the pointer, and every card opened at a
+        different size. And it worked the two sides out by hand, which is a second place
+        for "what is the back of this card" to be answered differently from the tiles.
+      */
+      {
+        const modal = readFileSync(
+          joinPath('src', 'renderer', 'components', 'CardDetailModal.tsx'), 'utf8')
+        check('the card dialog asks for a fixed size rather than following its contents',
+          /height="h-\[min\(85vh,36rem\)\]"/.test(modal) && /scrollBody=\{false\}/.test(modal),
+          'the dialog would resize when the card is turned over')
+        check('and it derives the two sides from the same helper the tiles use',
+          /twoSides\(printing, paired\)/.test(modal),
+          'the dialog would answer "what is the back of this card" on its own')
+        check('and the card turns over rather than cutting between two pictures',
+          /rotateY: turned \? 180 : 0/.test(modal) &&
+            /\[transform-style:preserve-3d\]/.test(modal),
+          'the sides would swap instantly')
+      }
+      check('a card with no other side still renders exactly one image',
+        /if \(!backScryfallId\) \{\s*return <CardImage/.test(art),
+        'the ordinary case no longer short-circuits')
+    }
+  }
+
   section('Search and filtering')
 
   const byEnglishName = queryCollection(filters({ search: 'Lightning Bolt' }), 'usd', 100, 0)
@@ -680,11 +1238,25 @@ async function main(): Promise<void> {
       const target = cards.find((c) => c.oracle_id && c.finish === 'nonfoil')
       if (target?.oracle_id) {
         setCardFinish(deckId, target.oracle_id, 'foil', 'surgefoil')
-        const readBack = (): { finish: string; treatment: string | null } | undefined =>
-          db.get(
-            'SELECT finish, foil_treatment AS treatment FROM deck_card_overrides WHERE deck_id = ? AND oracle_id = ?',
+        /*
+          Two tables, one question. The finish is a correction to the decklist entry and
+          lives on the override; the treatment describes the copies and moved to
+          `deck_entry_traits` with migration 18. Both have to survive a sync, which is
+          what this section is about, so both are read.
+        */
+        const readBack = (): { finish: string; treatment: string | null } | undefined => {
+          const row = db.get(
+            'SELECT finish FROM deck_card_overrides WHERE deck_id = ? AND oracle_id = ?',
             [deckId, target.oracle_id]
-          ) as { finish: string; treatment: string | null } | undefined
+          ) as { finish: string } | undefined
+          if (!row) return undefined
+          const trait = db.get(
+            `SELECT foil_treatment AS treatment FROM deck_entry_traits
+              WHERE deck_id = ? AND oracle_id = ?`,
+            [deckId, target.oracle_id]
+          ) as { treatment: string | null } | undefined
+          return { finish: row.finish, treatment: trait?.treatment ?? null }
+        }
         const before = readBack()
         replaceDeckCards(deckId, cards)
         const after = readBack()
@@ -2065,7 +2637,274 @@ async function main(): Promise<void> {
     }
   }
 
+  section('A move belongs to one printing, not to a card')
+  {
+    const db = getDb()
+
+    /*
+      Everything a local move records is keyed by oracle id, and a deck can hold two
+      printings of one card -- so a fact about one copy was being applied to both. Three
+      things reported from use, all of it:
+
+        - remove print A, add print B: the emptied entry showed B's art and B's proxy badge
+        - and neither entry carried the "out" tag any more, the -1 and +1 having cancelled
+        - and an entry the decklist never mentioned stayed at quantity 0 for ever
+
+      Each sequence below is written the way it was hit, through the real repo functions.
+    */
+    /*
+      Two printings of one card, neither of them already in the collection.
+
+      The "neither" matters: this section adds a copy of the second one and deletes it
+      again on the way out, and picking one a later section was already using deleted a
+      row out from under it.
+    */
+    const pair = db.get(
+      `SELECT a.scryfall_id AS a, b.scryfall_id AS b, a.oracle_id AS oracle, a.name AS name
+         FROM printings a
+         JOIN printings b ON b.oracle_id = a.oracle_id AND b.scryfall_id > a.scryfall_id
+        WHERE a.oracle_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = a.scryfall_id)
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = b.scryfall_id)
+        ORDER BY a.scryfall_id LIMIT 1`
+    ) as { a: string; b: string; oracle: string; name: string } | undefined
+
+    if (!pair) {
+      check('two printings of one card are cached', false, 'fixture too thin')
+    } else {
+      const deck = upsertDeck({
+        external_id: 'verify-prints',
+        name: 'Print attribution',
+        format: null,
+        owner_username: null,
+        url: null,
+        external_updated_at: null,
+        is_private: false,
+        is_unlisted: false
+      })
+      const listPrintA = (): void => {
+        replaceDeckCards(deck, [
+          {
+            scryfall_id: pair.a,
+            oracle_id: pair.oracle,
+            quantity: 1,
+            finish: 'nonfoil',
+            categories: [],
+            in_maindeck: true,
+            name: pair.name,
+            lang: 'en',
+            set_code: null,
+            collector_number: null,
+            rarity: null,
+            image_uri_small: null,
+            label: 'Have it,#4CAF50'
+          }
+        ])
+        recomputeLabelPossession({ '#4caf50': 'owned' })
+      }
+      /*
+        A clean slate between scenarios. Clearing the ledger alone is not enough: the
+        proxy flag lives in its own table and outlives the move that recorded it, which
+        is how the second scenario below first refused to run at all.
+      */
+      const reset = (): void => {
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deck])
+        db.run('DELETE FROM deck_card_overrides WHERE deck_id = ?', [deck])
+        db.run('DELETE FROM deck_entry_traits WHERE deck_id = ?', [deck])
+        listPrintA()
+      }
+      const entries = (): DeckCardRow[] =>
+        allDeckCards(deckBreakdown(deck, 'usd', false)).filter((c) => c.oracle_id === pair.oracle)
+      const holdB = (proxied: boolean): number => {
+        addToCollection({ scryfall_id: pair.b, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+        const id = (
+          db.get(
+            `SELECT id FROM collection_items WHERE scryfall_id = ? AND finish = 'nonfoil'`,
+            [pair.b]
+          ) as { id: number }
+        ).id
+        /*
+          Set either way, not only when true: `addToCollection` merges into the row that
+          is already there, which still carries the flag from the sequence before this
+          one -- and a proxy cannot be moved into a deck that holds real copies.
+        */
+        bulkUpdate([id], { proxied: proxied ? 1 : 0 })
+        return id
+      }
+
+      // ---- the reported sequence: out with print A, in with print B
+      listPrintA()
+      moveToCollection(deck, pair.oracle, 1)
+      moveToDeck(deck, holdB(true), 1)
+
+      const rows = entries()
+      const rowA = rows.find((c) => c.scryfall_id === pair.a)
+      const rowB = rows.find((c) => c.scryfall_id === pair.b)
+      console.log(
+        '        \u2192 ' +
+          JSON.stringify(
+            rows.map((c) => ({ id: c.scryfall_id?.slice(0, 8), qty: c.quantity,
+              proxied: c.proxied, moved: c.moved }))
+          )
+      )
+      check('the deck has one entry per printing', rows.length === 2, `${rows.length} entries`)
+      check('the emptied entry still reports the printing the decklist named',
+        rowA !== undefined, 'it reports the printing that was moved in instead')
+      check('and is not a proxy, because the proxy went into the other entry',
+        rowA?.proxied === false, JSON.stringify({ proxied: rowA?.proxied }))
+      check('while the entry the proxy went into is marked as one',
+        rowB?.proxied === true, JSON.stringify({ proxied: rowB?.proxied }))
+      check('the out tag hangs on the entry that lost copies',
+        rowA?.moved === -1, JSON.stringify({ moved: rowA?.moved }))
+      check('and the in tag on the one that gained them',
+        rowB?.moved === 1, JSON.stringify({ moved: rowB?.moved }))
+
+      /*
+        And a proxy in one entry must not lock the other.
+
+        `moveToCollection` reads the proxy flag for the whole card, so with a proxy of
+        print B in the deck, taking the real print A out was refused as "that slot is
+        filled by a proxy" -- about a slot that holds no proxy at all. This scenario ran
+        straight into it.
+      */
+      check('a proxy in one entry does not stop the real card leaving the other',
+        (() => {
+          try {
+            moveToCollection(deck, pair.oracle, 1, pair.a)
+            return true
+          } catch {
+            return false
+          }
+        })(),
+        'taking out a real printing was refused because another entry holds a proxy')
+
+      // ---- an entry the decklist never mentioned, in and back out again
+      reset()
+      const inThenOut = holdB(false)
+      moveToDeck(deck, inThenOut, 1)
+      moveToCollection(deck, pair.oracle, 1, pair.b)
+      check('a card the decklist never mentioned leaves no entry behind once its moves cancel',
+        entries().every((c) => c.scryfall_id !== pair.b),
+        JSON.stringify(entries().map((c) => ({ id: c.scryfall_id?.slice(0, 8), qty: c.quantity }))))
+
+      // and it must not come back when the next sync replays the ledger
+      listPrintA()
+      check('and it does not come back on the next sync',
+        entries().every((c) => c.scryfall_id !== pair.b),
+        JSON.stringify(entries().map((c) => ({ id: c.scryfall_id?.slice(0, 8), qty: c.quantity }))))
+
+      /*
+        The slot that has to stay, which is what the guard was protecting: the decklist
+        wants a card the deck no longer has, and that emptied row is where the tag hangs
+        and what you click to undo.
+      */
+      reset()
+      moveToCollection(deck, pair.oracle, 1)
+      const emptied = entries().find((c) => c.scryfall_id === pair.a)
+      check('an emptied decklist entry keeps its slot, and its tag',
+        emptied?.quantity === 0 && emptied?.moved === -1,
+        JSON.stringify({ quantity: emptied?.quantity, moved: emptied?.moved }))
+
+      /*
+        Two empty entries of one card, for opposite reasons -- which is the state the
+        reported deck was actually in, and what a per-card rule gets wrong: the decklist
+        entry lost its copy and must keep its slot, while beside it sits an entry a move
+        invented and cancelled.
+      */
+      reset()
+      moveToCollection(deck, pair.oracle, 1, pair.a)
+      moveToDeck(deck, holdB(false), 1)
+      moveToCollection(deck, pair.oracle, 1, pair.b)
+      const mixed = entries()
+      check('an emptied decklist entry survives beside a cancelled one',
+        mixed.some((c) => c.scryfall_id === pair.a && c.quantity === 0) &&
+          mixed.every((c) => c.scryfall_id !== pair.b),
+        JSON.stringify(mixed.map((c) => ({ id: c.scryfall_id?.slice(0, 8), qty: c.quantity }))))
+
+      // ---- and taking copies out takes them from the printing that was asked for
+      reset()
+      moveToDeck(deck, holdB(false), 1)
+      moveToCollection(deck, pair.oracle, 1, pair.b)
+      const afterOut = entries()
+      check('removing one printing leaves the other alone',
+        afterOut.find((c) => c.scryfall_id === pair.a)?.quantity === 1,
+        JSON.stringify(afterOut.map((c) => ({ id: c.scryfall_id?.slice(0, 8), qty: c.quantity }))))
+
+      /*
+        And what a card tile needs to draw two sides.
+
+        Three galleries draw a card tile -- the collection, a deck and a pick list -- and
+        the deck and pick-list queries did not return the printing's layout at all, so
+        those two could not tell a two-sided card from any other. Asserted against the
+        query rather than the component, because a missing join is the way this breaks.
+      */
+      reset()
+      pairPrintings(pair.a, pair.b)
+      const entry = entries().find((c) => c.scryfall_id === pair.a)
+      check('a deck entry reports the printing layout a tile needs',
+        typeof entry?.layout === 'string' && entry.layout.length > 0,
+        JSON.stringify({ layout: entry?.layout }))
+      check('and the other side of a paired card, so the deck gallery can stack it',
+        entry?.paired?.scryfall_id === pair.b,
+        JSON.stringify(entry?.paired))
+      unpairPrinting(pair.a)
+      check('with nothing paired, the entry says so rather than guessing',
+        entries().find((c) => c.scryfall_id === pair.a)?.paired === null)
+
+      // clean up, so later sections see the shape they expect
+      db.run('DELETE FROM decks WHERE external_id = ?', ['verify-prints'])
+      db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [pair.b])
+      recomputeLabelPossession({})
+    }
+  }
+
   // ------------------------------------------------- groups, commanders, langs
+  section('One meaning per table')
+  {
+    /*
+      The two columns migration 18 emptied out, and the promise that nothing reads them.
+
+      They are still on `deck_card_overrides` -- dropping them would mean rebuilding a
+      table for no gain -- so nothing but a check stops a query joining that table and
+      reading the flag for the whole card again, which is the bug the migration exists to
+      end. Cheap to state, and the failure it prevents is invisible until someone owns two
+      printings of one card.
+    */
+    const mainFiles: string[] = []
+    const walkMain = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = joinPath(dir, entry.name)
+        if (entry.isDirectory()) walkMain(full)
+        else if (entry.name.endsWith('.ts')) mainFiles.push(full)
+      }
+    }
+    walkMain(joinPath('src', 'main'))
+    const offenders = mainFiles.filter((file) => {
+      if (file.endsWith('schema.ts')) return false
+      const source = readFileSync(file, 'utf8')
+      /*
+        Plain string tests, not a word-boundary regex. The first attempt at this
+        line was written through a shell heredoc, which turned its \\b into a
+        literal backspace -- so the pattern matched nothing and the check passed
+        while the very thing it forbids was in the file.
+
+        The leading character keeps `row.proxied` and friends out of it: what is
+        being forbidden is the `o.` alias, which is the override table.
+      */
+      return /[^a-zA-Z_]o[.]proxied/.test(source) ||
+        /[^a-zA-Z_]o[.]foil_treatment/.test(source)
+    })
+    check('no query reads the proxy flag or the treatment off the override table',
+      offenders.length === 0,
+      offenders.map((f) => f.split(/[\/]/).pop()).join(', '))
+
+    check('and the traits table is what they read instead',
+      readFileSync(joinPath('src', 'main', 'db', 'repos', 'decks.ts'), 'utf8')
+        .includes('deck_entry_traits'),
+      'nothing joins deck_entry_traits')
+    console.log(`        → swept ${mainFiles.length} main-process files`)
+  }
+
   section('Deck groups, commanders and language overrides')
 
   {
@@ -4152,16 +4991,52 @@ async function main(): Promise<void> {
     a row is removed, so it legitimately differs after an undo and comparing it
     would fail every insert case for no reason.
   */
-  const UNDO_TABLES = [
-    'collection_items',
-    'pick_lists',
-    'pick_list_items',
-    'deck_card_moves',
-    'deck_card_overrides',
-    'deck_card_lang_requests',
-    'decks',
-    'deck_cards'
+  /*
+    Everything the fingerprint deliberately ignores. Everything else is included by
+    being in the database at all.
+
+    This used to be the other way round -- a hand-written list of the tables to
+    compare -- and it failed exactly as a hand-written list does: `printing_pairs`
+    was added, no undo scope covered it, and the property test that exists to catch
+    a too-narrow scope reported nothing, because the new table was not in its list
+    either. Inverting it makes forgetting safe: a table added tomorrow is compared
+    without anyone remembering to say so, and only a deliberate exclusion is silent.
+
+    The exclusions are the caches and the counters. `printings`, `sets` and the
+    booster tables are Scryfall and MTGJSON data with thousands of rows and a
+    `raw_json` column apiece -- fingerprinting them on every step would be slow and
+    would prove nothing, since no undoable action writes them. `sqlite_sequence` is
+    excluded because an AUTOINCREMENT counter does not go backwards when a row is
+    removed, so it legitimately differs after an undo, and `schema_version` because
+    migrations are not undoable.
+  */
+  const UNDO_IGNORED = [
+    'printings',
+    'sets',
+    'settings',
+    'booster_odds',
+    'booster_sets',
+    'schema_version',
+    'sqlite_sequence'
   ]
+
+  const UNDO_TABLES = (
+    getDb().all(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ) as { name: string }[]
+  )
+    .map((row) => row.name)
+    .filter((name) => !UNDO_IGNORED.includes(name))
+    .sort()
+
+  check(
+    'the undo fingerprint covers every table that is not a cache',
+    UNDO_TABLES.includes('collection_items') &&
+      UNDO_TABLES.includes('printing_pairs') &&
+      !UNDO_TABLES.includes('printings'),
+    UNDO_TABLES.join(', ')
+  )
+  console.log(`        \u2192 fingerprinting ${UNDO_TABLES.length} tables`)
 
   const dbState = (): string =>
     JSON.stringify(
@@ -4418,6 +5293,67 @@ async function main(): Promise<void> {
       )
 
       /*
+        Marking two rows as one card, through the real scopes.
+
+        The interesting table is the third one. The merge deletes a `collection_items`
+        row, which the ON DELETE SET NULL on `pick_list_items.collection_item_id`
+        follows into a table the action never names -- and it writes `printing_pairs`,
+        which no other action touches. A scope missing either would undo the count and
+        leave the pairing behind, and the next copy added would silently re-collapse.
+      */
+      {
+        const twoSpare = db.all(
+          `SELECT scryfall_id FROM printings
+            WHERE NOT EXISTS (
+                  SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = printings.scryfall_id)
+            ORDER BY scryfall_id LIMIT 2`
+        ) as { scryfall_id: string }[]
+
+        if (twoSpare.length < 2) {
+          check('two spare printings to pair (real scopes)', false, 'fixture too thin')
+        } else {
+          const [a, b] = twoSpare.map((row) => row.scryfall_id)
+          for (const id of [a, b]) {
+            addToCollection({ scryfall_id: id, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+          }
+          const idOf = (scryfallId: string): number =>
+            (db.get('SELECT id FROM collection_items WHERE scryfall_id = ?', [scryfallId]) as {
+              id: number
+            }).id
+          const keep = idOf(a)
+          const absorb = idOf(b)
+          roundTrip('marking two rows as one card (real scopes)', () =>
+            undoable('undo.pairMerge', pairScopes([keep, absorb]), () =>
+              pairAndMerge(keep, absorb)
+            )
+          )
+          /*
+            The refusal, for the reason `removeItem` refuses: the absorbed row is about
+            to be deleted and an open list would quietly lose its link to copies it is
+            still counting on.
+          */
+          const holding = createPickList('Pair refusal')
+          addToPickList(holding, { kind: 'collection', itemId: idOf(a) }, 1)
+          const stateBefore = dbState()
+          let refused = false
+          try {
+            pairAndMerge(idOf(a), idOf(b))
+          } catch {
+            refused = true
+          }
+          check('an open pick list stops two rows being merged', refused,
+            'the merge went ahead while a list was holding the row')
+          check('and the refusal leaves both rows exactly as they were',
+            dbState() === stateBefore, stateDiff(stateBefore, dbState()))
+
+          db.run('DELETE FROM pick_lists WHERE id = ?', [holding])
+          db.run(`DELETE FROM collection_items WHERE scryfall_id IN (?, ?)`, [a, b])
+          unpairPrinting(a)
+          clearUndoHistory()
+        }
+      }
+
+      /*
         Staged in full so validating empties the row and deletes it. That is what
         makes the pick item's `collection_item_id` go NULL and come back pointing
         at a row that has to be re-created — the ordering the bug tripped over.
@@ -4511,6 +5447,33 @@ async function main(): Promise<void> {
                 moveToDeck(deckRow.deck_id, intoDeck.id, 1)
               )
             )
+            /*
+              And a proxy, which is the case that writes a trait.
+
+              Worth its own round trip: moving a plain copy touches three tables and
+              moving a proxy touches a fourth, so the scope that covered the first would
+              have looked complete while leaving a proxy flag behind after an undo.
+            */
+            const proxyIn = db.get(
+              `SELECT ci.id, p.oracle_id FROM collection_items ci
+               JOIN printings p ON p.scryfall_id = ci.scryfall_id
+               WHERE ci.quantity > 0 AND p.oracle_id IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM deck_cards dc
+                                  WHERE dc.deck_id = ? AND dc.oracle_id = p.oracle_id)
+               LIMIT 1`,
+              [deckRow.deck_id]
+            ) as { id: number; oracle_id: string } | undefined
+            if (proxyIn) {
+              bulkUpdate([proxyIn.id], { proxied: 1 })
+              roundTrip('moving a proxy into a deck (real scopes)', () =>
+                undoable('undo.moveToDeck', moveScopes(deckRow.deck_id), () =>
+                  moveToDeck(deckRow.deck_id, proxyIn.id, 1)
+                )
+              )
+              bulkUpdate([proxyIn.id], { proxied: 0 })
+            } else {
+              skip('moving a proxy into a deck (real scopes)', 'no spare collection row')
+            }
           } else {
             skip('moving a card into a deck (real scopes)', 'no collection row to move')
           }

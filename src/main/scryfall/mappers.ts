@@ -20,6 +20,26 @@ function normalizePrices(raw: Record<string, string | null> | undefined): Prices
 }
 
 /**
+ * Whether this is a thing a person can physically own.
+ *
+ * Asking Scryfall for extras is what makes tokens findable, and it also returns
+ * digital-only cards. A paper collection cannot contain an Alchemy rebalance, so
+ * it has no business in a picker of printings you might be holding -- and until
+ * extras were requested it was excluded only by accident, so keeping it out
+ * preserves what the app already did.
+ *
+ * Everything else extras bring in is paper: tokens, art-series cards out of set
+ * boosters, oversized and championship memorabilia. Those stay.
+ *
+ * One predicate, used by every path that lists printings, so the Add-cards grid
+ * and the printing picker cannot disagree about what exists.
+ */
+export function holdable(card: { set_type?: string; digital?: boolean }): boolean {
+  if (card.digital === true) return false
+  return card.set_type !== 'alchemy'
+}
+
+/**
  * Double-faced layouts carry their images on `card_faces` rather than the card
  * itself, so fall back to the front face.
  */

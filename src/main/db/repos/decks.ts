@@ -49,6 +49,42 @@ export const DECK_OVERRIDE_JOIN = `
 
 export const DECK_PRINTING = 'COALESCE(o.scryfall_id, dc.scryfall_id)'
 
+/*
+  What the copies in *this* entry are.
+
+  Joined on the entry's own printing, which is the whole point: a deck can hold two
+  printings of one card, and a proxy in one of them says nothing about the other. See
+  migration 18.
+
+  Every reader goes through these three, in five files, so none of them can drift back
+  to reading the flag for the whole card.
+*/
+export const DECK_TRAITS_JOIN = `
+  LEFT JOIN deck_entry_traits tr
+         ON tr.deck_id = dc.deck_id
+        AND tr.oracle_id = dc.oracle_id
+        AND tr.scryfall_id = dc.scryfall_id`
+
+/*
+  The other side of a deck entry's card, where there is one.
+
+  Left joins on the entry's own printing, so an ordinary card joins nothing and reads
+  exactly as it did. Shared because three galleries draw a card tile and all three should
+  stack a two-sided card the same way.
+*/
+export const DECK_PAIR_JOIN = `
+  LEFT JOIN printing_pairs dpr ON dpr.scryfall_id = dc.scryfall_id
+  LEFT JOIN printings dpb ON dpb.scryfall_id = dpr.paired_scryfall_id`
+
+export const DECK_PAIR_COLUMNS = `
+  dpb.scryfall_id AS paired_scryfall_id,
+  dpb.name AS paired_name,
+  dpb.printed_name AS paired_printed_name`
+
+export const DECK_PROXIED = 'COALESCE(tr.proxied, 0)'
+
+export const DECK_TREATMENT = 'tr.foil_treatment'
+
 /**
  * The finish a deck entry is actually held in.
  *
@@ -290,6 +326,15 @@ export function applyDeckMoves(db: Sql, deckId: number): void {
     }
     applyOneMove(db, deckId, { ...move, quantity: move.quantity < 0 ? -remaining : remaining })
   }
+
+  /*
+    And once the ledger is back on top of the decklist, anything it invented and then
+    cancelled goes. Without this a phantom entry returns on every sync: the two moves
+    that cancel are still in the ledger and replaying them recreates the row.
+  */
+  for (const oracleId of new Set(moves.map((m) => m.oracle_id))) {
+    pruneEmptyEntries(db, deckId, oracleId)
+  }
 }
 
 /**
@@ -303,13 +348,32 @@ export function applyDeckMoves(db: Sql, deckId: number): void {
 export function applyOneMove(
   db: Sql,
   deckId: number,
-  move: { oracle_id: string; scryfall_id: string; finish: string; quantity: number }
+  move: {
+    oracle_id: string
+    scryfall_id: string
+    finish: string
+    quantity: number
+    /** The entry the copies belong to, when it is not the copies' own printing. */
+    entry_scryfall_id?: string | null
+  }
 ): void {
+  const entry = move.entry_scryfall_id ?? move.scryfall_id
   if (move.quantity < 0) {
     let owed = -move.quantity
+    /*
+      The entry the copies came out of first, then the rest.
+
+      Ordering by id alone took them from whichever row happened to be older, so
+      removing one printing of a card could empty the other -- and then the tag saying
+      the deck no longer matches the decklist hung on a row that had lost nothing. The
+      fallback stays: Archidekt may have re-pointed the entry since, and the copies have
+      to come from somewhere.
+    */
     const rows = db.all(
-      'SELECT id, quantity FROM deck_cards WHERE deck_id = ? AND oracle_id = ? ORDER BY id',
-      [deckId, move.oracle_id]
+      `SELECT id, quantity FROM deck_cards
+        WHERE deck_id = ? AND oracle_id = ?
+        ORDER BY (scryfall_id = ?) DESC, id`,
+      [deckId, move.oracle_id, entry]
     ) as { id: number; quantity: number }[]
     for (const row of rows) {
       if (owed <= 0) break
@@ -489,8 +553,8 @@ export function deckBreakdown(
     `SELECT dc.id, dc.deck_id, dc.quantity,
             ${DECK_FINISH} AS finish,
             o.finish AS override_finish,
-            o.foil_treatment AS override_treatment,
-            COALESCE(o.proxied, 0) AS proxied,
+            ${DECK_TREATMENT} AS override_treatment,
+            ${DECK_PROXIED} AS proxied,
             p.promo_types AS promo_types,
             dc.categories, dc.in_maindeck, dc.set_code,
             dc.collector_number, dc.image_uri_small, dc.label, dc.label_possession,
@@ -509,6 +573,9 @@ export function deckBreakdown(
             p.cmc AS cmc,
             p.color_identity AS color_identity,
             COALESCE(p.printed_type_line, p.type_line) AS type_line,
+            -- What the tile needs to draw a two-sided card as two cards.
+            p.layout AS layout,
+            ${DECK_PAIR_COLUMNS},
             ${price} AS unit_value,
             ${proxy} AS price_is_proxy,
             COALESCE((SELECT SUM(ci.quantity) FROM collection_items ci
@@ -516,14 +583,25 @@ export function deckBreakdown(
             COALESCE((SELECT SUM(ci.quantity) FROM collection_items ci
                       JOIN printings p2 ON p2.scryfall_id = ci.scryfall_id
                       WHERE dc.oracle_id IS NOT NULL AND p2.oracle_id = dc.oracle_id), 0) AS owned_any,
-            -- The net local divergence from the decklist for this card: negative
-            -- means copies were taken out, positive means copies were put in.
-            -- Reported, not applied: dc.quantity already includes it.
+            /*
+              The net local divergence from the decklist for *this entry*: negative means
+              copies were taken out, positive means copies were put in. Reported, not
+              applied -- dc.quantity already includes it.
+
+              Per printing, because a deck can hold two printings of one card. Summed per
+              card, taking print A out and putting print B in cancelled to zero and both
+              entries lost the tag that says the deck no longer matches the decklist.
+              Existing ledger rows already name their printing, so history lines up.
+            */
             COALESCE((SELECT SUM(m.quantity) FROM deck_card_moves m
-                      WHERE m.deck_id = dc.deck_id AND m.oracle_id = dc.oracle_id), 0) AS moved
+                      WHERE m.deck_id = dc.deck_id AND m.oracle_id = dc.oracle_id
+                        AND COALESCE(m.entry_scryfall_id, m.scryfall_id) = dc.scryfall_id),
+                     0) AS moved
      FROM deck_cards dc
      LEFT JOIN deck_card_overrides o
             ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
+     ${DECK_TRAITS_JOIN}
+     ${DECK_PAIR_JOIN}
      LEFT JOIN deck_card_lang_requests lr
             ON lr.deck_id = dc.deck_id AND lr.oracle_id = dc.oracle_id
      LEFT JOIN printings p ON p.scryfall_id = COALESCE(o.scryfall_id, dc.scryfall_id)
@@ -552,6 +630,10 @@ export function deckBreakdown(
     forced_lang: string | null
     override_finish: string | null
     override_treatment: string | null
+    layout: string | null
+    paired_scryfall_id: string | null
+    paired_name: string | null
+    paired_printed_name: string | null
     proxied: number
     promo_types: string | null
     categories: string
@@ -606,6 +688,17 @@ export function deckBreakdown(
         ),
       treatment_forced: row.override_treatment !== null,
       proxied: row.proxied === 1,
+      layout: row.layout ?? null,
+      // Only when both halves came back, so a tile never asks for a picture that is not
+      // there.
+      paired:
+        row.paired_scryfall_id && row.paired_name
+          ? {
+              scryfall_id: row.paired_scryfall_id,
+              name: row.paired_name,
+              printed_name: row.paired_printed_name
+            }
+          : null,
       moves: moves.get(row.oracle_id ?? '') ?? [],
       // The single source of truth for "how many do I have for this entry".
       // A card under an "owned" label is held by definition — that is the whole
@@ -965,13 +1058,17 @@ export function setCardFinish(
   const db = getDb()
   const current = db.get(
     `SELECT COALESCE(o.scryfall_id, dc.scryfall_id) AS scryfall_id,
-            COALESCE(o.lang, dc.lang) AS lang
+            COALESCE(o.lang, dc.lang) AS lang,
+            -- The entry's own printing too: a treatment attaches to that, not to the
+            -- printing the override names.
+            dc.scryfall_id AS entry_scryfall_id
      FROM deck_cards dc
      LEFT JOIN deck_card_overrides o ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
      WHERE dc.deck_id = ? AND dc.oracle_id = ? AND dc.scryfall_id IS NOT NULL
+     ORDER BY dc.quantity > 0 DESC, dc.id
      LIMIT 1`,
     [deckId, oracleId]
-  ) as { scryfall_id: string; lang: string } | undefined
+  ) as { scryfall_id: string; lang: string; entry_scryfall_id: string } | undefined
   if (!current) throw new Error(tr('err.noFinishAnchor'))
 
   // A nonfoil card has no foil treatment, so setting one would be a value no
@@ -979,15 +1076,23 @@ export function setCardFinish(
   const nextTreatment =
     treatment === undefined ? null : finish === 'nonfoil' || finish === null ? null : treatment
 
+  /*
+    The finish is a correction to the decklist entry and stays on the override; the
+    treatment describes the copies and moved to the traits table with migration 18. They
+    were written together because they used to live together, and a treatment recorded
+    for the whole card was applied to every printing of it in the deck.
+  */
   db.run(
     `INSERT INTO deck_card_overrides
-       (deck_id, oracle_id, scryfall_id, lang, finish, foil_treatment, created_at)
-     VALUES (?,?,?,?,?,?,?)
+       (deck_id, oracle_id, scryfall_id, lang, finish, created_at)
+     VALUES (?,?,?,?,?,?)
      ON CONFLICT(deck_id, oracle_id) DO UPDATE SET
-       finish = excluded.finish,
-       foil_treatment = excluded.foil_treatment`,
-    [deckId, oracleId, current.scryfall_id, current.lang, finish, nextTreatment, nowIso()]
+       finish = excluded.finish`,
+    [deckId, oracleId, current.scryfall_id, current.lang, finish, nowIso()]
   )
+  setEntryTraits(db, deckId, oracleId, current.entry_scryfall_id, {
+    foilTreatment: nextTreatment
+  })
 }
 
 /**
@@ -1000,24 +1105,21 @@ export function setCardFinish(
  */
 export function setCardProxied(deckId: number, oracleId: string, proxied: boolean): void {
   const db = getDb()
+  /*
+    The entry's own printing, because that is what a trait attaches to -- and the entry
+    holding copies first, since marking an emptied slot as a proxy says nothing.
+  */
   const current = db.get(
-    `SELECT COALESCE(o.scryfall_id, dc.scryfall_id) AS scryfall_id,
-            COALESCE(o.lang, dc.lang) AS lang
+    `SELECT dc.scryfall_id AS entry_scryfall_id
      FROM deck_cards dc
-     LEFT JOIN deck_card_overrides o ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
      WHERE dc.deck_id = ? AND dc.oracle_id = ? AND dc.scryfall_id IS NOT NULL
+     ORDER BY dc.quantity > 0 DESC, dc.id
      LIMIT 1`,
     [deckId, oracleId]
-  ) as { scryfall_id: string; lang: string } | undefined
+  ) as { entry_scryfall_id: string } | undefined
   if (!current) throw new Error(tr('err.noProxyAnchor'))
 
-  db.run(
-    `INSERT INTO deck_card_overrides
-       (deck_id, oracle_id, scryfall_id, lang, proxied, created_at)
-     VALUES (?,?,?,?,?,?)
-     ON CONFLICT(deck_id, oracle_id) DO UPDATE SET proxied = excluded.proxied`,
-    [deckId, oracleId, current.scryfall_id, current.lang, proxied ? 1 : 0, nowIso()]
-  )
+  setEntryTraits(db, deckId, oracleId, current.entry_scryfall_id, { proxied })
 }
 
 /**
@@ -1044,8 +1146,9 @@ export function deckSourcesFor(scryfallId: string, finish: string): DeckSource[]
      FROM deck_cards dc
      JOIN decks d ON d.id = dc.deck_id
      ${DECK_OVERRIDE_JOIN}
+     ${DECK_TRAITS_JOIN}
      WHERE dc.label_possession = 'owned'
-       AND COALESCE(o.proxied, 0) = 0
+       AND ${DECK_PROXIED} = 0
        AND ${DECK_PRINTING} = ?
        AND ${DECK_FINISH} = ?
      GROUP BY d.id, d.name, dc.oracle_id
@@ -1069,6 +1172,93 @@ export function deckChoices(): { deck_id: number; deck_name: string }[] {
  * The baseline is what the decklist says right now, which is what a later sync
  * measures its own progress against.
  */
+/**
+ * What the copies in one deck entry are: a proxy, a particular kind of foil, or both.
+ *
+ * Keyed on the entry's printing. `deck_cards` cannot hold either fact -- a sync
+ * rewrites every row of it -- and `deck_card_overrides` held them keyed on the card,
+ * which is the bug migration 18 exists to end.
+ *
+ * A row that says nothing is deleted rather than kept as a row of defaults, so the
+ * absence of a trait is one state and not two.
+ */
+export function setEntryTraits(
+  db: Sql,
+  deckId: number,
+  oracleId: string,
+  scryfallId: string,
+  traits: { proxied?: boolean; foilTreatment?: string | null }
+): void {
+  const existing = db.get(
+    `SELECT proxied, foil_treatment FROM deck_entry_traits
+      WHERE deck_id = ? AND oracle_id = ? AND scryfall_id = ?`,
+    [deckId, oracleId, scryfallId]
+  ) as { proxied: number; foil_treatment: string | null } | undefined
+
+  const proxied = traits.proxied ?? existing?.proxied === 1
+  const treatment =
+    traits.foilTreatment === undefined ? (existing?.foil_treatment ?? null) : traits.foilTreatment
+
+  if (!proxied && treatment === null) {
+    db.run(
+      `DELETE FROM deck_entry_traits
+        WHERE deck_id = ? AND oracle_id = ? AND scryfall_id = ?`,
+      [deckId, oracleId, scryfallId]
+    )
+    return
+  }
+
+  db.run(
+    `INSERT INTO deck_entry_traits
+       (deck_id, oracle_id, scryfall_id, proxied, foil_treatment, created_at)
+     VALUES (?,?,?,?,?,?)
+     ON CONFLICT(deck_id, oracle_id, scryfall_id) DO UPDATE SET
+       proxied = excluded.proxied,
+       foil_treatment = excluded.foil_treatment`,
+    [deckId, oracleId, scryfallId, proxied ? 1 : 0, treatment, nowIso()]
+  )
+}
+
+/**
+ * Drops deck entries that hold nothing and mean nothing.
+ *
+ * An emptied entry is usually worth keeping: when the decklist wants a card the deck no
+ * longer has, that empty slot is the fact the deck screen exists to show, and it is what
+ * you click to undo the move. So a row at zero survives as long as the ledger still says
+ * this card differs from the decklist.
+ *
+ * What it must not do is outlive the reason. Move a card the decklist never mentioned
+ * into a deck and back out and the moves cancel, leaving an entry that was invented by a
+ * move that no longer says anything -- a row at zero for ever, on a card Archidekt has
+ * never heard of.
+ *
+ * The net is the test, not the number of ledger rows: a +1 and a -1 are two rows saying
+ * nothing. Called from every path that can empty a row -- a move out, a revert, and the
+ * replay after a sync -- because the last of those would otherwise put it back.
+ */
+export function pruneEmptyEntries(db: Sql, deckId: number, oracleId: string): void {
+  /*
+    Per entry, not per card, and real data is what showed why.
+
+    One deck held two empty entries of the same card for opposite reasons: an Archidekt
+    entry whose copy had been taken out -- which must keep its slot, that is where the
+    tag hangs -- and beside it an entry a move had invented and then cancelled. Summed
+    across the card the two moves netted to zero and a per-card rule would have deleted
+    the decklist entry along with the phantom.
+  */
+  db.run(
+    `DELETE FROM deck_cards
+      WHERE deck_id = ? AND oracle_id = ? AND quantity = 0
+      AND COALESCE((
+            SELECT SUM(m.quantity) FROM deck_card_moves m
+             WHERE m.deck_id = deck_cards.deck_id
+               AND m.oracle_id = deck_cards.oracle_id
+               AND COALESCE(m.entry_scryfall_id, m.scryfall_id) = deck_cards.scryfall_id
+          ), 0) = 0`,
+    [deckId, oracleId]
+  )
+}
+
 export function recordMove(
   db: Sql,
   input: {
@@ -1080,6 +1270,12 @@ export function recordMove(
     quantity: number
     /** The treatment the copies carried, so a revert can put it back. */
     foilTreatment?: string | null
+    /**
+     * The printing of the deck entry these came out of, when it differs from the
+     * copies' own. Left off, it is the same -- which it is unless the entry's printing
+     * was overridden.
+     */
+    entryScryfallId?: string | null
   }
 ): void {
   const listed = (
@@ -1092,8 +1288,8 @@ export function recordMove(
   db.run(
     `INSERT INTO deck_card_moves
        (deck_id, oracle_id, scryfall_id, finish, condition, quantity,
-        deck_quantity_at_move, foil_treatment, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
+        deck_quantity_at_move, foil_treatment, entry_scryfall_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
     [
       input.deckId,
       input.oracleId,
@@ -1103,6 +1299,7 @@ export function recordMove(
       input.quantity,
       listed,
       input.foilTreatment ?? null,
+      input.entryScryfallId ?? null,
       nowIso()
     ]
   )

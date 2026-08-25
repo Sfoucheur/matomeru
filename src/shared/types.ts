@@ -159,6 +159,114 @@ export function priceFor(
   return Number.isFinite(value) ? value : null
 }
 
+/**
+ * Layouts that carry a picture per face, as opposed to two names on one picture.
+ *
+ * Measured against Scryfall rather than reasoned about, because the distinction is
+ * not what the name suggests: a split, flip, adventure or meld card also has "A //
+ * B" for a name and exactly one image, while a battle is filed under `transform`.
+ * The five below are every layout whose newest printing has an image on
+ * `card_faces[1]`.
+ *
+ * The card name cannot answer this -- it is `A // B` in both groups -- which is why
+ * the flip control could switch the rules text long before the picture could
+ * follow.
+ */
+export const TWO_IMAGE_LAYOUTS = [
+  'transform',
+  'modal_dfc',
+  'double_faced_token',
+  'reversible_card',
+  'art_series'
+]
+
+export function hasTwoImages(layout: string | null | undefined): boolean {
+  return layout !== null && layout !== undefined && TWO_IMAGE_LAYOUTS.includes(layout)
+}
+
+/** One side of a card: which picture to ask for, and what to call it. */
+export interface CardSide {
+  scryfallId: string
+  /** Which face of that printing. Always 0 when the two sides are two printings. */
+  face: 0 | 1
+  title: string
+}
+
+/**
+ * The two sides of a card, or null for a card with one.
+ *
+ * Two different things are two-sided in this app and nothing that draws a card should
+ * have to care which it is looking at:
+ *
+ *  - **One printing, two faces.** Kefka and every other `transform` / `modal_dfc` /
+ *    `double_faced_token` / `reversible_card` / `art_series` card. The second picture
+ *    is `face: 1` of the same id.
+ *  - **Two printings, one card.** A Commander 2017 Cat Warrior with a Rat on its back,
+ *    which Scryfall files as two unrelated cards. The second picture is just the other
+ *    printing's own.
+ *
+ * A pairing wins when a card somehow has both, because a pairing is a statement about a
+ * physical object and a layout is a statement about data.
+ *
+ * The names come from splitting on ` // `, the separator Scryfall itself uses for a
+ * two-faced name. A two-image layout whose name has no separator keeps the whole name
+ * for both sides rather than being reported as one-sided -- the pictures differ, which
+ * is what a stacked pair is showing.
+ */
+export function twoSides(
+  printing: {
+    scryfall_id: string
+    name: string
+    printed_name?: string | null
+    layout?: string | null
+  },
+  paired?: { scryfall_id: string; name: string; printed_name?: string | null } | null
+): { front: CardSide; back: CardSide } | null {
+  const shown = printing.printed_name ?? printing.name
+  if (paired) {
+    return {
+      front: { scryfallId: printing.scryfall_id, face: 0, title: shown },
+      back: {
+        scryfallId: paired.scryfall_id,
+        face: 0,
+        title: paired.printed_name ?? paired.name
+      }
+    }
+  }
+  if (!hasTwoImages(printing.layout)) return null
+  const parts = shown.split(' // ')
+  return {
+    front: { scryfallId: printing.scryfall_id, face: 0, title: parts[0] },
+    back: {
+      scryfallId: printing.scryfall_id,
+      face: 1,
+      title: parts.length > 1 ? parts.slice(1).join(' // ') : shown
+    }
+  }
+}
+
+/**
+ * What to call a card, naming both sides when it has two.
+ *
+ * A two-faced printing is already named `A // B` by Scryfall, so this only composes
+ * anything for a pair of printings -- which is exactly the case the collection's gallery
+ * tile was getting wrong, showing "Cat Warrior" for a card that is a Cat Warrior and a
+ * Rat.
+ */
+export function bothSidesTitle(
+  printing: {
+    scryfall_id: string
+    name: string
+    printed_name?: string | null
+    layout?: string | null
+  },
+  paired?: { scryfall_id: string; name: string; printed_name?: string | null } | null
+): string {
+  const sides = twoSides(printing, paired)
+  if (sides === null) return printing.printed_name ?? printing.name
+  return `${sides.front.title} // ${sides.back.title}`
+}
+
 export interface Printing {
   scryfall_id: string
   oracle_id: string | null
@@ -282,6 +390,20 @@ export interface CollectionRow {
    * still a real one, and still what prices and rules text come from.
    */
   language_forced: boolean
+  /**
+   * The other side, when this row is a card with a different token on each face.
+   *
+   * One physical card, one row. A Commander 2017 token is a Cat Warrior on the front
+   * and a Rat on the back, and Scryfall files those as two unrelated printings — so
+   * without this the collection would claim two cards and neither would admit the
+   * other existed. Null for every ordinary card.
+   */
+  paired: {
+    scryfall_id: string
+    name: string
+    printed_name: string | null
+    collector_number: string
+  } | null
   total_value: number | null
 }
 
@@ -467,6 +589,10 @@ export type PickSource =
     }
 
 export interface PickListItem {
+  /** The printing's layout, for deciding whether a tile draws two sides. */
+  layout?: string | null
+  /** The other side, when this card is a double-sided token. */
+  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
   id: number
   pick_list_id: number
   collection_item_id: number | null
@@ -522,6 +648,10 @@ export interface Deck {
 }
 
 export interface DeckCardRow {
+  /** The printing's layout, for deciding whether a tile draws two sides. */
+  layout?: string | null
+  /** The other side, when this card is a double-sided token. */
+  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
   id: number
   deck_id: number
   scryfall_id: string | null
@@ -876,6 +1006,11 @@ export const DEFAULT_PRINTING_FILTERS: PrintingFilters = {
 export interface PrintingChoice extends Printing {
   /** Copies of this exact printing already in the collection. */
   owned: number
+  /**
+   * The printing on the other side of the physical card, for a double-sided token whose
+   * two faces Scryfall files as separate cards. Null for everything else.
+   */
+  paired?: { scryfall_id: string; name: string; printed_name: string | null } | null
 }
 
 export interface AddCardInput {
@@ -902,6 +1037,16 @@ export interface QuickAddInput {
   finish: Finish
   condition: Condition
   quantity: number
+  /**
+   * The denominator printed on the card, when it was typed. Distinguishes a token
+   * sheet from the set at the same number -- see `sheetTotal` on `QuickEntry`.
+   */
+  sheetTotal?: number | null
+  /**
+   * The number on the other side, for a card with a different token on each face.
+   * Resolved on the same sheet as the front, because that is where a back is.
+   */
+  backNumber?: string | null
 }
 
 // ---------- CSV ----------

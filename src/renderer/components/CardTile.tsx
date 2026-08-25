@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { Check } from 'lucide-react'
 import type { TileDensity } from '@shared/types'
-import { CardImage } from './primitives'
+import { StackedArt } from './primitives'
 import { useT } from '../hooks/useT'
 
 export interface CardTileProps {
@@ -13,6 +13,15 @@ export interface CardTileProps {
   badges?: React.ReactNode
   /** Bottom overlay line beneath the title — quantity, value, owned state. */
   footer?: React.ReactNode
+  /*
+    The other side, as three primitives rather than one object.
+
+    Deliberately not `back: {...}`: this component is memoized and a freshly-built object
+    each render would defeat that as surely as inline JSX does, which the note below
+    already warns about. A grid of a few hundred tiles is where that costs something.
+  */
+  backScryfallId?: string | null
+  backFace?: 0 | 1
   /** Ring colour override, e.g. owned/missing state on the Decks page. */
   ringClass?: string
   selected?: boolean
@@ -47,6 +56,8 @@ function CardTileImpl({
   density,
   badges,
   footer,
+  backScryfallId,
+  backFace,
   ringClass,
   selected = false,
   selectable = true,
@@ -79,11 +90,13 @@ function CardTileImpl({
           selected ? 'ring-gold-500' : (ringClass ?? 'ring-transparent hover:ring-ink-600')
         }`}
       >
-        <CardImage
+        <StackedArt
           scryfallId={scryfallId}
           size={density === 'minimal' ? 'small' : 'normal'}
           className="aspect-[488/680] w-full"
           alt={title}
+          backScryfallId={backScryfallId}
+          backFace={backFace}
         />
 
         {showText && (

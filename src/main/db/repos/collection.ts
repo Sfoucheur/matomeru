@@ -6,7 +6,15 @@ import {
   rowToPrinting,
   type PrintingRow
 } from './printings.js'
-import { DECK_FINISH, DECK_OVERRIDE_JOIN, DECK_PRINTING } from './decks.js'
+import {
+  DECK_FINISH,
+  DECK_OVERRIDE_JOIN,
+  DECK_PRINTING,
+  DECK_PROXIED,
+  DECK_TRAITS_JOIN,
+  DECK_TREATMENT
+} from './decks.js'
+import { pairPrintings, pairedWith, unpairPrinting } from './pairs.js'
 import { FOIL_TREATMENTS, foilTreatmentOf } from '@shared/types'
 import type {
   AddCardInput,
@@ -75,8 +83,8 @@ const ROW_SOURCES = `
     -- literal, and one would close it.)
     SUM(dc.quantity),
     NULL, NULL, NULL, NULL,
-    MAX(o.forced_lang), MAX(o.forced_name), MAX(o.foil_treatment),
-    MAX(COALESCE(o.proxied, 0)),
+    MAX(o.forced_lang), MAX(o.forced_name), MAX(${DECK_TREATMENT}),
+    MAX(${DECK_PROXIED}),
     GROUP_CONCAT(DISTINCT d.name),
     -- Nothing reserves a sleeved card. A pick list means cards leaving your
     -- possession, and only collection rows can be staged into one; taking a card
@@ -85,6 +93,7 @@ const ROW_SOURCES = `
   FROM deck_cards dc
   JOIN decks d ON d.id = dc.deck_id
   ${DECK_OVERRIDE_JOIN}
+  ${DECK_TRAITS_JOIN}
   WHERE dc.label_possession = 'owned' AND ${DECK_PRINTING} IS NOT NULL
   GROUP BY ${DECK_PRINTING}, ${DECK_FINISH}
   -- A slot whose copies have all been moved out is kept on the deck screen, so the
@@ -141,6 +150,7 @@ const DECK_COUNT_EXPR = `(
   SELECT COUNT(DISTINCT dc.deck_id)
   FROM deck_cards dc
   ${DECK_OVERRIDE_JOIN}
+  ${DECK_TRAITS_JOIN}
   WHERE dc.label_possession IS NOT 'not_owned'
     AND (${DECK_PRINTING} = r.scryfall_id
          OR (p.oracle_id IS NOT NULL AND dc.oracle_id = p.oracle_id))
@@ -233,8 +243,14 @@ function buildWhere(filters: CollectionFilters, currency: Currency): WhereClause
       OR p.collector_number LIKE ?
       OR p.type_line LIKE ? COLLATE NOCASE
       OR p.printed_type_line LIKE ? COLLATE NOCASE
+      -- The other side of the card counts as this card. One row stands for both
+      -- tokens, so searching "Rat" has to reach the row filed as a Cat Warrior --
+      -- otherwise combining the two hid a token you own.
+      OR pb.name LIKE ? COLLATE NOCASE
+      OR pb.printed_name LIKE ? COLLATE NOCASE
+      OR pb.collector_number LIKE ?
     )`)
-    params.push(term, term, term, term, term, term)
+    params.push(term, term, term, term, term, term, term, term, term)
   }
 
   const inList = (column: string, values: readonly string[]): void => {
@@ -336,6 +352,10 @@ interface JoinedRow extends PrintingRow {
   forced_name: string | null
   foil_treatment: string | null
   proxied: number
+  paired_scryfall_id: string | null
+  paired_name: string | null
+  paired_printed_name: string | null
+  paired_collector_number: string | null
 }
 
 function toCollectionRow(row: JoinedRow): CollectionRow {
@@ -353,6 +373,15 @@ function toCollectionRow(row: JoinedRow): CollectionRow {
     scryfall_id: row.row_scryfall_id,
     price_is_proxy: !!row.price_is_proxy,
     language_forced: !!row.forced_lang,
+    paired:
+      row.paired_scryfall_id && row.paired_name
+        ? {
+            scryfall_id: row.paired_scryfall_id,
+            name: row.paired_name,
+            printed_name: row.paired_printed_name,
+            collector_number: row.paired_collector_number ?? ''
+          }
+        : null,
     finish: row.finish as Finish,
     // Normally the printing says which foil this is; a stored value is a
     // correction you made, and the UI marks it as yours.
@@ -391,7 +420,17 @@ function toCollectionRow(row: JoinedRow): CollectionRow {
 }
 
 /** The union, wrapped so every query shares one definition of "a collection row". */
-const FROM_ROWS = `FROM (${ROW_SOURCES}) r JOIN printings p ON p.scryfall_id = r.scryfall_id`
+/*
+  The other side of the card, where there is one.
+
+  Left joins, because a partner is the exception: every card that is not one of these
+  double-sided tokens joins to nothing and reads exactly as it did before.
+*/
+const FROM_ROWS =
+  `FROM (${ROW_SOURCES}) r
+     JOIN printings p ON p.scryfall_id = r.scryfall_id
+     LEFT JOIN printing_pairs pr ON pr.scryfall_id = r.scryfall_id
+     LEFT JOIN printings pb ON pb.scryfall_id = pr.paired_scryfall_id`
 
 export function queryCollection(
   filters: CollectionFilters,
@@ -419,6 +458,10 @@ export function queryCollection(
        r.deck_names, r.reserved, r.forced_lang, r.forced_name, r.foil_treatment,
        r.proxied,
        ${PRINTING_COLUMNS},
+       pb.scryfall_id AS paired_scryfall_id,
+       pb.name AS paired_name,
+       pb.printed_name AS paired_printed_name,
+       pb.collector_number AS paired_collector_number,
        ${DECK_COUNT_EXPR} AS deck_count,
        ${price} AS unit_value,
        ${proxy} AS price_is_proxy,
@@ -509,9 +552,42 @@ export function queryFacets(filters: CollectionFilters, currency: Currency): Fac
  * Adds copies to the collection, merging into the existing row for the same
  * printing/finish/condition rather than creating a duplicate.
  */
+/**
+ * The printing a copy should actually be filed under.
+ *
+ * A Commander 2017 token card is a Cat Warrior on the front and a Rat on the back,
+ * and the two are separate printings -- so adding both the ordinary way claims two
+ * cards when one is what you hold. Once the pair is known, a copy of either side
+ * files itself under whichever side the collection already has.
+ *
+ * That is what makes the order they were met in stop mattering: type the Cat Warrior
+ * first and the Rat joins its row; type the Rat first and the Cat Warrior joins that
+ * one instead.
+ *
+ * A printing with no partner -- which is every card that is not one of these tokens
+ * -- comes straight back, so nothing else changes.
+ */
+function filedUnder(input: AddCardInput): string {
+  const partner = pairedWith(input.scryfall_id)
+  if (partner === null) return input.scryfall_id
+  const db = getDb()
+  const mine = db.get(
+    'SELECT 1 AS hit FROM collection_items WHERE scryfall_id = ? AND finish = ? AND condition = ?',
+    [input.scryfall_id, input.finish, input.condition]
+  ) as { hit: number } | undefined
+  // This side already has a row of its own; leave it where it is.
+  if (mine) return input.scryfall_id
+  const theirs = db.get(
+    'SELECT 1 AS hit FROM collection_items WHERE scryfall_id = ? AND finish = ? AND condition = ?',
+    [partner, input.finish, input.condition]
+  ) as { hit: number } | undefined
+  return theirs ? partner : input.scryfall_id
+}
+
 export function addToCollection(input: AddCardInput): number {
   const db = getDb()
   const now = nowIso()
+  const scryfallId = filedUnder(input)
   db.run(
     `INSERT INTO collection_items
        (scryfall_id, finish, condition, quantity, purchase_price, notes, added_at, updated_at)
@@ -522,7 +598,7 @@ export function addToCollection(input: AddCardInput): number {
        notes = COALESCE(excluded.notes, notes),
        updated_at = excluded.updated_at`,
     [
-      input.scryfall_id,
+      scryfallId,
       input.finish,
       input.condition,
       input.quantity,
@@ -534,7 +610,7 @@ export function addToCollection(input: AddCardInput): number {
   )
   const row = db.get(
     'SELECT id FROM collection_items WHERE scryfall_id = ? AND finish = ? AND condition = ?',
-    [input.scryfall_id, input.finish, input.condition]
+    [scryfallId, input.finish, input.condition]
   ) as { id: number }
   return row.id
 }
@@ -655,6 +731,100 @@ export function removeItem(itemId: number): void {
   db.run('DELETE FROM collection_items WHERE id = ?', [itemId])
 }
 
+/** What a merge did, so the UI can say when it had to choose. */
+export interface MergeResult {
+  itemId: number
+  quantity: number
+  /** True when the two rows claimed different counts and the larger was kept. */
+  disagreed: boolean
+}
+
+/**
+ * Marks two rows as the two sides of one physical card, and merges them.
+ *
+ * The pairing is the lasting part: it is a fact about the two printings, so every
+ * copy met afterwards files itself under the surviving row without being told again.
+ *
+ * The merge keeps **one** card, not two. Two rows of one are one card with a token on
+ * each side, and that is the count the collection should report. When the two rows
+ * disagree the larger wins -- somebody typed a quantity twice for a card they have
+ * three of -- and `disagreed` lets the UI say so rather than silently picking.
+ *
+ * `keep` survives with its own finish and condition. A card has one of each, and the
+ * row the user reached for first is the better guess at which is right.
+ */
+export function pairAndMerge(keep: number, absorb: number): MergeResult {
+  const db = getDb()
+  if (keep === absorb) throw new Error(tr('err.pairNeedsTwo'))
+
+  const rows = [keep, absorb].map((id) => {
+    const row = db.get(
+      'SELECT id, scryfall_id, finish, condition, quantity FROM collection_items WHERE id = ?',
+      [id]
+    ) as
+      | { id: number; scryfall_id: string; finish: string; condition: string; quantity: number }
+      | undefined
+    if (!row) throw new Error(tr('err.itemNotFound'))
+    return row
+  })
+  const [survivor, absorbed] = rows
+  if (survivor.scryfall_id === absorbed.scryfall_id) throw new Error(tr('err.pairSameCard'))
+
+  /*
+    Refused while an open list holds either row, for the reason `removeItem` refuses:
+    the absorbed row is about to be deleted, `pick_list_items.collection_item_id` is
+    ON DELETE SET NULL, and a list would quietly lose its link to a card it is still
+    counting on.
+  */
+  for (const row of rows) {
+    const reserved = (
+      db.get(
+        `SELECT COALESCE(SUM(pli.quantity), 0) AS reserved
+           FROM pick_list_items pli
+           JOIN pick_lists pl ON pl.id = pli.pick_list_id
+          WHERE pli.collection_item_id = ? AND pl.status = 'open'`,
+        [row.id]
+      ) as { reserved: number }
+    ).reserved
+    if (reserved > 0) {
+      const printing = db.get('SELECT name FROM printings WHERE scryfall_id = ?', [
+        row.scryfall_id
+      ]) as { name: string } | undefined
+      throw new Error(tr('err.pairReserved', { name: printing?.name ?? row.scryfall_id }))
+    }
+  }
+
+  const quantity = Math.max(survivor.quantity, absorbed.quantity)
+  const disagreed = survivor.quantity !== absorbed.quantity
+
+  transaction(() => {
+    pairPrintings(survivor.scryfall_id, absorbed.scryfall_id)
+    db.run('DELETE FROM collection_items WHERE id = ?', [absorbed.id])
+    db.run('UPDATE collection_items SET quantity = ?, updated_at = ? WHERE id = ?', [
+      quantity,
+      nowIso(),
+      survivor.id
+    ])
+  })
+
+  return { itemId: survivor.id, quantity, disagreed }
+}
+
+/**
+ * Forgets that a row's card has another side, leaving the row as it is.
+ *
+ * The copies stay where they are: unpairing says the two printings are not one card,
+ * not that the cards were never owned. Splitting the count back into two rows would
+ * invent copies that were never there.
+ */
+export function unpairItem(itemId: number): void {
+  const row = getDb().get('SELECT scryfall_id FROM collection_items WHERE id = ?', [itemId]) as
+    | { scryfall_id: string }
+    | undefined
+  if (!row) throw new Error(tr('err.itemNotFound'))
+  unpairPrinting(row.scryfall_id)
+}
+
 export function bulkUpdate(
   itemIds: number[],
   patch: {
@@ -704,10 +874,22 @@ export function getItem(itemId: number): CollectionRow | null {
 }
 
 /** Copies of one exact printing currently held, across all finishes/conditions. */
+/**
+ * How many copies of this printing you hold.
+ *
+ * Counts the row the card is filed under, whichever side that is. One physical card
+ * with a Cat Warrior on the front and a Rat on the back is one row, and asking about
+ * the Rat has to answer one rather than none -- this figure is the "owned" badge on
+ * the Add-cards tiles and in the printing picker, so a zero there would flatly
+ * contradict the collection.
+ */
 export function ownedCount(scryfallId: string): number {
   const row = getDb().get(
-    'SELECT COALESCE(SUM(quantity), 0) AS total FROM collection_items WHERE scryfall_id = ?',
-    [scryfallId]
+    `SELECT COALESCE(SUM(ci.quantity), 0) AS total
+       FROM collection_items ci
+      WHERE ci.scryfall_id = ?
+         OR ci.scryfall_id = (SELECT paired_scryfall_id FROM printing_pairs WHERE scryfall_id = ?)`,
+    [scryfallId, scryfallId]
   ) as { total: number }
   return row.total
 }
@@ -721,12 +903,21 @@ export function ownedCount(scryfallId: string): number {
 export function ownedCounts(scryfallIds: string[]): Map<string, number> {
   const counts = new Map<string, number>()
   if (scryfallIds.length === 0) return counts
+  /*
+    Asked for a printing, answered from whichever side of the card carries the row.
+    `COALESCE` maps a partner's row back onto the id that was asked about, so a caller
+    that asked about the Rat is told about the Rat.
+  */
+  const placeholders = scryfallIds.map(() => '?').join(',')
   const rows = getDb().all(
-    `SELECT scryfall_id, COALESCE(SUM(quantity), 0) AS total
-     FROM collection_items
-     WHERE scryfall_id IN (${scryfallIds.map(() => '?').join(',')})
-     GROUP BY scryfall_id`,
-    scryfallIds
+    `SELECT COALESCE(pr.scryfall_id, ci.scryfall_id) AS scryfall_id,
+            COALESCE(SUM(ci.quantity), 0) AS total
+       FROM collection_items ci
+       LEFT JOIN printing_pairs pr ON pr.paired_scryfall_id = ci.scryfall_id
+      WHERE ci.scryfall_id IN (${placeholders})
+         OR pr.scryfall_id IN (${placeholders})
+      GROUP BY COALESCE(pr.scryfall_id, ci.scryfall_id)`,
+    [...scryfallIds, ...scryfallIds]
   ) as { scryfall_id: string; total: number }[]
   for (const row of rows) counts.set(row.scryfall_id, row.total)
   return counts
@@ -770,11 +961,12 @@ export function cardLocations(scryfallId: string): CardLocations | null {
             -- A deck holds one entry per card, so the aggregate is that entry's
             -- own value; MAX only satisfies the GROUP BY.
             MAX(${DECK_FINISH}) AS finish,
-            MAX(o.foil_treatment) AS foil_treatment,
+            MAX(${DECK_TREATMENT}) AS foil_treatment,
             MAX(CASE WHEN o.finish IS NOT NULL THEN 1 ELSE 0 END) AS finish_forced
      FROM deck_cards dc
      JOIN decks d ON d.id = dc.deck_id
      ${DECK_OVERRIDE_JOIN}
+  ${DECK_TRAITS_JOIN}
      WHERE dc.label_possession IS NOT 'not_owned'
        AND (${DECK_PRINTING} = ? OR (? IS NOT NULL AND dc.oracle_id = ?))
      GROUP BY d.id, d.name

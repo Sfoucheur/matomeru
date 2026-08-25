@@ -3,8 +3,13 @@ import {
   DECK_FINISH,
   DECK_OVERRIDE_JOIN,
   DECK_PRINTING,
+  DECK_PROXIED,
+  DECK_TRAITS_JOIN,
+  DECK_TREATMENT,
   applyOneMove,
-  recordMove
+  pruneEmptyEntries,
+  recordMove,
+  setEntryTraits
 } from './decks.js'
 import { addToCollection } from './collection.js'
 import { t } from '@shared/i18n/index'
@@ -40,25 +45,50 @@ function tr(key: TranslationKey, vars?: Record<string, string | number>): string
 export function moveToCollection(
   deckId: number,
   oracleId: string,
-  quantity: number
+  quantity: number,
+  /**
+   * Which entry to take them out of, when the deck holds more than one printing.
+   *
+   * Optional, and the fallback is what this did before it existed: any entry of the
+   * card. The deck screen has always selected a *row*, which is a printing, and threw
+   * that away before calling -- so removing one print could empty the other, and could
+   * be refused outright because the other entry held a proxy.
+   */
+  scryfallId?: string | null
 ): { moved: number } {
   if (quantity <= 0) throw new Error(tr('err.quantityAtLeastOne'))
   return transaction((db) => {
     const entry = db.get(
-      `SELECT ${DECK_PRINTING} AS scryfall_id, ${DECK_FINISH} AS finish,
-              COALESCE(o.proxied, 0) AS proxied,
-              o.foil_treatment AS foil_treatment,
+      `SELECT ${DECK_PRINTING} AS scryfall_id,
+              -- The entry's own printing, which is not always the copies': see
+              -- deck_card_moves.entry_scryfall_id.
+              dc.scryfall_id AS entry_scryfall_id,
+              ${DECK_FINISH} AS finish,
+              ${DECK_PROXIED} AS proxied,
+              ${DECK_TREATMENT} AS foil_treatment,
               dc.label_possession AS label_possession,
               (SELECT COALESCE(SUM(quantity), 0) FROM deck_cards d2
                WHERE d2.deck_id = dc.deck_id AND d2.oracle_id = dc.oracle_id) AS held
        FROM deck_cards dc
        ${DECK_OVERRIDE_JOIN}
+       ${DECK_TRAITS_JOIN}
        WHERE dc.deck_id = ? AND dc.oracle_id = ? AND ${DECK_PRINTING} IS NOT NULL
+         AND (? IS NULL OR dc.scryfall_id = ?)
+       /*
+         The entry asked for first, then any of them.
+
+         The deck screen selects a row, which is a printing, and used to throw that away
+         before calling here -- so with two entries this picked one arbitrarily and read
+         the other's proxy flag. The fallback stays because Archidekt may have re-pointed
+         the entry since it was drawn, and the copies still have to come from somewhere.
+       */
+       ORDER BY (dc.scryfall_id = ?) DESC, dc.quantity > 0 DESC, dc.id
        LIMIT 1`,
-      [deckId, oracleId]
+      [deckId, oracleId, scryfallId ?? null, scryfallId ?? null, scryfallId ?? null]
     ) as
       | {
           scryfall_id: string
+          entry_scryfall_id: string
           finish: string
           proxied: number
           foil_treatment: string | null
@@ -88,14 +118,22 @@ export function moveToCollection(
       finish: entry.finish,
       condition: 'NM',
       quantity: -quantity,
-      foilTreatment: entry.foil_treatment
+      foilTreatment: entry.foil_treatment,
+      entryScryfallId: entry.entry_scryfall_id
     })
     applyOneMove(db, deckId, {
       oracle_id: oracleId,
       scryfall_id: entry.scryfall_id,
       finish: entry.finish,
-      quantity: -quantity
+      quantity: -quantity,
+      entry_scryfall_id: entry.entry_scryfall_id
     })
+    /*
+      An entry the decklist never mentioned, emptied again, is a phantom -- and this is
+      the path that creates one: move a card in, move it back out. The revert path
+      pruned; this one did not, so the row sat at zero for ever.
+    */
+    pruneEmptyEntries(db, deckId, oracleId)
     const itemId = addToCollection({
       scryfall_id: entry.scryfall_id,
       finish: entry.finish as Finish,
@@ -197,6 +235,16 @@ export function moveToDeck(
       if (alreadyThere > 0) throw new Error(tr('err.moveProxyMixes'))
     }
 
+    // Read before the move applies, since applying it is what fills the entry.
+    const entryWasEmpty =
+      (
+        db.get(
+          `SELECT COALESCE(SUM(quantity), 0) AS held FROM deck_cards
+            WHERE deck_id = ? AND scryfall_id = ?`,
+          [deckId, row.scryfall_id]
+        ) as { held: number }
+      ).held === 0
+
     if (row.quantity === quantity) db.run('DELETE FROM collection_items WHERE id = ?', [row.id])
     else {
       db.run('UPDATE collection_items SET quantity = ?, updated_at = ? WHERE id = ?', [
@@ -223,28 +271,23 @@ export function moveToDeck(
     })
 
     /*
-      Carry the two facts `deck_cards` cannot hold itself. Both live in the override
-      table on the deck side, which is where the deck screen already reads them from,
-      so nothing else has to learn about moves to display them correctly.
+      Carry the two facts `deck_cards` cannot hold itself.
+
+      Written against the printing that went in, not against the card. Keyed on the
+      card, a proxy of one printing marked every printing of it in the deck as a proxy
+      -- and then refused to let the real one out again. See migration 18.
+
+      An entry that was empty takes its traits from what fills it, clearing included: an
+      entry emptied while marked as a proxy would otherwise still be flagged when a real
+      copy arrived, and then refuse to leave. An entry that already holds copies only
+      ever gains a trait, because the copies already there are not being described --
+      and `err.moveProxyMixes` above is what stops a proxy joining real copies at all.
     */
-    if (row.proxied === 1 || row.foil_treatment !== null) {
-      db.run(
-        `INSERT INTO deck_card_overrides
-           (deck_id, oracle_id, scryfall_id, lang, proxied, foil_treatment, created_at)
-         VALUES (?,?,?,?,?,?,?)
-         ON CONFLICT(deck_id, oracle_id) DO UPDATE SET
-           proxied = COALESCE(excluded.proxied, proxied),
-           foil_treatment = COALESCE(excluded.foil_treatment, foil_treatment)`,
-        [
-          deckId,
-          row.oracle_id,
-          row.scryfall_id,
-          row.lang,
-          row.proxied === 1 ? 1 : null,
-          row.foil_treatment,
-          nowIso()
-        ]
-      )
+    if (entryWasEmpty || row.proxied === 1 || row.foil_treatment !== null) {
+      setEntryTraits(db, deckId, row.oracle_id, row.scryfall_id, {
+        proxied: row.proxied === 1,
+        foilTreatment: row.foil_treatment
+      })
     }
     return { moved: quantity }
   })
@@ -343,18 +386,7 @@ export function revertMoveIn(db: Sql, moveId: number): { deckId: number; quantit
     it goes -- but only once no move for this card remains, since a standing
     move-out still needs its slot to hang the tag on.
   */
-  const stillMoved = (
-    db.get(
-      'SELECT COUNT(*) AS n FROM deck_card_moves WHERE deck_id = ? AND oracle_id = ?',
-      [move.deck_id, move.oracle_id]
-    ) as { n: number }
-  ).n
-  if (stillMoved === 0) {
-    db.run('DELETE FROM deck_cards WHERE deck_id = ? AND oracle_id = ? AND quantity = 0', [
-      move.deck_id,
-      move.oracle_id
-    ])
-  }
+  pruneEmptyEntries(db, move.deck_id, move.oracle_id)
 
   return { deckId: move.deck_id, quantity: Math.abs(move.quantity) }
 }

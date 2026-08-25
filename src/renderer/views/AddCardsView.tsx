@@ -4,10 +4,12 @@ import { Check, Search, Sparkles, Zap } from 'lucide-react'
 import {
   CONDITIONS,
   FINISHES,
+  bothSidesTitle,
   effectiveFinishFor,
   foilTreatmentLabel,
   foilTreatmentOf,
   priceFor,
+  twoSides,
   type Condition,
   type Finish,
   type PrintingChoice,
@@ -22,8 +24,8 @@ import { matchesPrintingFilters } from '../lib/printingFilter'
 import Popover from '../components/Popover'
 import {
   Button,
-  CardImage,
   EmptyState,
+  StackedArt,
   LangChip,
   QuantityStepper,
   RarityPip,
@@ -367,6 +369,8 @@ function PrintingTile({
   // is telling the printings apart while browsing. Keyed off `effective` it would
   // vanish whenever Normal was selected, which is the default.
   const treatment = foilTreatmentOf(printing, 'foil')
+  // Computed once: it is read three times below, and it is pure.
+  const sides = twoSides(printing, printing.paired)
 
   return (
     <button
@@ -380,18 +384,26 @@ function PrintingTile({
         added ? 'ring-2 ring-good' : 'ring-ink-700 hover:ring-gold-500'
       }`}
     >
-      <CardImage
+      {/*
+        A search result is a printing, so the pairing it might have is looked up with it
+        -- see `paired` on PrintingChoice. Either kind of two-sidedness stacks here for
+        the same reason it does in the collection: a card with two sides looks like two
+        cards everywhere else.
+      */}
+      <StackedArt
         scryfallId={printing.scryfall_id}
         size="normal"
         className="aspect-[488/680] w-full"
         alt={printing.name}
+        backScryfallId={sides?.back.scryfallId ?? null}
+        backFace={sides?.back.face}
       />
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/72 to-transparent px-2 pb-2 pt-7">
         {density === 'full' && (
           <>
             <p className="truncate text-[11px] font-medium text-white">
-              {printing.printed_name ?? printing.name}
+              {bothSidesTitle(printing, printing.paired)}
             </p>
             <p className="truncate text-[10px] text-white/60">
               {printing.set_code.toUpperCase()} · #{printing.collector_number}
@@ -490,14 +502,30 @@ function QuickTab({ active }: { active: boolean }): React.ReactElement {
         lang: parsed.lang,
         finish,
         condition,
-        quantity: parsed.quantity
+        quantity: parsed.quantity,
+        sheetTotal: parsed.sheetTotal,
+        backNumber: parsed.backNumber
       })
       const printing = result.printing
       setLog((current) => [
         {
           id: ++logId.current,
           ok: true,
-          text: `${parsed.quantity}× ${printing.printed_name ?? printing.name} · ${printing.lang.toUpperCase()} · ${printing.set_code.toUpperCase()} #${printing.collector_number}`
+          /*
+            The set is named because it is not always the one that was typed: "c17
+            008/011" lands on TC17, and a line that only echoed the number would hide
+            the one thing worth checking. Tokens are marked for the same reason -- it
+            is the confirmation that the sheet, not the card at that number, was added.
+          */
+          text:
+            `${parsed.quantity}× ${printing.printed_name ?? printing.name}` +
+            (result.paired
+              ? ` // ${result.paired.printed_name ?? result.paired.name}`
+              : '') +
+            ` · ${printing.lang.toUpperCase()}` +
+            ` · ${printing.set_code.toUpperCase()} #${printing.collector_number}` +
+            (result.paired ? ` // #${result.paired.collector_number}` : '') +
+            (printing.layout.includes('token') ? ' · token' : '')
         },
         ...current.slice(0, 40)
       ])

@@ -19,8 +19,24 @@ const inFlight = new Map<string, Promise<string | null>>()
 /** `large` is 672x936 — worth it for the detail view, wasteful for a grid tile. */
 export type ImageSize = 'small' | 'normal' | 'large'
 
-function imagePath(scryfallId: string, size: ImageSize): string {
-  return join(getImagesDir(), `${scryfallId}-${size}.jpg`)
+/**
+ * Which side of the card. 0 is the front, and the only one that existed before.
+ *
+ * A `Cat // Dragon` token is one physical card with two usable faces, and Scryfall
+ * puts a double-faced card's images *only* on `card_faces` -- so face 0 was being
+ * shown for both sides and the back was unreachable.
+ */
+export type Face = 0 | 1
+
+/**
+ * Face 0 keeps its old filename, deliberately.
+ *
+ * Every image already on disk was written under the unsuffixed name, so adding the
+ * face to it unconditionally would orphan the entire cache and re-download it.
+ */
+function imagePath(scryfallId: string, size: ImageSize, face: Face = 0): string {
+  const suffix = face === 0 ? '' : `-face${face}`
+  return join(getImagesDir(), `${scryfallId}-${size}${suffix}.jpg`)
 }
 
 /**
@@ -29,7 +45,28 @@ function imagePath(scryfallId: string, size: ImageSize): string {
  * with a `card_faces` fallback for double-faced cards, which carry their images
  * per face, and a final fall back to `normal` when neither is present.
  */
-function remoteUrl(scryfallId: string, size: ImageSize): string | null {
+function remoteUrl(scryfallId: string, size: ImageSize, face: Face = 0): string | null {
+  /*
+    A back face is only ever in the stored Scryfall object -- the two columns hold
+    one image each, and that one is the front. No re-sync is needed for this:
+    `raw_json` has been kept whole all along.
+
+    It falls back to the front rather than to nothing, so asking for a second face
+    of a single-faced card gives the card instead of a broken image.
+  */
+  if (face !== 0) {
+    const row = getDb().get(
+      `SELECT COALESCE(
+                json_extract(raw_json, '$.card_faces[${face}].image_uris.${size}'),
+                json_extract(raw_json, '$.card_faces[0].image_uris.${size}'),
+                json_extract(raw_json, '$.image_uris.${size}'),
+                image_uri_normal
+              ) AS uri
+       FROM printings WHERE scryfall_id = ?`,
+      [scryfallId]
+    ) as { uri: string | null } | undefined
+    return row?.uri ?? null
+  }
   if (size === 'large') {
     const row = getDb().get(
       `SELECT COALESCE(
@@ -49,11 +86,31 @@ function remoteUrl(scryfallId: string, size: ImageSize): string | null {
   return row?.uri ?? null
 }
 
-async function download(scryfallId: string, size: ImageSize): Promise<string | null> {
-  const target = imagePath(scryfallId, size)
+/**
+ * Whether this printing has a second face with a picture of its own.
+ *
+ * Read from the stored object, so it costs one query and no request. The UI uses it
+ * to decide whether a flip control belongs on the card at all -- offering one that
+ * turns the card into a copy of itself would be worse than offering none.
+ */
+export function hasSecondFace(scryfallId: string): boolean {
+  const row = getDb().get(
+    `SELECT json_extract(raw_json, '$.card_faces[1].image_uris.normal') AS uri
+       FROM printings WHERE scryfall_id = ?`,
+    [scryfallId]
+  ) as { uri: string | null } | undefined
+  return typeof row?.uri === 'string' && row.uri.length > 0
+}
+
+async function download(
+  scryfallId: string,
+  size: ImageSize,
+  face: Face = 0
+): Promise<string | null> {
+  const target = imagePath(scryfallId, size, face)
   if (existsSync(target)) return target
 
-  const url = remoteUrl(scryfallId, size)
+  const url = remoteUrl(scryfallId, size, face)
   if (!url) return null
 
   // Write to a temp name first so a killed download never leaves a truncated
@@ -119,18 +176,27 @@ export function cachedSetIcon(code: string): Promise<string | null> {
   return task
 }
 
-export function cachedImage(scryfallId: string, size: ImageSize): Promise<string | null> {
-  const key = `${scryfallId}:${size}`
+export function cachedImage(
+  scryfallId: string,
+  size: ImageSize,
+  face: Face = 0
+): Promise<string | null> {
+  // The face is part of the key, or the front's download would be handed back for
+  // the back and both faces would show the same picture.
+  const key = `${scryfallId}:${size}:${face}`
   const existing = inFlight.get(key)
   if (existing) return existing
-  const task = download(scryfallId, size).finally(() => inFlight.delete(key))
+  const task = download(scryfallId, size, face).finally(() => inFlight.delete(key))
   inFlight.set(key, task)
   return task
 }
 
 /**
- * Registers `matomeru://image/{scryfallId}?size=small|normal` and
+ * Registers `matomeru://image/{scryfallId}?size=small|normal[&face=1]` and
  * `matomeru://seticon/{setCode}`.
+ *
+ * `face` is absent for every URL the app built before double-faced cards could be
+ * flipped, and absent means the front -- so no existing URL changes meaning.
  *
  * Must be called before any window loads. Missing images resolve to a 404 so
  * the renderer can fall back to a placeholder without an unhandled failure.
@@ -170,7 +236,10 @@ export function registerImageProtocol(): void {
       return new Response('Bad request', { status: 400 })
     }
 
-    const path = await cachedImage(scryfallId, size)
+    // Only two faces exist in Scryfall's data; anything else is the front.
+    const face: Face = url.searchParams.get('face') === '1' ? 1 : 0
+
+    const path = await cachedImage(scryfallId, size, face)
     if (!path) return new Response('Not found', { status: 404 })
 
     try {

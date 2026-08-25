@@ -108,6 +108,114 @@ imply. They are the reason parts of the code look the way they do.
   `""`, not null.
 - Throttled to 1 request / 500 ms, and decks whose `updatedAt` is unchanged are skipped.
 
+### Tokens, and the number printed on a card
+
+A Cat Warrior token reads `C17 008/011`. Typing `c17 8` added **Teferi's Protection**,
+with no error, because C17 #8 genuinely is Teferi's Protection — a token sheet is its own
+Scryfall set (`tc17`), and the code printed on a token card is the *parent's*.
+
+The card carries the disambiguator: the denominator. C17 has 309 cards and TC17 has 11, so
+`008/011` can only be the sheet. That is reliable rather than lucky — of **212** token
+sets, **zero** share their parent's `card_count`, and for 14/14 sampled the count equals
+the highest collector number, so the printed denominator matches what the `sets` cache
+already holds. `parent_set_code` makes the lookup exact instead of a guess at `"t" + code`.
+
+The denominator may only ever *narrow* the choice, never veto it: for most sets the printed
+number is not `card_count` at all (Bloomburrow prints `/261` and counts 398), and
+`printed_size` — the number actually on the cards — exists for only 169 of 1048 sets. So
+`chooseSets` always ends with the set that was typed.
+
+Three more API facts worth not rediscovering:
+
+- **Leading zeros are rejected.** `blb/008` is a 404 and `blb/8` is the card, so the number
+  printed on a modern card cannot be typed verbatim without stripping them.
+- **Collector numbers are case-sensitive, in both directions.** `unf/200a` exists and
+  `unf/200A` does not; `plst/TDFT-14` exists and `plst/tdft-14` does not. Lowercase
+  suffixes and uppercase prefixes are both normal, so nothing can be normalised — the
+  typed form is tried first and the other cases only on the way to a failure.
+- **Extras are excluded by default**, and a token is an extra. `!"Cat Warrior"` was a 404
+  until `include_extras=true`; autocomplete offered "Cat Warriors" and "Mirri, Cat Warrior"
+  but not the token in your hand; and a token row's printing picker fell back to
+  `searchCards`, which returned 175 printings for "Fish" and not one token. The flag costs
+  little — `!"Lightning Bolt"` goes from 158 printings to 170 — and `holdable` in the
+  mappers drops the one addition that cannot be in a paper binder, Alchemy.
+
+**Double-faced cards.** Scryfall puts a `Cat // Dragon` token's images *only* on
+`card_faces`, and the app stored one image per printing, always face 0. The detail modal
+had a flip control already — it turned the rules text over while the picture stayed put.
+`matomeru://image/{id}?size=…&face=1` fixes that, and the back's URL was already in the
+database: `raw_json` is stored whole, so reading `$.card_faces[1]` needs no re-sync and no
+request. Face 0 keeps its old filename and an absent `face` still means the front, or
+every already-cached image would be orphaned and silently re-downloaded.
+
+Which layouts have a picture per face is not what the names suggest, so it was measured:
+`transform`, `modal_dfc`, `double_faced_token`, `reversible_card` and `art_series` do.
+Split, flip, adventure and meld cards are also named "A // B" and have exactly one image,
+and a battle is filed under `transform`. Hence `TWO_IMAGE_LAYOUTS` rather than a test on
+the name.
+
+### One physical card, two different tokens
+
+A Commander 2017 token card is a Cat Warrior on the front (`C17 008/011`) and a Rat on the
+back (`C17 003/011`). Adding both the ordinary way claims two cards when one is in the
+binder, and neither row admits the other exists.
+
+**Scryfall does not record the pairing.** `tc17/3` and `tc17/8` are two independent
+single-faced tokens. Each carries `all_parts`, but it links to the *spells that create the
+token* — `Hungry Lynx`, `Jedit Ojanen` — never to the other side of the physical card. So
+nothing in the data can derive this, and it has to be told once. Note that this is a
+different situation from `double_faced_token`, where Scryfall already models both faces as
+one object with images on `card_faces[1]`.
+
+**But it only has to be told once ever**, because the sheet is printed one way: every C17
+Cat Warrior has the same Rat behind it. That makes it a fact about a pair of printings
+rather than about anything in a binder, which is why `printing_pairs` (migration 17) is
+keyed on `scryfall_id` with the pairing stored in both directions. Per language too — the
+French Cat Warrior has the French Rat behind it, and those are different ids, which the
+primary key covers without a special case.
+
+Two ways in, because they are reached by different people:
+
+```
+c17 008/011 // 003     a pile being sorted now; `//` may be spaced or not
+select two rows -> "One card, two sides"      rows already in the database
+```
+
+The mechanic that makes it feel like one card is `filedUnder` in the collection repo: a
+copy of *either* side files itself under whichever side the collection already has. Type
+the Cat Warrior first and the Rat joins its row; type the Rat first and the Cat Warrior
+joins that one. A printing with no partner — every ordinary card — returns immediately, so
+nothing else changes. The exception is deliberate: when *both* sides already have rows, a
+further copy stays on its own row rather than jumping onto the partner's, because moving
+copies the user can see would be worse than an extra row.
+
+Merging keeps **one** card, not two: two rows of one are one object. When the two rows
+disagree the larger wins and the toast says so. It refuses while an open pick list holds
+either row, for the reason `removeItem` refuses — the absorbed row is deleted, and
+`pick_list_items.collection_item_id` is `ON DELETE SET NULL`, so a list would quietly lose
+its link to copies it is still counting on.
+
+Three places had to learn about the other side, and each would otherwise contradict the
+collection: the row's name and number (`A // B`, `#8 // #3`), the search predicate — a
+search for *Rat* has to find the row filed as a Cat Warrior, or combining them hid a token
+you own — and `ownedCount`/`ownedCounts`, which feed the "owned" badge on the Add-cards
+tiles. The detail view's flip control reuses itself here: these are two printings, so
+instead of moving a face index it swaps *which printing* is shown, and the rules text and
+set follow along.
+
+**One thing this work fixed in the suite itself.** The undo property test fingerprints the
+database before and after an action to catch a scope that is too narrow — but its table
+list was hand-written, so `printing_pairs` was invisible to it and a scope missing that
+table passed. The list is now derived from `sqlite_master` minus an explicit set of caches,
+which inverts the failure: a table added tomorrow is compared without anyone remembering to
+say so.
+
+`npm run probe:pairs` drives both routes in the running app.
+
+`npm run probe:tokens` drives all of this in the running app — including the regression
+that `c17 8` is still Teferi's Protection, because trading one silent wrong card for
+another would be no fix.
+
 ## Moving cards between decks and the collection
 
 A card sitting in an Archidekt deck under a label colour you have mapped to "owned"
@@ -159,6 +267,60 @@ as owned is a wishlist line rather than a card you hold, and a slot filled by a
 proxy cannot become a collection row without dragging real copies of the same
 printing into being proxies too — `collection_items` is UNIQUE on
 (scryfall_id, finish, condition), which does not include `proxied`.
+
+### A local move belongs to one entry, not to one card
+
+A deck can hold two printings of the same card, and for a long time everything about a
+local move was keyed by **oracle id**. So a fact about one copy was applied to both. Three
+symptoms, all reported from one afternoon's use, all the same cause:
+
+- **The wrong artwork.** Remove print A from a deck, add print B, and the emptied entry
+  showed B's art and B's PROXY badge. `moveToDeck` wrote a `deck_card_overrides` row to
+  carry the proxy flag — and an override *redirects the printing* of every entry of that
+  card. The badge was the visible half; the redirect was the damage.
+- **No "out" tag.** `moved` summed the ledger per card, so a −1 for A and a +1 for B
+  cancelled and neither entry admitted the deck had drifted from the decklist.
+- **An entry stuck at 0.** Move a card the decklist never mentioned in, then out. The
+  cleanup asked `COUNT(*)` of remaining moves — two, a +1 and a −1 — when the question is
+  whether they *net* to anything.
+
+Two more fell out of reading the code, and one of those was already reachable: taking
+copies out picked the entry with `LIMIT 1` and read its proxy flag from the card, so with a
+proxy of print B in the deck, **taking the real print A out was refused** as "that slot is
+filled by a proxy" — about a slot holding no proxy at all. And `moveToCollection` was
+handed only an oracle id although the deck screen had always selected a *row*, so removing
+one printing could empty the other.
+
+**One meaning per table.** `deck_card_overrides` was doing two jobs. Its documented one is
+*which printing you own for this deck entry*, keyed on oracle so it survives Archidekt
+re-pointing the entry (migration 4). The other, bolted on when moves learned to carry a
+proxy, is *these copies are proxies / are surge foil* — which belongs to the copies, and
+therefore to a printing. Migration 18 splits the second into `deck_entry_traits`, keyed
+`(deck, oracle, printing)`, the same argument `deck_card_lang_requests` already made.
+
+Every reader goes through three shared constants — `DECK_TRAITS_JOIN`, `DECK_PROXIED`,
+`DECK_TREATMENT` in `decks.ts` — because five files read that flag, and a check sweeps the
+main process to prove none of them reads it off the override table again.
+
+**The ledger records what left and where from.** `deck_card_moves.scryfall_id` stays the
+*copies* — a revert looks the collection row up by it — so `entry_scryfall_id` says which
+entry they came out of. Those differ only in the case the override exists for (Archidekt
+lists the English card, you own the French), and null reads as "the same", which is right
+for every entry that was never overridden.
+
+**An empty entry is kept or dropped per entry, never per card.** This one only became clear
+against real data: one deck held two empty entries of the same card for opposite reasons —
+an Archidekt entry whose copy had been taken out, which must keep its slot because that is
+where the tag hangs and what you click to undo, and beside it an entry a move had invented
+and cancelled. Summed across the card those net to zero, so a per-card rule would have
+deleted the decklist entry along with the phantom. `pruneEmptyEntries` asks about the entry,
+and runs from all three paths that can empty one — a move out, a revert, and the replay
+after a sync, without which a phantom returns on the next sync.
+
+Migration 18 also does two one-off repairs, because the state is already out there: it
+retires overrides that carry nothing but a flag *and* name a printing one of the entries
+already has (so the redirect was a no-op for that entry and wrong for the others), and it
+clears entries already sitting at zero whose own moves cancel.
 
 ## Undo and redo
 
@@ -368,6 +530,114 @@ reopen on top of its own progress. `parseFakeUpdate` refuses in a packaged build
 `verify` asserts both that and that every rehearsed path is gated on one variable with a
 single source. What none of it settles is the real transfer and the real restart — only
 a release does that.
+
+## A card with two sides looks like two cards
+
+Outside the detail dialog a two-sided card used to show only its front. Every card tile now
+draws the pair: the back offset behind the front, and hovering brings the back forward and
+names the side that has just gone behind.
+
+Two different things are two-sided and **nothing that draws a card distinguishes them**:
+
+| | the two sides are | the second picture is |
+|---|---|---|
+| Kefka, and every `transform` / `modal_dfc` / `double_faced_token` / `reversible_card` / `art_series` card | two faces of one printing | `face=1` of the same id |
+| a Commander token with a Cat Warrior on the front and a Rat on the back | two printings | the other printing's own image |
+
+`twoSides(printing, paired)` in `src/shared/types.ts` answers which, and returns the same
+shape either way — `{ scryfallId, face, title }` per side. `bothSidesTitle` is the name,
+`A // B`, which is what Scryfall already calls a two-faced card and what a paired token now
+gets composed for it. That composition is also the bug it was written for: the collection's
+**gallery tile is a different component from its table row**, so a merged Cat Warrior // Rat
+read as "Cat Warrior" in the one view a card is usually looked at in.
+
+`StackedArt` in `primitives.tsx` draws it, and four surfaces go through it — the collection
+gallery, the Add-cards results, and the deck and pick-list galleries. Five things about it
+are load-bearing, and three of them are the fixes for how it looked when it first shipped:
+
+- **With no back it renders exactly the `CardImage` it used to.** That is what keeps every
+  ordinary card — almost all of them — byte-identical, and a check asserts the
+  short-circuit is still there.
+- **Both cards are drawn at 88% in opposite corners.** 88% + 12% = 100%, so the pair fits
+  the tile's own box: a grid cannot overflow into its neighbours.
+- **`StackedArt` positions its own wrappers, never the cards.** Handing `absolute` to
+  `CardImage` does not work and *fails silently*: its wrapper hardcodes `relative`, both
+  land on one element with equal specificity, and Tailwind emits `.relative` after
+  `.absolute` — so the later rule wins however the classes are ordered in the attribute.
+  The cards then laid out in normal flow and the tile grew to twice its neighbours' height.
+- **`isolate` on the container.** The tile paints its name, footer and badges as later
+  siblings with no `z-index`, so the stack's `z-10`/`z-20` competed with them and won — the
+  artwork covered the card's own information. A stacking context confines those numbers to
+  ordering the two cards against each other.
+- **The tile is still.** It briefly turned the card over on hover, through two invisible
+  shields pinned to the cards' resting positions so that only the exposed sliver reacted.
+  That came out: the detail dialog flips the card properly, so a grid that turned cards over
+  as the pointer crossed it was movement for its own sake. A tile's job here is to say
+  "this card has two sides"; the turning belongs where it can be done well. A check asserts
+  the component carries no hover variant at all, because this is the kind of thing that
+  creeps back.
+
+`CardTile` takes the back as three primitives — `backScryfallId`, `backFace`, `hiddenTitle`
+— and not as an object. It is memoized, and a freshly-built object each render defeats that
+as surely as inline JSX does, which that file's own comment already warns about.
+
+The deck and pick-list queries returned no `layout` at all, so those galleries could not
+tell a two-sided card from any other; both now select it along with the same pairing join
+the collection uses. For the Add-cards results the pairing comes from `pairedNamesFor`, a
+batch lookup in the shape `ownedCounts` already uses — one query for a page of printings
+rather than one per tile.
+
+**Which layouts have two pictures was measured, not reasoned about**, and the distinction is
+not the one the names suggest: a split, flip, adventure or meld card is *also* named `A // B`
+and has exactly one image, while a battle is filed under `transform`. Hence
+`TWO_IMAGE_LAYOUTS` rather than a test on the name — a stack drawn from the name alone shows
+the same art twice and calls it a flip.
+
+`npm run probe:stack` drives it in the running app, and it has to be a probe rather than a
+unit test for a reason worth keeping in mind: every unit check here verifies *which
+pictures* a tile asks for, and those were right the whole time. Both bugs that reached the
+screen were about where things ended up.
+
+- **The layering is a hit test.** `document.elementFromPoint` over the tile's name has to
+  come back as the name, not as an `<img>`.
+- **The geometry is measured.** A two-sided tile has to be the same size as a one-sided one,
+  which is how the double-height bug reads as a number: 154×378 against 154×215.
+
+## The card dialog turns the card over, and holds its size
+
+Two things it was getting wrong. It swapped one picture for another, so a card that
+physically turns over read as a cut. And `Modal` is `flex max-h-[85vh] flex-col` with a
+content-driven height, so the dialog was as tall as whatever was in it — which meant
+flipping a card, and therefore swapping its rules text, resized the dialog under the
+pointer, and every card opened at a different size.
+
+**The flip.** Both faces are rendered at once inside a 3D container and the card rotates
+`rotateY` 0 → 180, each face hiding its own back so the far side appears exactly as the
+rotation passes edge-on. Two details are load-bearing:
+
+- `preserve-3d` must not sit on an element with `overflow` other than `visible` — that
+  flattens the whole thing — so the rounding and clipping stay on the button *outside* the
+  perspective wrapper.
+- The words follow the picture. The info panel is driven by a second state that updates when
+  the rotation passes 90°, from `motion`'s `onUpdate`, so the rules text changes while the
+  card is edge-on rather than before it has moved. Reduce-motion needs nothing anywhere
+  here: `App.tsx` wraps the tree in a `MotionConfig` that stills the rotation, `onUpdate`
+  fires once at the end, and the swap is simply instant.
+
+The dialog also stopped working the two sides out for itself and now asks `twoSides` — the
+same helper every card tile uses — so the grid and the dialog cannot disagree about what the
+back of a card is.
+
+**The size.** `Modal` gained an optional `height` and a `scrollBody` flag; the card dialog
+passes `h-[min(85vh,36rem)]` and `scrollBody={false}`, and its details column owns the
+scrolling so the artwork stays put. Only from `sm:` up, though — below that the two columns
+collapse into one, stack past the fixed height, and the body keeps its own scroll so nothing
+becomes unreachable.
+
+`npm run probe:flip` measures both: the dialog's box is identical before and after a flip
+and identical across a transform card, a paired token and a one-sided card (896×576 in a
+default window), and the flip is caught mid-rotation — `matrix3d(-0.16, 0, -0.99, …)` at
+about 99° — which is the only way to tell a rotation from a cut.
 
 ## Floating surfaces
 

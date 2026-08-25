@@ -415,13 +415,29 @@ export function Modal({
   onClose,
   title,
   children,
-  width = 'max-w-2xl'
+  width = 'max-w-2xl',
+  height,
+  scrollBody = true
 }: {
   open: boolean
   onClose: () => void
   title: ReactNode
   children: ReactNode
   width?: string
+  /**
+   * A height class, for a dialog that should not resize with its content.
+   *
+   * Left off, the dialog is as tall as what is in it, capped at 85vh -- which is right
+   * for a form or a confirmation. The card detail wants the opposite: the same size for
+   * every card, so that turning a card over or opening a wordier one does not move the
+   * dialog under the pointer.
+   */
+  height?: string
+  /**
+   * Whether the body scrolls. Set false when a fixed-height dialog has a column that
+   * should own the scrolling instead, so the two do not fight over one gesture.
+   */
+  scrollBody?: boolean
 }): React.ReactElement {
   const t = useT()
   useEffect(() => {
@@ -454,7 +470,8 @@ export function Modal({
             // sit above the overlay rather than below it.
             role="dialog"
             aria-modal="true"
-            className={`panel-floating flex max-h-[85vh] w-full flex-col overflow-hidden shadow-2xl shadow-black/60 ${width}`}
+            className={`panel-floating flex max-h-[85vh] w-full flex-col overflow-hidden
+              shadow-2xl shadow-black/60 ${width} ${height ?? ''}`}
           >
             <header className="flex shrink-0 items-center justify-between border-b border-ink-700 px-5 py-3.5">
               <h2 className="text-sm font-semibold text-ink-100">{title}</h2>
@@ -466,7 +483,13 @@ export function Modal({
                 <X size={16} />
               </button>
             </header>
-            <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+            <div
+              className={`min-h-0 flex-1 ${
+                scrollBody ? 'overflow-y-auto' : 'overflow-y-auto sm:overflow-hidden'
+              }`}
+            >
+              {children}
+            </div>
           </motion.div>
         </motion.div>
       )}
@@ -510,15 +533,124 @@ export function EmptyState({
  * Card art, served from the local cache over the matomeru:// protocol. A missing
  * or not-yet-downloaded image resolves to a 404, so the placeholder stays.
  */
+/**
+ * A card with two sides, drawn as the two cards it is.
+ *
+ * Two kinds of card end up here and the component does not distinguish them: one
+ * printing with two faces (a transform card asks for `face=1` of the same id) and two
+ * printings that share one physical card (a Commander token with a Cat Warrior on the
+ * front and a Rat on the back). `twoSides` in the shared types answers which is which;
+ * everything below just draws a front and a back.
+ *
+ * Nothing here turns the card over. It used to swap on hover, and that came out: the
+ * detail dialog flips the card properly, so a grid that reacted to the pointer passing
+ * across it was movement for its own sake. The tile says "this card has two sides" and
+ * leaves the turning to the place that does it well.
+ *
+ * Both cards are drawn at 88% and pushed into opposite corners so the pair fits the
+ * tile's own box. A grid cannot overflow into its neighbours, so the stack has to live
+ * inside the footprint rather than spill out of it.
+ *
+ * With no back, this renders exactly the `CardImage` it used to, which is what keeps
+ * every ordinary card unchanged.
+ */
+export function StackedArt({
+  scryfallId,
+  size = 'small',
+  className = '',
+  alt,
+  backScryfallId,
+  backFace = 0
+}: {
+  scryfallId: string | null
+  size?: 'small' | 'normal' | 'large'
+  className?: string
+  alt: string
+  /** The other side. Null or absent for a card with one. */
+  backScryfallId?: string | null
+  /** Which face of that printing: 1 for a transform card, 0 for a paired one. */
+  backFace?: 0 | 1
+}): React.ReactElement {
+  if (!backScryfallId) {
+    return <CardImage scryfallId={scryfallId} size={size} className={className} alt={alt} />
+  }
+
+  return (
+    /*
+      `isolate` is load-bearing. The tile paints its name, footer and badges as later
+      siblings of this block with no z-index of their own, so the z-10 and z-20 below used
+      to compete with them -- and win, hiding the card's own information behind its
+      artwork. A stacking context of our own confines those numbers to ordering the two
+      cards against each other.
+    */
+    <div data-stack="pair" className={`relative isolate ${className}`}>
+      {/*
+        Each side inside a wrapper this component owns, and the positioning on that wrapper
+        rather than on the card.
+
+        Handing `absolute` to `CardImage` does not work, and fails silently: its own wrapper
+        hardcodes `relative`, both classes land on one element with equal specificity, and
+        Tailwind emits `.relative` *after* `.absolute` -- so the later rule wins however the
+        classes are ordered in the attribute. The cards then laid out in normal flow, one
+        below the other, and `aspect-ratio` yields to content, so the tile grew to twice the
+        height of its neighbours and shoved the row beneath it aside.
+
+        Back first in the DOM, and the front carries the z-index, so the order is explicit
+        rather than a consequence of source order.
+      */}
+      <div
+        data-side="back"
+        /*
+          The flip is hung on this card, not on the tile, so it happens only where the
+          back actually shows.
+
+          That follows from what `:hover` means: it matches the topmost element under the
+          pointer and its *ancestors*, and these two cards are siblings. Over the overlap
+          the front is on top, so the back is not hovered and nothing moves; over the
+          sliver the back is the topmost element, so it lifts.
+
+          It settles rather than flickers. Once the back is forward it covers the overlap,
+          so the pointer stays over it; the front keeps its own bottom-right sliver, so
+          moving onto that hovers the front and the back drops back. Hover a sliver, that
+          card comes forward.
+        */
+        className="absolute left-0 top-0 w-[88%]"
+      >
+        <CardImage
+          scryfallId={backScryfallId}
+          size={size}
+          face={backFace}
+          alt={alt}
+          className="aspect-[488/680] w-full rounded-lg ring-1 ring-black/50 shadow-md"
+        />
+      </div>
+      <div
+        data-side="front"
+        className="absolute bottom-0 right-0 z-10 w-[88%]"
+      >
+        <CardImage
+          scryfallId={scryfallId}
+          size={size}
+          alt={alt}
+          className="aspect-[488/680] w-full rounded-lg ring-1 ring-black/50 shadow-md"
+        />
+      </div>
+    </div>
+  )
+}
+
 export function CardImage({
   scryfallId,
   size = 'small',
+  face = 0,
   className = '',
   alt
 }: {
   scryfallId: string | null
   /** `large` is worth the bytes in the detail view, wasteful in a grid tile. */
   size?: 'small' | 'normal' | 'large'
+  /** The back of a double-faced card. Falls back to the front if there is none. */
+  face?: 0 | 1
   className?: string
   alt: string
 }): React.ReactElement {
@@ -544,7 +676,13 @@ export function CardImage({
         screen. CSS also means the reduce-motion rule in index.css reaches it.
       */}
       <img
-        src={window.api.imageUrl(scryfallId, size)}
+        /*
+          Keyed by face so React swaps the element instead of mutating its src:
+          without it the skeleton never replays on a flip, and a front that failed
+          to load would leave `failed` set and hide a perfectly good back.
+        */
+        key={face}
+        src={window.api.imageUrl(scryfallId, size, face)}
         alt={alt}
         loading="lazy"
         decoding="async"

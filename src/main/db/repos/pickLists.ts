@@ -3,7 +3,12 @@ import { priceExpr } from './printings.js'
 import {
   DECK_FINISH,
   DECK_OVERRIDE_JOIN,
+  DECK_PAIR_COLUMNS,
+  DECK_PAIR_JOIN,
   DECK_PRINTING,
+  DECK_PROXIED,
+  DECK_TRAITS_JOIN,
+  DECK_TREATMENT,
   applyOneMove,
   recordMove
 } from './decks.js'
@@ -153,13 +158,17 @@ function availableInDeck(
 function snapshotOfDeckEntry(db: Sql, deckId: number, oracleId: string): PickSnapshot {
   const row = db.get(
     `SELECT ${DECK_PRINTING} AS scryfall_id, ${DECK_FINISH} AS finish,
-            o.foil_treatment AS foil_treatment,
-            COALESCE(o.proxied, 0) AS proxied,
+            p.layout AS layout,
+            ${DECK_PAIR_COLUMNS},
+            ${DECK_TREATMENT} AS foil_treatment,
+            ${DECK_PROXIED} AS proxied,
             dc.label_possession AS label_possession,
             p.name, p.printed_name, p.lang, p.set_code, p.set_name,
             p.collector_number, p.rarity, p.image_uri_small
      FROM deck_cards dc
      ${DECK_OVERRIDE_JOIN}
+     ${DECK_TRAITS_JOIN}
+     ${DECK_PAIR_JOIN}
      JOIN printings p ON p.scryfall_id = ${DECK_PRINTING}
      WHERE dc.deck_id = ? AND dc.oracle_id = ? AND ${DECK_PRINTING} IS NOT NULL
      LIMIT 1`,

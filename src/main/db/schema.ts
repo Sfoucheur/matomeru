@@ -612,5 +612,190 @@ export const MIGRATIONS: Migration[] = [
 
       DELETE FROM settings WHERE key IN ('backup.clientId', 'backup.clientSecret');
     `
+  },
+  {
+    version: 16,
+    name: 'set_parent_and_printed_size',
+    sql: `
+      -- What a token sheet belongs to, and what its cards say they are numbered out of.
+      --
+      -- Both exist to answer one question: which set is "c17 008/011"? C17 #8 is
+      -- Teferi's Protection and TC17 #8 is a Cat Warrior token, so a number alone
+      -- cannot say, and typing the code printed on a token card reaches the wrong
+      -- card with no error at all. The denominator can say: C17 has 309 cards and
+      -- its token sheet has 11.
+      --
+      -- parent_set_code is what makes the lookup exact rather than a guess at
+      -- "t" + code -- Scryfall states the relationship, and 206 of 212 token sets
+      -- carry it.
+      --
+      -- printed_size is the number actually printed on the cards, which for most
+      -- sets is NOT card_count: Bloomburrow prints /261 and counts 398. Scryfall
+      -- publishes it for only 169 of 1048 sets, so it is a refinement where
+      -- available, never a requirement.
+      ALTER TABLE sets ADD COLUMN parent_set_code TEXT;
+      ALTER TABLE sets ADD COLUMN printed_size INTEGER;
+      CREATE INDEX idx_sets_parent ON sets(parent_set_code);
+
+      -- Every row predates both columns, so the cache has to be refetched before it
+      -- can answer. One request for all 1050 sets, taken the next time anything asks.
+      UPDATE sets SET fetched_at = '1970-01-01T00:00:00.000Z';
+    `
+  },
+  {
+    version: 17,
+    name: 'printing_pairs',
+    sql: `
+      -- Two printings that are the two sides of one physical card.
+      --
+      -- A Commander 2017 token card has a Cat Warrior on the front and a Rat on the
+      -- back, and Scryfall files those as two independent single-faced tokens. Its
+      -- \`all_parts\` does link each one outwards, but to the *spells that create the
+      -- token* -- Hungry Lynx, Jedit Ojanen -- never to the other side of the card.
+      -- So nothing in the data can derive this and it has to be told once.
+      --
+      -- Told once, and not once per copy: the sheet is printed one way, so every C17
+      -- Cat Warrior has the same Rat behind it. That makes this a fact about a pair
+      -- of printings rather than about anything in a binder. Per language as well --
+      -- the French Cat Warrior has the French Rat behind it, and those are different
+      -- ids, which the primary key covers without a special case.
+      --
+      -- Both directions are stored. It doubles eleven rows and saves every query
+      -- from having to know which side of a card it happens to be holding.
+      --
+      -- The primary key is the real constraint: a card has exactly one back.
+      CREATE TABLE printing_pairs (
+        scryfall_id        TEXT PRIMARY KEY
+                                REFERENCES printings(scryfall_id) ON DELETE CASCADE,
+        paired_scryfall_id TEXT NOT NULL
+                                REFERENCES printings(scryfall_id) ON DELETE CASCADE,
+        created_at         TEXT NOT NULL,
+        -- A card is not its own back. Cheap to state, and the alternative is a row
+        -- that makes every join return the card twice.
+        CHECK (scryfall_id != paired_scryfall_id)
+      );
+      CREATE INDEX idx_printing_pairs_paired ON printing_pairs(paired_scryfall_id);
+    `
+  },
+  {
+    version: 18,
+    name: 'deck_entry_traits',
+    sql: `
+      -- What the copies in one deck entry are, as opposed to which printing the entry
+      -- names.
+      --
+      -- deck_card_overrides was doing both jobs and they are not the same shape. Its
+      -- documented one is "which printing you own for this deck entry", keyed on oracle
+      -- so that it survives Archidekt re-pointing the entry. The other, bolted on when
+      -- moves learned to carry a proxy, is "these particular copies are proxies / are
+      -- surge foil" -- which belongs to the copies, and therefore to a printing.
+      --
+      -- Keyed on oracle, that second meaning applied to every printing of the card in
+      -- the deck. Take print A out of a deck, put print B in, and the emptied entry
+      -- showed B's artwork and B's proxy badge; worse, taking the real print A out was
+      -- then refused because "that slot is filled by a proxy" -- about a slot holding no
+      -- proxy at all.
+      --
+      -- One meaning per table, the same argument deck_card_lang_requests already made.
+      CREATE TABLE deck_entry_traits (
+        deck_id        INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        oracle_id      TEXT    NOT NULL,
+        scryfall_id    TEXT    NOT NULL,
+        proxied        INTEGER NOT NULL DEFAULT 0,
+        foil_treatment TEXT,
+        created_at     TEXT    NOT NULL,
+        PRIMARY KEY (deck_id, oracle_id, scryfall_id)
+      );
+      CREATE INDEX idx_deck_traits_deck ON deck_entry_traits(deck_id, oracle_id);
+
+      -- Carried across, keyed on the printing of the *deck entry* rather than the
+      -- printing the override names. Those differ by design in the case the override
+      -- exists for -- Archidekt says English, you own the French -- and it is the entry
+      -- on screen that has to keep its badge.
+      --
+      -- A card already in the broken state has two entries and one flag. The override
+      -- names a printing, though, and a move wrote that name when it recorded the flag --
+      -- so where an entry has exactly that printing, it is the one that earned it and the
+      -- other is left clean. That is the reported case: an Archidekt entry emptied of real
+      -- copies, beside a proxy moved in, both wearing one badge.
+      --
+      -- Only when no entry has that printing does every entry keep the flag. That is the
+      -- case the override exists for -- Archidekt lists the English card, you own the
+      -- French -- and there the flag really is about the card as listed, so preserving it
+      -- everywhere preserves what was on screen.
+      INSERT OR IGNORE INTO deck_entry_traits
+        (deck_id, oracle_id, scryfall_id, proxied, foil_treatment, created_at)
+      SELECT DISTINCT dc.deck_id, dc.oracle_id, dc.scryfall_id,
+             COALESCE(o.proxied, 0), o.foil_treatment, o.created_at
+      FROM deck_card_overrides o
+      JOIN deck_cards dc
+        ON dc.deck_id = o.deck_id AND dc.oracle_id = o.oracle_id
+      WHERE dc.scryfall_id IS NOT NULL
+        AND (COALESCE(o.proxied, 0) = 1 OR o.foil_treatment IS NOT NULL)
+        AND (
+          dc.scryfall_id = o.scryfall_id
+          OR NOT EXISTS (
+               SELECT 1 FROM deck_cards d2
+                WHERE d2.deck_id = o.deck_id
+                  AND d2.oracle_id = o.oracle_id
+                  AND d2.scryfall_id = o.scryfall_id)
+        );
+
+      -- The two columns stay on deck_card_overrides, unread. Dropping them would mean
+      -- rebuilding a table for no gain; a check asserts nothing reads them again.
+
+      -- And the rows that existed only to hold them go.
+      --
+      -- Moving a proxy into a deck used to create an override for no other reason than to
+      -- record the flag, and an override *redirects the printing* of every entry of that
+      -- card. That is what showed one artwork on two entries: not the flag, the redirect
+      -- it came attached to.
+      --
+      -- Deleted only when the row has no other job -- no corrected finish, no declared
+      -- language -- and when its printing is already one of the entries, which makes the
+      -- redirect a no-op for that entry and wrong for the others. An override naming a
+      -- printing the deck does not list is the case the table exists for (Archidekt lists
+      -- the English card, you own the French) and is left alone.
+      DELETE FROM deck_card_overrides
+      WHERE finish IS NULL
+        AND forced_lang IS NULL
+        AND forced_name IS NULL
+        AND EXISTS (
+              SELECT 1 FROM deck_cards dc
+               WHERE dc.deck_id = deck_card_overrides.deck_id
+                 AND dc.oracle_id = deck_card_overrides.oracle_id
+                 AND dc.scryfall_id = deck_card_overrides.scryfall_id);
+
+      -- Entries a move invented and then cancelled, cleared once.
+      --
+      -- Moving a card the decklist never mentioned into a deck and back out left an entry
+      -- at quantity 0 for ever: the cleanup counted ledger rows, and a +1 with a -1 is two
+      -- rows. It is a net question, and it is a question about the entry -- an Archidekt
+      -- entry emptied by a move keeps its slot, because that empty slot is the fact the
+      -- deck screen exists to show. Doing it here as well as in the code means the rows
+      -- already sitting there go without waiting for the next sync.
+      DELETE FROM deck_cards
+      WHERE quantity = 0
+        AND COALESCE((
+              SELECT SUM(m.quantity) FROM deck_card_moves m
+               WHERE m.deck_id = deck_cards.deck_id
+                 AND m.oracle_id = deck_cards.oracle_id
+                 AND m.scryfall_id = deck_cards.scryfall_id
+            ), 0) = 0;
+
+      -- Which deck entry the copies came out of, as opposed to what the copies are.
+      --
+      -- Those are usually the same printing and differ in exactly the case
+      -- deck_card_overrides exists for: Archidekt lists the English card, you own the
+      -- French one, so the entry is English and the copies are French. \`scryfall_id\` has
+      -- to stay the copies -- a revert looks up the collection row by it -- so the entry
+      -- needs saying separately, or a move cannot be attributed to the entry it came
+      -- from and the "out" tag lands nowhere.
+      --
+      -- Null on every row written before this, which reads as "the same as the copies".
+      -- That is exactly right for every entry that was never overridden, which is all of
+      -- them bar the deliberate exceptions.
+      ALTER TABLE deck_card_moves ADD COLUMN entry_scryfall_id TEXT;
+    `
   }
 ]

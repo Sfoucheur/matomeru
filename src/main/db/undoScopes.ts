@@ -89,6 +89,27 @@ export function scryfallScopeMany(itemIds: number[]): UndoScope {
 }
 
 /**
+ * Everything marking two rows as one card can touch.
+ *
+ * Three tables, and the third is the one that would be missed. The merge deletes one
+ * `collection_items` row, which the `ON DELETE SET NULL` on
+ * `pick_list_items.collection_item_id` follows into a table the action never names --
+ * exactly the cascade `withPickItems` exists for.
+ *
+ * `printing_pairs` is a whole table on purpose. The pairing is written for both
+ * directions and any pairing either side previously had is cleared first, so the rows
+ * touched are not knowable from the two ids alone; the table holds a handful of rows
+ * and the alternative is a scope that is subtly too narrow.
+ *
+ * Scoped on the printings rather than the two ids, for the reason `pickListScopes`
+ * gives: the absorbed row is deleted and comes back from an undo with a new id, and
+ * an id-based scope would not see it return.
+ */
+export function pairScopes(itemIds: number[]): UndoScope[] {
+  return withPickItems(scryfallScopeMany(itemIds), wholeTable('printing_pairs'))
+}
+
+/**
  * Everything validating, reverting or deleting a pick list can touch.
  *
  * Ordered parents first: `pick_list_items` references both `collection_items` and
@@ -160,7 +181,14 @@ export function moveScopes(deckId: number | null): UndoScope[] {
     deckId === null
       ? wholeTable('deck_cards')
       : { table: 'deck_cards', where: 'deck_id = ?', params: [deckId] },
-    wholeTable('deck_card_moves')
+    wholeTable('deck_card_moves'),
+    /*
+      What the copies in an entry are, which a move now writes: moving a proxy into a
+      deck records it against that entry, and an undo has to take it back off. Whole
+      table for the reason the others are -- the rows a move touches are not knowable
+      from a deck id, and the table holds a handful of rows.
+    */
+    wholeTable('deck_entry_traits')
   )
 }
 

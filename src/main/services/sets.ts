@@ -31,6 +31,10 @@ interface ScryfallSet {
   set_type?: string
   released_at?: string
   card_count?: number
+  /** Present for a token sheet and every other child set. See migration 16. */
+  parent_set_code?: string
+  /** The number printed on the cards, where Scryfall knows it. Not card_count. */
+  printed_size?: number
   icon_svg_uri?: string
 }
 
@@ -56,13 +60,16 @@ async function fetchSets(): Promise<number> {
   transaction((db) => {
     for (const set of sets) {
       db.run(
-        `INSERT INTO sets (code, name, set_type, released_at, card_count, icon_svg_uri, fetched_at)
-         VALUES (?,?,?,?,?,?,?)
+        `INSERT INTO sets (code, name, set_type, released_at, card_count,
+                           parent_set_code, printed_size, icon_svg_uri, fetched_at)
+         VALUES (?,?,?,?,?,?,?,?,?)
          ON CONFLICT(code) DO UPDATE SET
            name = excluded.name,
            set_type = excluded.set_type,
            released_at = excluded.released_at,
            card_count = excluded.card_count,
+           parent_set_code = excluded.parent_set_code,
+           printed_size = excluded.printed_size,
            icon_svg_uri = excluded.icon_svg_uri,
            fetched_at = excluded.fetched_at`,
         [
@@ -71,6 +78,8 @@ async function fetchSets(): Promise<number> {
           set.set_type ?? null,
           set.released_at ?? null,
           set.card_count ?? null,
+          set.parent_set_code?.toLowerCase() ?? null,
+          set.printed_size ?? null,
           set.icon_svg_uri ?? null,
           now
         ]

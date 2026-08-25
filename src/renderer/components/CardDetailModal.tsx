@@ -1,3 +1,4 @@
+import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import {
   ExternalLink,
@@ -9,7 +10,7 @@ import {
   Trash2,
   ZoomIn
 } from 'lucide-react'
-import { foilTreatmentLabel, foilTreatmentOf } from '@shared/types'
+import { foilTreatmentLabel, foilTreatmentOf, twoSides } from '@shared/types'
 import type { CardLocations, Printing } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import {
@@ -48,25 +49,46 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
   const currency = settings?.currency ?? 'usd'
 
   const [printing, setPrinting] = useState<Printing | null>(null)
+  /*
+    The other side, when this card has a different token on each face.
+
+    Its own printing rather than a second image on this one: Scryfall files a
+    Commander 2017 Cat Warrior and the Rat on its back as two unrelated cards, so
+    "the back" here is simply another printing -- which makes flipping easier, not
+    harder. Null for every ordinary card.
+  */
+  const [paired, setPaired] = useState<Printing | null>(null)
   const [locations, setLocations] = useState<CardLocations | null>(null)
   const [loading, setLoading] = useState(true)
   const [face, setFace] = useState(0)
+  /**
+   * The side the words are showing, which trails `face` until the card is edge-on.
+   *
+   * Driven from the rotation rather than from a timer, so it stays right when the spring
+   * is retuned -- and when reduce-motion resolves the animation instantly, this lands on
+   * the final value straight away.
+   */
+  const [settled, setSettled] = useState(0)
   const [zoomed, setZoomed] = useState(false)
 
   useEffect(() => {
     setLoading(true)
     setFace(0)
+    setSettled(0)
     Promise.all([
       window.api.cards.printing(scryfallId),
-      window.api.collection.locations(scryfallId)
+      window.api.collection.locations(scryfallId),
+      window.api.cards.paired(scryfallId)
     ])
-      .then(([p, l]) => {
+      .then(([p, l, other]) => {
         setPrinting(p)
         setLocations(l)
+        setPaired(other)
       })
       .catch(() => {
         setPrinting(null)
         setLocations(null)
+        setPaired(null)
       })
       .finally(() => setLoading(false))
   }, [scryfallId, dataVersion])
@@ -82,11 +104,54 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
     ? (printing.printed_name ?? printing.name)
     : (locations?.printed_name ?? locations?.name ?? t('detail.card'))
 
-  const faces = printing?.printed_name?.split(' // ') ?? printing?.name.split(' // ') ?? []
+  /*
+    Which side is showing, and how far the card has turned.
+
+    `turned` is the intent -- someone pressed the control -- and `settled` is what the
+    words beside the card follow, updated as the rotation passes edge-on. Without the
+    second one the rules text changed before the picture had moved.
+  */
+  const nameFaces = printing?.printed_name?.split(' // ') ?? printing?.name.split(' // ') ?? []
+  /*
+    Two kinds of two-sidedness, and they need different handling.
+
+    A transform card is one printing with two pictures, so its faces come out of its
+    own name and the flip moves an index. A paired token is *two printings*, so its
+    faces are the two cards' names and the flip swaps which printing is on screen --
+    picture, rules text, set and number together, because all of that genuinely
+    belongs to the other card.
+  */
+  /*
+    The two sides, from the one helper every card tile already uses, so the dialog and the
+    grid can never disagree about what the back of a card is. It answers for both kinds:
+    one printing with two faces, and two printings that share a physical card.
+  */
+  const sides = printing ? twoSides(printing, paired) : null
+  const faces = sides ? [sides.front.title, sides.back.title] : nameFaces
   const isTwoFaced = faces.length > 1
 
+  const turned = isTwoFaced && face % 2 === 1
+  const showingBack = isTwoFaced && settled % 2 === 1
+  // A split or adventure card has two names and one picture: the control still turns its
+  // words over, and `sides` is null, so there is nothing to rotate.
+  const flipped = showingBack && paired !== null
+  const shown = flipped ? paired : printing
+  const shownId = flipped && paired ? paired.scryfall_id : scryfallId
+
   return (
-    <Modal open onClose={() => close(null)} title={title} width="max-w-4xl">
+    /*
+      One size for every card. The dialog used to be as tall as its contents, so turning a
+      card over -- which swaps the rules text -- moved the dialog under the pointer, and
+      every card opened at a different size.
+    */
+    <Modal
+      open
+      onClose={() => close(null)}
+      title={title}
+      width="max-w-4xl"
+      height="h-[min(85vh,36rem)]"
+      scrollBody={false}
+    >
       {loading ? (
         <div className="grid gap-5 p-5 sm:grid-cols-[16rem_1fr]">
           <div className="skeleton aspect-[488/680] rounded-xl" />
@@ -97,7 +162,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
           </div>
         </div>
       ) : (
-        <div className="grid gap-5 p-5 sm:grid-cols-[16rem_1fr]">
+        <div className="grid gap-5 p-5 sm:h-full sm:grid-cols-[16rem_1fr]">
           <div className="space-y-2.5">
             {/* The artwork is the obvious thing to want a closer look at, so it
                 is the control: click for a full-size view, which also offers the
@@ -108,12 +173,64 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
               className="group relative block w-full cursor-zoom-in overflow-hidden rounded-xl
                 ring-1 ring-ink-700 transition-all hover:ring-gold-500"
             >
-              <CardImage
-                scryfallId={scryfallId}
-                size="large"
-                className="aspect-[488/680] w-full"
-                alt={title}
-              />
+              {/*
+                The card turns over rather than cutting between two pictures.
+
+                Both faces are drawn at once inside a 3D container, each hiding its own
+                back, so the far side becomes visible exactly as the rotation passes
+                edge-on. `preserve-3d` must not sit on an element with `overflow` other
+                than visible -- that flattens the whole thing -- which is why the rounding
+                and clipping stay on the button outside this wrapper.
+
+                Reduce-motion needs nothing here: App wraps the tree in a MotionConfig
+                that stills the rotation, so the card simply appears turned.
+              */}
+              {sides ? (
+                <div className="[perspective:1400px]" data-flip="stage">
+                  <motion.div
+                    className="relative [transform-style:preserve-3d]"
+                    animate={{ rotateY: turned ? 180 : 0 }}
+                    transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+                    onUpdate={(latest: { rotateY?: number | string }) => {
+                      const angle = Number(latest.rotateY ?? 0)
+                      // Past edge-on, the far side is the one being read.
+                      const half = angle > 90 ? 1 : 0
+                      setSettled((current) => (current % 2 === half ? current : current + 1))
+                    }}
+                    data-flip="card"
+                  >
+                    <div className="[backface-visibility:hidden]" data-flip-face="front">
+                      <CardImage
+                        scryfallId={sides.front.scryfallId}
+                        size="large"
+                        face={sides.front.face}
+                        className="aspect-[488/680] w-full"
+                        alt={sides.front.title}
+                      />
+                    </div>
+                    <div
+                      className="absolute inset-0 [backface-visibility:hidden]
+                        [transform:rotateY(180deg)]"
+                      data-flip-face="back"
+                    >
+                      <CardImage
+                        scryfallId={sides.back.scryfallId}
+                        size="large"
+                        face={sides.back.face}
+                        className="aspect-[488/680] w-full"
+                        alt={sides.back.title}
+                      />
+                    </div>
+                  </motion.div>
+                </div>
+              ) : (
+                <CardImage
+                  scryfallId={shownId}
+                  size="large"
+                  className="aspect-[488/680] w-full"
+                  alt={title}
+                />
+              )}
               <span
                 className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-lg
                   bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
@@ -132,9 +249,9 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 {faces[(face + 1) % faces.length]}
               </button>
             )}
-            {printing && (
+            {shown && (
               <a
-                href={`https://scryfall.com/card/${printing.set_code}/${printing.collector_number}/${printing.lang}`}
+                href={`https://scryfall.com/card/${shown.set_code}/${shown.collector_number}/${shown.lang}`}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center justify-center gap-1.5 text-[11px] text-ink-500
@@ -146,8 +263,14 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
             )}
           </div>
 
-          <div className="min-w-0 space-y-4">
-            {printing && <Identity printing={printing} face={face} />}
+          {/*
+            The column that scrolls, so the artwork stays put while a wordy card is read.
+            Only from `sm:`, where there are two columns at all: below that the two stack
+            past the fixed height and the body keeps its own scroll instead.
+          */}
+          <div className="min-w-0 space-y-4 sm:min-h-0 sm:overflow-y-auto sm:pr-1">
+            {/* The side on screen, so the rules text and the set follow the flip. */}
+            {shown && <Identity printing={shown} face={flipped ? 0 : face} />}
             {context && printing && (
               <PrintingPicker
                 name={printing.name}
@@ -158,7 +281,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 onChanged={reload}
               />
             )}
-            {printing && <PriceTable printing={printing} />}
+            {shown && <PriceTable printing={shown} />}
             {printing && (
               <WhereToGetIt
                 scryfallId={scryfallId}
@@ -190,7 +313,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
         </div>
       )}
       <CardZoom
-        scryfallId={scryfallId}
+        scryfallId={shownId}
         title={title}
         open={zoomed}
         onClose={() => setZoomed(false)}
