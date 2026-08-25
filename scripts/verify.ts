@@ -7,8 +7,29 @@
  *
  *   npm run verify
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { gunzipSync, gzipSync } from 'node:zlib'
+import {
+  DEBUG_FLAGS,
+  logDebug,
+  logDir,
+  logError,
+  logFile,
+  logInfo,
+  parseDebugFlag,
+  redact,
+  RESERVED_FLAGS,
+  setVerboseLogging
+} from '../src/main/services/log.js'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
@@ -4850,6 +4871,103 @@ async function main(): Promise<void> {
     check(`the remote keeps ${HISTORY_KEPT} previous snapshots and no more`,
       rotating.history() === HISTORY_KEPT, `${rotating.history()} kept`)
     getDb().run("DELETE FROM settings WHERE key = 'backup.probe'")
+  }
+
+  // ---------------------------------------------------------------- logging
+  section('Logging')
+
+  {
+    /*
+      The log exists to be shared, which makes a leaked credential the failure that
+      matters. Redaction is therefore part of the writer rather than a rule to remember
+      at each call site, and this is the check that proves it.
+    */
+    const dangerous = [
+      'client secret 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 rejected',
+      'stored value enc:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA now unreadable',
+      'plain:c2VjcmV0LXZhbHVlLWhlcmU= was written on a keyring-less box',
+      'request failed with Authorization: Bearer ya29.a0AfB_byC-not-a-real-token',
+      'refresh 1//0gLongRefreshTokenValueHere failed'
+    ].join(' | ')
+    const cleaned = redact(dangerous)
+
+    check('a Google client secret never reaches the log',
+      !cleaned.includes('GOCSPX-jcdSy'), cleaned)
+    check('nor a sealed settings value',
+      !cleaned.includes('AQAAANCMnd8') && !cleaned.includes('c2VjcmV0'), cleaned)
+    check('nor a bearer token, however it is spelled',
+      !/ya29\.[A-Za-z0-9]/.test(cleaned) && !/Bearer\s+[A-Za-z0-9]/.test(cleaned), cleaned)
+    check('nor a refresh token', !cleaned.includes('1//0gLong'), cleaned)
+    check('and what is left still says what happened',
+      cleaned.includes('rejected') &&
+        cleaned.includes('request failed') &&
+        cleaned.includes('keyring-less'),
+      'redaction removed the message along with the secret')
+    console.log(`        → ${cleaned.slice(0, 96)}…`)
+
+    /*
+      The flag name, pinned.
+
+      `--debug` was the first choice and it stops the app launching: Node claims the name
+      and Electron exits with DEP0062 before any of this code runs. Nothing in a unit test
+      can observe that — only starting the app can — so what is asserted here is the rule
+      learned from it: our flag is not one of the names something else owns.
+    */
+    check('the debug flag is recognised',
+      parseDebugFlag(['electron', '.', '--verbose']) &&
+        parseDebugFlag(['electron', '.', '--debug-mode']),
+      'the documented flag is not accepted')
+    check('an ordinary run is not verbose',
+      !parseDebugFlag(['electron', '.']) && !parseDebugFlag(['electron', '.', '--user-data-dir=x']))
+    check('and none of our flags is a name Node or Electron already claims',
+      DEBUG_FLAGS.every((flag) => !RESERVED_FLAGS.includes(flag)),
+      `${DEBUG_FLAGS.filter((f) => RESERVED_FLAGS.includes(f)).join(', ')} is reserved`)
+    check('--debug in particular is not accepted, because it prevents startup',
+      !parseDebugFlag(['electron', '.', '--debug']),
+      'the app would refuse to launch with the flag it documents')
+
+    // ---- it writes, and it says which level and when
+    logError('probe', 'something went wrong')
+    logInfo('probe', 'and something merely happened')
+    const written = readFileSync(logFile(), 'utf8')
+    check('errors and info reach the file',
+      written.includes('ERROR [probe] something went wrong') &&
+        written.includes('INFO  [probe] and something merely happened'),
+      written.split('\n').slice(-3).join(' / '))
+    check('every line is timestamped',
+      written
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .every((line) => /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /.test(line)),
+      'a line has no timestamp')
+
+    // ---- debug output is off unless asked for
+    const beforeDebug = readFileSync(logFile(), 'utf8').length
+    logDebug('probe', 'chatter nobody asked for')
+    check('debug lines are silent without --debug',
+      readFileSync(logFile(), 'utf8').length === beforeDebug,
+      'a debug line was written anyway')
+    setVerboseLogging(true)
+    logDebug('probe', 'chatter that was asked for')
+    check('and appear once it is on',
+      readFileSync(logFile(), 'utf8').includes('chatter that was asked for'))
+    setVerboseLogging(false)
+
+    /*
+      ---- and it cannot grow without bound
+
+      A log that fills a disk is a bug of its own. One megabyte, then a single rollover,
+      so two files is the entire footprint however long the app runs.
+    */
+    writeFileSync(logFile(), 'x'.repeat(1024 * 1024 + 10))
+    logInfo('probe', 'the line that tips it over')
+    const rolled = `${logFile()}.old`
+    check('the log rolls over at its cap',
+      existsSync(rolled) && statSync(logFile()).size < 4096,
+      `old ${existsSync(rolled)}, new ${statSync(logFile()).size} bytes`)
+    check('and keeps exactly one old file, never a third',
+      readdirSync(logDir()).filter((name) => name.startsWith('main.log')).length === 2,
+      readdirSync(logDir()).join(', '))
   }
 
   // ---------------------------------------------------------------- updates

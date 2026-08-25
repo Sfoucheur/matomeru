@@ -253,6 +253,16 @@ const api = {
     redo: () => call<{ label: string } | null>('undo:redo'),
     state: () => call<UndoState>('undo:state')
   },
+  diagnostics: {
+    /** Copies a shareable summary to the clipboard and returns it. Carries no secrets. */
+    copy: () => call<string>('diagnostics:copy'),
+    openLogFile: () => call<string>('logs:openFile'),
+    openLogFolder: () => call<string>('logs:openFolder'),
+    /** Sends a renderer-side failure to the same log the main process writes. */
+    record: (level: 'error' | 'warn' | 'info', message: string) =>
+      call<boolean>('logs:record', level, message)
+  },
+
   updates: {
     state: () => call<UpdateState>('updates:state'),
     check: () => call<UpdateState>('updates:check'),

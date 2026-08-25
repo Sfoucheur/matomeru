@@ -13,6 +13,7 @@
  * `disabled` is a real mode rather than a courtesy.
  */
 import { app, shell } from 'electron'
+import { logDebug, logError, logInfo, logWarn } from './log.js'
 import type { ProgressEvent, UpdateState } from '@shared/types'
 import { t } from '@shared/i18n/index.js'
 import type { TranslationKey } from '@shared/types'
@@ -104,9 +105,19 @@ async function updater(onProgress: ProgressSink): Promise<AutoUpdaterLike> {
     // courtesy, and the Settings panel asks explicitly.
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
-    // Its own logging goes nowhere by default; console is enough to diagnose a failed
-    // update from a terminal run without adding a logging dependency.
-    autoUpdater.logger = null
+    /*
+      Its own diagnostics, into our log rather than the bin.
+
+      This was `null`, and that cost real time: when the updater failed on a CJS/ESM
+      interop problem, electron-updater's own account of what it was doing went nowhere
+      and all that surfaced was a TypeError in a toast.
+    */
+    autoUpdater.logger = {
+      info: (m: unknown) => logInfo('updater', String(m)),
+      warn: (m: unknown) => logWarn('updater', String(m)),
+      error: (m: unknown) => logError('updater', String(m)),
+      debug: (m: unknown) => logDebug('updater', String(m))
+    }
 
     autoUpdater.on('download-progress', (progress) => {
       sink({

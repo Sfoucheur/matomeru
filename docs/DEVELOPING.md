@@ -344,6 +344,37 @@ fixed label colour would read 8:1 in one mode and 2.4:1 in the other. A tinted c
 is fine on a panel — its text contrasts with the panel — but a chip over card
 artwork must be solid, since nothing controls what is behind it.
 
+## Logging and debug mode
+
+`src/main/services/log.ts`, no dependency. Errors and a few key events are always
+written to `<userData>/logs/main.log`; `logDebug` only writes under `--verbose`. One
+megabyte then a single rollover to `main.log.old`, so two files is the entire footprint.
+
+Wired into the three places that used to swallow everything:
+
+- **`handle()`** logs every IPC failure with its channel. That wrapper already saw every
+  error the UI would ever show; until it wrote them down, a message could reach the
+  screen and leave nothing behind.
+- **`autoUpdater.logger`** was `null`. That cost real time: when the updater failed on a
+  CJS/ESM interop problem, electron-updater's own account went nowhere and all that
+  surfaced was a `TypeError` in a toast.
+- **The renderer** had no `onerror` and no `unhandledrejection`, so an uncaught render
+  error was a blank window and silence. Both now report through `logs:record`.
+
+**Redaction is part of the writer**, not a rule to remember per call site: sealed
+settings values, `GOCSPX-` secrets, bearer tokens and Google's token shapes are stripped
+before a line is written, because the whole point of the file is that it gets shared. A
+check feeds all of those through and asserts none survives while the message still does.
+
+**The flag is `--verbose`, and that was learned the hard way.** `--debug` was the obvious
+name and it makes the app refuse to launch: Node intercepts it before any of this code
+runs and Electron exits with `[DEP0062]: node --debug and node --debug-brk are invalid`.
+Nothing in a unit test can see that — only starting the app can — so `RESERVED_FLAGS` in
+`log.ts` pins the names to avoid, and a check asserts our flag is not among them.
+
+`--verbose` also opens DevTools, and `Ctrl+Shift+I` is bound explicitly rather than
+relying on Electron's default menu, which sits behind `autoHideMenuBar`.
+
 ## Verification
 
 ### Importing a CommonJS dependency from the ESM main process

@@ -743,6 +743,15 @@ export const en = {
   'boosters.refresh': 'Refresh',
   'boosters.loaded': '{boosters} booster types, {cards} cards priced for {set}.',
 
+  // ------------------------------------------------------------- diagnostics
+  'diag.title': 'Diagnostics',
+  'diag.intro': 'The app keeps a log of errors on this machine. Nothing in it is sent anywhere — it is here so a problem can be looked at rather than described from memory.',
+  'diag.openLog': 'Open log file',
+  'diag.openFolder': 'Open log folder',
+  'diag.copy': 'Copy diagnostics',
+  'diag.copied': 'Diagnostics copied to the clipboard.',
+  'diag.debugHint': 'For more detail, start the app with --verbose: it logs everything and opens developer tools. Ctrl+Shift+I opens those at any time.',
+  'err.logOpenFailed': 'The log could not be opened: {reason}',
   // ----------------------------------------------------------------- updates
   'updates.title': 'Updates',
   'updates.current': 'Version {version}',

@@ -32,6 +32,40 @@ function paintStoredTheme(): void {
 
 paintStoredTheme()
 
+/**
+ * Renderer failures, into the same log as everything else.
+ *
+ * Two events cover what React does not: a synchronous throw outside a component, and a
+ * rejected promise nobody awaited. Before this, an uncaught render error was a blank
+ * window and no record anywhere — the worst possible combination, because the one person
+ * who saw it is the one person who cannot look into it.
+ *
+ * Deliberately fire-and-forget. If the IPC that records the failure fails too, there is
+ * nothing sensible left to do, and a handler that can throw would replace a blank screen
+ * with a loop.
+ */
+function reportFailures(): void {
+  const send = (message: string): void => {
+    void window.api.diagnostics.record('error', message).catch(() => {})
+  }
+  window.addEventListener('error', (event) => {
+    const where = event.filename ? ` (${event.filename}:${event.lineno}:${event.colno})` : ''
+    send(`${event.message}${where}${event.error?.stack ? `
+${event.error.stack}` : ''}`)
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason
+    send(
+      `unhandled rejection: ${
+        reason instanceof Error ? `${reason.message}
+${reason.stack ?? ''}` : String(reason)
+      }`
+    )
+  })
+}
+
+reportFailures()
+
 const root = document.getElementById('root')
 if (!root) throw new Error('Root element missing from index.html')
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
 import type {
   AddCardInput,
   AppSettings,
@@ -129,6 +129,8 @@ import {
   isConfigured
 } from '../services/googleAuth.js'
 import { hostname } from 'node:os'
+import { logDir, logError, logFile, logInfo, logWarn } from '../services/log.js'
+import { getDataDir, getDb } from '../db/connection.js'
 
 /** Localised message, resolved at throw time from the stored locale. */
 function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
@@ -147,6 +149,12 @@ function handle<Args extends unknown[], Result>(
     try {
       return { ok: true, data: await fn(...(args as Args)) }
     } catch (err) {
+      /*
+        Logged here, once, for every channel there is. This wrapper already sees every
+        failure the UI will ever show; until it wrote them down, a message could reach
+        the screen and leave nothing behind for anyone to look at afterwards.
+      */
+      logError('ipc', `${channel} failed`, err)
       return { ok: false, error: (err as Error).message || 'Unexpected error' }
     }
   })
@@ -763,6 +771,65 @@ export function registerHandlers(): void {
   handle('updates:download', () => downloadUpdate(broadcast))
   handle('updates:install', () => installUpdate(broadcast))
   handle('updates:openRelease', () => openReleasePage())
+
+  // ---------- Diagnostics ----------
+
+  /*
+    Reaching the logs without a terminal, which is the whole point: a packaged Electron
+    app on Windows has no console, so "look at the output" is not advice anyone can act
+    on. `shell.openPath` hands the file to whatever the user reads text with.
+  */
+  /*
+    The renderer's own crashes. An uncaught render error used to be a blank window and
+    silence; now it reaches the same file as everything else, tagged so its origin is
+    obvious in the log.
+  */
+  handle('logs:record', (level: 'error' | 'warn' | 'info', message: string) => {
+    if (level === 'error') logError('renderer', message)
+    else if (level === 'warn') logWarn('renderer', message)
+    else logInfo('renderer', message)
+    return true
+  })
+
+  handle('logs:openFile', () => shell.openPath(logFile()))
+  handle('logs:openFolder', () => shell.openPath(logDir()))
+
+  /**
+   * The answers to the questions a bug report always needs, on the clipboard.
+   *
+   * Deliberately no secrets and no card data: versions, paths, the update mode, whether
+   * Drive is connected, and how much is in the database. Enough to place a report,
+   * nothing anyone would mind pasting into a public issue.
+   */
+  handle('diagnostics:copy', () => {
+    const settings = getSettings()
+    const report = [
+      `Matomeru ${app.getVersion()}`,
+      `electron ${process.versions.electron} · chrome ${process.versions.chrome} · node ${process.versions.node}`,
+      `platform ${process.platform} ${process.arch}`,
+      `packaged ${app.isPackaged}${process.env.PORTABLE_EXECUTABLE_DIR ? ' (portable)' : ''}`,
+      `update mode ${updateState().mode}`,
+      `locale ${settings.locale} · theme ${settings.theme}/${settings.themeMode}`,
+      `drive ${hasBundledClient() ? 'client compiled in' : 'no client'}, ${
+        hasRefreshToken() ? 'connected' : 'not connected'
+      }, folder "${folderName()}"`,
+      `data ${getDataDir()}`,
+      `log ${logFile()}`,
+      ...(
+        [
+          ['collection_items', 'collection rows'],
+          ['decks', 'decks'],
+          ['pick_lists', 'pick lists'],
+          ['printings', 'cached printings']
+        ] as const
+      ).map(([table, label]) => {
+        const row = getDb().get(`SELECT COUNT(*) AS n FROM ${table}`) as { n: number }
+        return `${label} ${row.n}`
+      })
+    ].join('\n')
+    clipboard.writeText(report)
+    return report
+  })
 
   // ---------- CSV ----------
   handle('csv:pickImport', async () => {

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
   AlertCircle,
+  ClipboardCopy,
   CloudUpload,
   Download,
+  FileText,
   ExternalLink,
   FolderOpen,
   Link2,
@@ -333,6 +335,8 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
 
           <UpdatePanel />
 
+          <DiagnosticsPanel />
+
           <section className="panel p-4 text-[11px] leading-relaxed text-ink-500">
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">
               {t('settings.dataTitle')}
@@ -355,6 +359,74 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
  * left out, because Scryfall's booster flag already answers those offline and no
  * download would add anything.
  */
+/**
+ * Getting at the log without a terminal.
+ *
+ * A packaged Electron app on Windows has no console, so "check the output" is not advice
+ * anyone can follow. These three buttons are the whole answer: open the file, open the
+ * folder it is in, or copy the handful of facts a bug report always needs.
+ */
+function DiagnosticsPanel(): React.ReactElement {
+  const t = useT()
+  const toast = useApp((s) => s.toast)
+
+  const copy = async (): Promise<void> => {
+    const report = await guard(() => window.api.diagnostics.copy())
+    if (report === undefined) return
+    toast('success', t('diag.copied'))
+  }
+
+  /*
+    `shell.openPath` answers with a message on failure rather than throwing, so an empty
+    string is success and anything else is the reason it did not work.
+  */
+  const open = async (which: 'file' | 'folder'): Promise<void> => {
+    const problem = await guard(() =>
+      which === 'file'
+        ? window.api.diagnostics.openLogFile()
+        : window.api.diagnostics.openLogFolder()
+    )
+    if (problem === undefined) return
+    if (problem !== '') toast('error', t('err.logOpenFailed', { reason: problem }))
+  }
+
+  return (
+    <section className="panel p-4" data-setting="diagnostics">
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+        {t('diag.title')}
+      </h2>
+
+      <p className="text-[11px] leading-relaxed text-ink-500">{t('diag.intro')}</p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          icon={<FileText size={13} />}
+          onClick={() => void open('file')}
+          data-action="openLogFile"
+        >
+          {t('diag.openLog')}
+        </Button>
+        <Button
+          icon={<FolderOpen size={13} />}
+          onClick={() => void open('folder')}
+          data-action="openLogFolder"
+        >
+          {t('diag.openFolder')}
+        </Button>
+        <Button
+          icon={<ClipboardCopy size={13} />}
+          onClick={() => void copy()}
+          data-action="copyDiagnostics"
+        >
+          {t('diag.copy')}
+        </Button>
+      </div>
+
+      <p className="mt-3 text-[11px] leading-relaxed text-ink-500">{t('diag.debugHint')}</p>
+    </section>
+  )
+}
+
 /**
  * Updating, in whichever of its three forms this build supports.
  *

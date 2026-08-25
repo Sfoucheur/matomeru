@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { closeDb, getDb, setDataDir } from './db/connection.js'
 import { registerHandlers } from './ipc/handlers.js'
 import { setAppVersion } from './services/backup.js'
+import { logInfo, parseDebugFlag, setVerboseLogging } from './services/log.js'
 import { checkForUpdates } from './services/updates.js'
 import { getSettings } from './db/repos/settings.js'
 import { broadcastProgress } from './ipc/handlers.js'
@@ -14,7 +15,7 @@ registerImageScheme()
 
 let mainWindow: BrowserWindow | null = null
 
-function createWindow(): void {
+function createWindow(debugging = false): void {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -34,7 +35,23 @@ function createWindow(): void {
   })
 
   // Avoid the white flash before the first paint.
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+    if (debugging) mainWindow?.webContents.openDevTools({ mode: 'bottom' })
+  })
+
+  /*
+    DevTools on Ctrl+Shift+I, registered rather than assumed.
+
+    Nothing here sets an application menu, so the app inherits Electron's default one --
+    which does carry a Toggle Developer Tools item, but sits behind `autoHideMenuBar` and
+    is not something to rely on in a packaged build. Binding it explicitly means the one
+    tool for looking at a renderer problem is reachable whatever the menu is doing.
+  */
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    const combo = input.control && input.shift && input.key.toLowerCase() === 'i'
+    if (input.type === 'keyDown' && combo) mainWindow?.webContents.toggleDevTools()
+  })
 
   // Anything trying to open a new window goes to the real browser instead.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -61,6 +78,16 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
 
+  /*
+    `--verbose` raises the log level and opens DevTools. A flag rather than a setting,
+    because it has to work on a build that will not start far enough to reach Settings.
+
+    Not `--debug`: Node claims that name and Electron refuses to launch at all with it,
+    which was discovered the only way it can be — by trying. See RESERVED_FLAGS.
+  */
+  const debugging = parseDebugFlag(process.argv)
+  setVerboseLogging(debugging)
+
   void app.whenReady().then(() => {
     // Point the data layer at the user app-data folder, then open the DB so
     // migrations run before any window can query it.
@@ -73,9 +100,18 @@ if (!app.requestSingleInstanceLock()) {
     // Handed in rather than imported, so the backup service stays free of Electron
     // and `scripts/verify.ts` can drive it in plain Node.
     setAppVersion(app.getVersion())
+    // One line of context at the top of every log, so a pasted excerpt says which build
+    // and which machine produced it without anyone having to be asked.
+    logInfo(
+      'startup',
+      `Matomeru ${app.getVersion()} · electron ${process.versions.electron} · ` +
+        `node ${process.versions.node} · packaged ${app.isPackaged}` +
+        `${process.env.PORTABLE_EXECUTABLE_DIR ? ' · portable' : ''}` +
+        `${debugging ? ' · debug' : ''} · data ${dataDir}`
+    )
     registerImageProtocol()
     registerHandlers()
-    createWindow()
+    createWindow(debugging)
 
     /*
       One quiet look for a new release, a few seconds after the window exists.

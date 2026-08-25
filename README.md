@@ -105,6 +105,27 @@ on restart. You can also check whenever you like, or turn the startup check off.
 
 The portable version cannot replace itself, so it opens the release page instead.
 
+## When something goes wrong
+
+The app keeps a log of errors on your machine, at
+`%APPDATA%\matomeru\logs\main.log`. Nothing in it is sent anywhere — it exists so a
+problem can be looked at rather than described from memory. Credentials are stripped
+before anything is written, so the file is safe to attach to a bug report.
+
+Settings → Diagnostics has three buttons: open the log, open the folder it is in, and
+**Copy diagnostics** — versions, paths and row counts on the clipboard, which is what a
+bug report needs anyway.
+
+For more detail, start the app with `--verbose`. That logs everything and opens developer
+tools; `Ctrl+Shift+I` opens those at any time.
+
+```
+"Matomeru.exe" --verbose
+```
+
+Note it is `--verbose`, not `--debug`: Node claims that name and the app refuses to start
+with it.
+
 ## Building it yourself
 
 ```bash

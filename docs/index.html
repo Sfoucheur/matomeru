@@ -353,6 +353,21 @@
       developer notes in the repository.
     </p>
 
+    <h3>Where are the logs?</h3>
+    <p>
+      At <code>%APPDATA%\matomeru\logs\main.log</code>, or from
+      <strong>Settings → Diagnostics → Open log file</strong>. Nothing in it leaves your
+      machine, and credentials are stripped before anything is written, so it is safe to
+      attach to a bug report. The same panel has <strong>Copy diagnostics</strong>, which
+      puts versions, paths and row counts on the clipboard.
+    </p>
+    <p>
+      For more detail, start the app with <code>--verbose</code>: it logs everything and
+      opens developer tools, which <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> also
+      does at any time. It is <code>--verbose</code> and not <code>--debug</code>, because
+      Node claims that name and the app will refuse to start with it.
+    </p>
+
     <h3>A deck will not sync</h3>
     <p>
       Archidekt has to be able to see it. Private decks are not readable by anything but

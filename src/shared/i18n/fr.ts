@@ -743,6 +743,15 @@ export const fr: Record<keyof typeof en, string> = {
 	"boosters.refresh": "Actualiser",
 	"boosters.loaded": "{boosters} types de booster, {cards} cartes calculées pour {set}.",
 
+	// ------------------------------------------------------------- diagnostics
+	"diag.title": "Diagnostic",
+	"diag.intro": "L’application conserve un journal des erreurs sur cette machine. Rien n’en est envoyé où que ce soit : il existe pour qu’un problème puisse être examiné plutôt que décrit de mémoire.",
+	"diag.openLog": "Ouvrir le fichier journal",
+	"diag.openFolder": "Ouvrir le dossier du journal",
+	"diag.copy": "Copier les informations de diagnostic",
+	"diag.copied": "Informations de diagnostic copiées dans le presse-papiers.",
+	"diag.debugHint": "Pour plus de détails, lancez l’application avec --verbose : elle journalise tout et ouvre les outils de développement. Ctrl+Maj+I les ouvre à tout moment.",
+	"err.logOpenFailed": "Le journal n’a pas pu être ouvert : {reason}",
 	// ----------------------------------------------------------------- updates
 	"updates.title": "Mises à jour",
 	"updates.current": "Version {version}",
