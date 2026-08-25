@@ -79,17 +79,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   }
 
   // Pressing one: that row goes busy, the others and the all-decks button lock out.
+  /*
+    Watched, not sampled. "While it runs" is only observable while it runs, and a warm
+    one-deck sync can finish inside a fixed wait -- which is how this alternated between
+    passing and failing on the same build. So poll fast and record whether the busy state
+    was ever seen at all.
+  */
   const busy = JSON.parse(await ev(`(async () => {
     const first = document.querySelector('[data-sync-deck]')
+    const pressed = first.getAttribute('data-sync-deck')
     first.click()
-    await new Promise((r) => setTimeout(r, 260))
-    const all = [...document.querySelectorAll('[data-sync-deck]')]
-    const spinning = all.filter((b) => b.querySelector('.animate-spin')).map((b) => b.getAttribute('data-sync-deck'))
-    return JSON.stringify({
-      pressed: first.getAttribute('data-sync-deck'),
-      spinning,
-      othersDisabled: all.every((b) => b.disabled)
-    })
+    let sawSpinning = null
+    let sawLocked = false
+    for (let i = 0; i < 200; i += 1) {
+      const all = [...document.querySelectorAll('[data-sync-deck]')]
+      const spinning = all.filter((b) => b.querySelector('.animate-spin'))
+        .map((b) => b.getAttribute('data-sync-deck'))
+      if (spinning.length && sawSpinning === null) sawSpinning = spinning
+      if (all.length && all.every((b) => b.disabled)) sawLocked = true
+      if (sawSpinning !== null && sawLocked) break
+      await new Promise((r) => setTimeout(r, 15))
+    }
+    return JSON.stringify({ pressed, spinning: sawSpinning ?? [], othersDisabled: sawLocked })
   })()`))
   console.log('        → ' + JSON.stringify(busy))
   check('pressing one puts exactly that row into its busy state',
@@ -120,16 +131,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   })()`)
   await sleep(1400)
 
-  const header = JSON.parse(await ev(`(() => {
-    const text = document.body.innerText || ''
-    const grab = (re) => { const m = text.match(re); return m ? Number(m[1]) : null }
-    return JSON.stringify({
-      inDeck: grab(/([0-9]+) (?:owned|in deck|poss[eé]d)/i),
-      inCollection: grab(/([0-9]+) (?:in collection|en collection)/i),
-      missing: grab(/([0-9]+) (?:missing|manquant)/i),
-      cards: grab(/([0-9]+) (?:cards|cartes)/i)
-    })
-  })()`))
+  /*
+    Polled, not slept at. The breakdown is fetched per deck, so a fixed wait reads the
+    header mid-load and reports nulls -- which is how this probe alternated between
+    passing and failing on the same build.
+  */
+  const readHeader = async () => {
+    for (let i = 0; i < 12; i += 1) {
+      const seen = JSON.parse(await ev(`(() => {
+        const text = document.body.innerText || ''
+        const grab = (re) => { const m = text.match(re); return m ? Number(m[1]) : null }
+        return JSON.stringify({
+          inDeck: grab(/([0-9]+) (?:owned|in deck|poss[eé]d)/i),
+          inCollection: grab(/([0-9]+) (?:in collection|en collection)/i),
+          missing: grab(/([0-9]+) (?:missing|manquant)/i),
+          cards: grab(/([0-9]+) (?:cards|cartes)/i)
+        })
+      })()`))
+      if (seen.inDeck !== null && seen.missing !== null) return seen
+      await sleep(400)
+    }
+    return { inDeck: null, inCollection: null, missing: null, cards: null }
+  }
+  const header = await readHeader()
   console.log('        → header ' + JSON.stringify(header))
   check('the deck header reports what the deck holds and what is missing',
     header.inDeck !== null && header.missing !== null, JSON.stringify(header))
@@ -147,17 +171,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
         row.parentElement.querySelector('button').click()
         return true
       })()`)
-      await sleep(1400)
-      const seen = JSON.parse(await ev(`(() => {
-        const text = document.body.innerText || ''
-        const grab = (re) => { const m = text.match(re); return m ? Number(m[1]) : null }
-        return JSON.stringify({
-          inDeck: grab(/([0-9]+) (?:owned|in deck|poss[eé]d)/i),
-          inCollection: grab(/([0-9]+) (?:in collection|en collection)/i),
-          missing: grab(/([0-9]+) (?:missing|manquant)/i),
-          cards: grab(/([0-9]+) (?:cards|cartes)/i)
-        })
-      })()`))
+      const seen = await readHeader()
       if (seen.inCollection !== null) three = seen
     }
   }

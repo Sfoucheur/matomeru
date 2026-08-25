@@ -221,6 +221,47 @@ and "I do not own this" sections both built deck cards with no label to mean "no
 tagged", which under this rule would have made them measure the new default instead of the
 thing they were written for.
 
+### Hovering a printing, and turning a card over in the zoom
+
+**The printing list previews into the dialog's own frame.** Each candidate draws at 32×24px,
+which is too small to tell one art treatment from another — and telling them apart is
+usually why the list was opened. `PrintingPicker` reports what the pointer is over through
+one `onPreview` prop; `CardDetailModal` draws that printing in the card frame it already
+has, at around 400×560. No floating layer, no positioning, no layout shift.
+
+Three details that are load-bearing:
+
+- **On focus as well as hover**, so arrowing through the list previews too.
+- **A delay before showing (~180ms), none before clearing.** Running the cursor down twenty
+  rows would otherwise strobe the frame, and a preview that lingered after the pointer left
+  would be one you could not dismiss.
+- **The flip state is untouched.** The preview is a still image, not another stage, so
+  `face` and `settled` keep their values and releasing the hover returns the card to
+  whichever side you had turned it to.
+
+This is the only hover-driven UI in the app — a hover that revealed a card's back face was
+deliberately deleted from the tiles earlier — which is the argument for keeping it this
+plain.
+
+**The zoom no longer blanks when it turns a card over.** Opened from a list row, nothing has
+ever drawn the back face, so the first turn swapped the `src` and fell back to the skeleton
+while the image was fetched: measured at a click plus ~50ms of empty grey on a fast machine,
+and a cold fetch on a slow one, which reads as "the other side does not show; I have to flip
+again". Two changes:
+
+- `painted` trails `shown`: the current face stays up until the next one is decoded. Via
+  `decode()` rather than an `onLoad` handler, because an image already in the renderer's
+  cache can finish before a handler attaches and leave the state stuck at "loading".
+- The other face is fetched when the zoom opens, so the first turn is instant. One extra
+  image per zoom, and only for a card that has a second face.
+
+**Two vacuous checks were caught by sabotage here**, both worth remembering. The
+flip-survival check first ran on a card that was not turned over, so resetting the flip
+changed nothing and it passed; then it hovered the *first* row in the list, which is the
+current printing and therefore `disabled` — and a disabled button fires no mouse events at
+all, so the preview never happened and it passed again. It now turns the card over first,
+picks a row that is not disabled, and asserts that a preview really was showing.
+
 ### In the deck, in your collection, or missing
 
 The Decks screen had one number per card, `held`, and it added two different facts together:

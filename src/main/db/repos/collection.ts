@@ -242,8 +242,14 @@ function buildWhere(filters: CollectionFilters, currency: Currency): WhereClause
       OR p.collector_number LIKE ?
       OR p.type_line LIKE ? COLLATE NOCASE
       OR p.printed_type_line LIKE ? COLLATE NOCASE
+      -- What the card does, in both languages it might be written in. Both columns
+      -- rather than a COALESCE, for the reason the name and the localized name are
+      -- both searched: "draw a card" should find a French printing, and so should the
+      -- French wording of it.
+      OR p.oracle_text LIKE ? COLLATE NOCASE
+      OR p.printed_text LIKE ? COLLATE NOCASE
     )`)
-    params.push(term, term, term, term, term, term)
+    params.push(term, term, term, term, term, term, term, term)
   }
 
   const inList = (column: string, values: readonly string[]): void => {

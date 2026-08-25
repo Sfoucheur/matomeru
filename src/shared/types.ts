@@ -702,6 +702,14 @@ export interface DeckCardRow {
   cmc: number | null
   color_identity: string | null
   type_line: string | null
+  /**
+   * The card's rules text, English and localized joined, for the search box only.
+   *
+   * Nothing displays this. It is one field rather than two columns because the breakdown
+   * is re-fetched on every invalidation and a big deck would otherwise ship the same text
+   * twice over the IPC each time.
+   */
+  search_text: string | null
   unit_value: number | null
   /** True when `unit_value` came from a different printing of the same card. */
   price_is_proxy: boolean

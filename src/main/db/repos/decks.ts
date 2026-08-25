@@ -557,6 +557,16 @@ export function deckBreakdown(
             p.cmc AS cmc,
             p.color_identity AS color_identity,
             COALESCE(p.printed_type_line, p.type_line) AS type_line,
+            /*
+              What the card does, for the deck's search box, in both languages at once.
+
+              One field rather than the two columns: the breakdown is re-fetched on every
+              invalidation, and a 150-card deck would otherwise carry ~60KB of duplicated
+              rules text across the IPC each time. Nothing displays it -- the filter is its
+              only reader -- so a search blob is the honest shape.
+            */
+            TRIM(COALESCE(p.oracle_text, '') || ' ' || COALESCE(p.printed_text, ''))
+              AS search_text,
             -- What the tile needs to draw a two-sided card as two cards.
             p.layout AS layout,
             ${price} AS unit_value,
@@ -622,6 +632,7 @@ export function deckBreakdown(
     cmc: number | null
     color_identity: string | null
     type_line: string | null
+    search_text: string | null
     unit_value: number | null
     price_is_proxy: number
   })[]

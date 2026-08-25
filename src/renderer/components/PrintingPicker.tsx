@@ -28,7 +28,8 @@ export default function PrintingPicker({
   currency,
   context,
   forcedLang,
-  onChanged
+  onChanged,
+  onPreview
 }: {
   /** English name — what the all-printings search is keyed on. */
   name: string
@@ -38,6 +39,15 @@ export default function PrintingPicker({
   /** The language currently asserted for this card, if any. */
   forcedLang: string | null
   onChanged: (nextScryfallId?: string) => void
+  /**
+   * Which printing the pointer is over, or null when it leaves.
+   *
+   * The list draws each candidate at 32x24px, which is too small to tell one art treatment
+   * from another -- and telling them apart is usually why you opened this list. Reported
+   * rather than previewed here: the dialog already has a card frame four hundred pixels
+   * wide, and showing it there costs no layer, no positioning and no layout shift.
+   */
+  onPreview?: (scryfallId: string | null) => void
 }): React.ReactElement {
   const toast = useApp((s) => s.toast)
   const t = useT()
@@ -157,6 +167,8 @@ export default function PrintingPicker({
         <button
           onClick={() => void load()}
           disabled={loading}
+          /* A handle for the live checks: the label is translated, the list is behind it. */
+          data-action="showPrintings"
           className="field flex w-full items-center justify-center gap-2 text-xs text-ink-300"
         >
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
@@ -187,6 +199,12 @@ export default function PrintingPicker({
                   <button
                     key={printing.scryfall_id}
                     onClick={() => void choose(printing)}
+                    // Focus as well as hover, so arrowing through the list previews too.
+                    onMouseEnter={() => onPreview?.(printing.scryfall_id)}
+                    onMouseLeave={() => onPreview?.(null)}
+                    onFocus={() => onPreview?.(printing.scryfall_id)}
+                    onBlur={() => onPreview?.(null)}
+                    data-printing={printing.scryfall_id}
                     disabled={busy || current}
                     title={
                       current

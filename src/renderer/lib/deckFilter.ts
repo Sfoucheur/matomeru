@@ -57,6 +57,8 @@ export function matchesDeckFilters(card: DeckCardRow, filters: DeckFilters): boo
       card.set_code,
       card.collector_number,
       card.type_line,
+      // What the card does, in both languages -- see `search_text`.
+      card.search_text,
       card.lang
     ]
       .filter(Boolean)

@@ -430,6 +430,162 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   })()`)
   await sleep(400)
 
+  /*
+    ---- 8. hovering a printing previews it in the card frame.
+
+    The list draws each candidate at 32x24px, too small to tell one art treatment from
+    another. Hovering one shows it in the frame the dialog already has, which is the only
+    hover-driven UI in the app -- so what matters is that it puts things back: leaving the
+    list restores the card, and the side you had turned it to survives.
+  */
+  await openCard('Oko')
+  await sleep(600)
+  // The printing list is behind a button, since it costs a Scryfall lookup to fill.
+  await ev(`(async () => {
+    document.querySelector('[role="dialog"] [data-action="showPrintings"]')?.click()
+    await new Promise((r) => setTimeout(r, 3200))
+    return true
+  })()`)
+  const preview = JSON.parse(await ev(`(async () => {
+    const frameSrc = () => {
+      const img = document.querySelector('[role="dialog"] [data-card-frame] img')
+      return img ? (img.getAttribute('src') || '') : ''
+    }
+    const rows = [...document.querySelectorAll('[role="dialog"] [data-printing]')]
+    if (rows.length < 2) return JSON.stringify({ rows: rows.length })
+    const before = frameSrc()
+    const other = rows.find((r) => !before.includes(r.getAttribute('data-printing')))
+    if (!other) return JSON.stringify({ rows: rows.length, noOther: true })
+    const id = other.getAttribute('data-printing')
+    other.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    // Past the settle delay the frame waits before swapping.
+    await new Promise((r) => setTimeout(r, 420))
+    const during = frameSrc()
+    other.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+    await new Promise((r) => setTimeout(r, 260))
+    return JSON.stringify({
+      rows: rows.length,
+      id,
+      previewed: during.includes(id),
+      restored: frameSrc() === before
+    })
+  })()`))
+  console.log('        \u2192 preview ' + JSON.stringify(preview))
+  if (preview.rows >= 2 && !preview.noOther) {
+    check('hovering a printing shows it in the card frame', preview.previewed === true,
+      JSON.stringify(preview))
+    check('and leaving the list puts the card back', preview.restored === true,
+      JSON.stringify(preview))
+  } else {
+    console.log('        (this card has fewer than two printings cached, so no preview to check)')
+  }
+
+  /*
+    And the turn survives a preview. The frame is shared, so a preview that reset the flip
+    would quietly undo what you were looking at -- which is why the preview is a still
+    image rather than another stage.
+  */
+  const survived = JSON.parse(await ev(`(async () => {
+    const turnedNow = () => document.querySelector('[data-flip="card"]')?.dataset.turned ?? null
+    /*
+      A row that is not the current printing: that one is disabled, and a disabled button
+      fires no mouse events at all -- so hovering it previewed nothing and this check
+      passed twice over while proving nothing.
+    */
+    const row = [...document.querySelectorAll('[role="dialog"] [data-printing]')]
+      .find((r) => !r.disabled)
+    if (!row) return JSON.stringify({ skipped: true })
+    /*
+      Turn it over first. Without this the card is already front-up, so a preview that
+      reset the flip would change nothing and this check would pass while proving nothing
+      -- which is exactly what it did until a sabotage run caught it.
+    */
+    document.querySelector('[role="dialog"] [data-action="flipCard"]')?.click()
+    await new Promise((r) => setTimeout(r, 900))
+    const before = turnedNow()
+    row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 420))
+    const during = turnedNow()
+    row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+    await new Promise((r) => setTimeout(r, 300))
+    const previewShown = !!document.querySelector('[role="dialog"] [data-card-preview]')
+    return JSON.stringify({ before, during, previewShown, after: turnedNow() })
+  })()`))
+  if (!survived.skipped) {
+    check('the card is actually turned over before that is asserted',
+      survived.before === 'true', JSON.stringify(survived))
+    // And a preview really happened, or the assertion below is about nothing.
+    check('and a preview was really showing during it',
+      survived.during === null, JSON.stringify(survived))
+    /*
+      Only before against after. `during` is null by design -- the preview replaces the flip
+      stage, so there is no card element to read while it is up, which is what the check
+      above asserts. Requiring it to equal `before` made this fail on a working build.
+    */
+    check('and the side you turned the card to survives a preview',
+      survived.before === survived.after, JSON.stringify(survived))
+  }
+  await closeDialog()
+  await sleep(500)
+
+  /*
+    ---- 9. turning a card over in the zoom shows the other side, with no blank.
+
+    Opened from a list row, nothing has ever drawn the back face, so the first turn used to
+    swap the src and fall back to the skeleton while it fetched: measured at a click plus
+    50ms of empty grey on a fast machine, and a cold fetch on a slow one. Sampled at 40ms
+    because that is where the gap was.
+  */
+  const zoomTurn = JSON.parse(await ev(`(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise((r) => setTimeout(r, 400))
+    const nav = document.querySelector('nav') ?? document.querySelector('aside')
+    ;[...nav.querySelectorAll('button')][0].click()
+    await new Promise((r) => setTimeout(r, 900))
+    document.querySelector('[data-view="table"]')?.click()
+    await new Promise((r) => setTimeout(r, 900))
+    const row = [...document.querySelectorAll('[data-collection-row]')].find((r) => /Oko/i.test(r.innerText || ''))
+    if (!row) return JSON.stringify({ skipped: 'no two-faced row' })
+    row.querySelector('button').click()
+    await new Promise((r) => setTimeout(r, 1500))
+    const shown = () => {
+      const overlays = [...document.querySelectorAll('div')].filter((d) => {
+        const s = getComputedStyle(d)
+        return s.position === 'fixed' && Number(s.zIndex) >= 50 && d.querySelector('img[src*="matomeru://image/"]')
+      })
+      const top = overlays[overlays.length - 1]
+      const img = top ? top.querySelector('img[src*="matomeru://image/"]') : null
+      if (!img) return null
+      return {
+        face: (img.getAttribute('src') || '').includes('face=1') ? 1 : 0,
+        complete: img.complete,
+        skeleton: !!top.querySelector('.skeleton')
+      }
+    }
+    const flip = document.querySelector('[data-action="flipZoom"]')
+    if (!flip) return JSON.stringify({ skipped: 'no flip control in the zoom' })
+    const opened = shown()
+    flip.click()
+    await new Promise((r) => setTimeout(r, 40))
+    const soon = shown()
+    await new Promise((r) => setTimeout(r, 600))
+    return JSON.stringify({ opened, soon, settled: shown() })
+  })()`))
+  console.log('        \u2192 zoom turn ' + JSON.stringify(zoomTurn))
+  if (!zoomTurn.skipped) {
+    check('turning the card over in the zoom shows a card straight away, not a gap',
+      zoomTurn.soon && zoomTurn.soon.complete === true && zoomTurn.soon.skeleton === false,
+      JSON.stringify(zoomTurn))
+    check('and it settles on the other side',
+      zoomTurn.settled && zoomTurn.settled.face !== zoomTurn.opened.face,
+      JSON.stringify(zoomTurn))
+  }
+  await ev(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    return true
+  })()`)
+  await sleep(400)
+
   // Leave nothing open: the next probe's hit tests would answer through it.
   await closeDialog()
 

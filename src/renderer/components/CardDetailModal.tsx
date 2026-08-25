@@ -1,5 +1,5 @@
 import { motion } from 'motion/react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ExternalLink,
   Layers,
@@ -61,6 +61,40 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
    */
   const [settled, setSettled] = useState(0)
   const [zoomed, setZoomed] = useState(false)
+  /*
+    The printing the pointer is over in the list below, drawn in the frame instead of this
+    card's own artwork.
+
+    Deliberately separate from `face` and `settled`: a preview is a still picture of another
+    printing, so there is nothing to rotate, and leaving the list returns the card to
+    whichever side you had turned it to rather than resetting it.
+  */
+  const [preview, setPreview] = useState<string | null>(null)
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /*
+    Shown after a moment, cleared at once.
+
+    Running the cursor down twenty printings would otherwise strobe the frame. One timer
+    here rather than one per row, and clearing never waits -- a preview that lingered after
+    the pointer left would be a preview you could not dismiss.
+  */
+  const hoverPrinting = useCallback((scryfallId: string | null) => {
+    if (previewTimer.current) clearTimeout(previewTimer.current)
+    if (scryfallId === null) {
+      setPreview(null)
+      return
+    }
+    previewTimer.current = setTimeout(() => setPreview(scryfallId), 180)
+  }, [])
+
+  // A dialog closing mid-hover must not fire a state update into nothing.
+  useEffect(
+    () => () => {
+      if (previewTimer.current) clearTimeout(previewTimer.current)
+    },
+    []
+  )
 
   /*
     Turning back to the front belongs to changing the card, not to refreshing it.
@@ -247,7 +281,19 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 Reduce-motion needs nothing here: App wraps the tree in a MotionConfig
                 that stills the rotation, so the card simply appears turned.
               */}
-              {sides ? (
+              {preview ? (
+                /*
+                  A printing from the list, at the size the frame already is. No flip stage:
+                  this is a still of another card, and the turn state belongs to this one.
+                */
+                <CardImage
+                  scryfallId={preview}
+                  size="large"
+                  className="h-full w-full object-contain"
+                  alt={t('printing.preview')}
+                  data-card-preview=""
+                />
+              ) : sides ? (
                 <div className="h-full [perspective:1400px]" data-flip="stage">
                   <motion.div
                     className="relative h-full [transform-style:preserve-3d]"
@@ -388,6 +434,7 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 context={context}
                 forcedLang={context.forcedLang}
                 onChanged={reload}
+                onPreview={hoverPrinting}
               />
             )}
             {printing && <PriceTable printing={printing} />}

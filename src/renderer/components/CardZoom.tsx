@@ -51,16 +51,55 @@ export default function CardZoom({
     turn the card over on its own.
   */
   const [shown, setShown] = useState<0 | 1>(face)
+  /*
+    The side actually painted, which trails `shown` until its picture is decoded.
+
+    Turning the card over used to swap the `src` immediately and blank to the skeleton
+    while the new face was fetched -- and opened from a list row, nothing has ever drawn
+    the back, so that fetch is cold. Measured: a click, then 50ms of empty grey on a fast
+    machine, and however long a cold fetch takes on a slow one, which reads as "the flip
+    side does not show; I have to flip again".
+
+    So the current face stays up until the next one is ready to replace it. `decode()`
+    rather than an onLoad handler, because an image that is already in the renderer's cache
+    can finish before a handler attaches and leave the state stuck at "loading".
+  */
+  const [painted, setPainted] = useState<0 | 1>(face)
 
   useEffect(() => {
-    if (open) setShown(face)
+    if (open) {
+      setShown(face)
+      setPainted(face)
+    }
   }, [open, face])
 
-  // A face that has not been fetched yet has nothing on disk, so the skeleton comes back
-  // while it downloads rather than leaving the previous side up.
   useEffect(() => {
-    setLoaded(false)
-  }, [shown])
+    if (!open || painted === shown) return
+    let live = true
+    const loader = new Image()
+    loader.src = window.api.imageUrl(scryfallId, 'large', shown)
+    // Either way the wait is over: a face that will not load must not freeze the view.
+    void loader
+      .decode()
+      .catch(() => undefined)
+      .then(() => {
+        if (live) setPainted(shown)
+      })
+    return () => {
+      live = false
+    }
+  }, [open, shown, painted, scryfallId])
+
+  /*
+    And the other side is fetched as soon as this opens, so the first turn is instant
+    rather than paying for the round trip. One extra image per zoom, only for a card that
+    has a second face.
+  */
+  useEffect(() => {
+    if (!open || !hasBack) return
+    const other = new Image()
+    other.src = window.api.imageUrl(scryfallId, 'large', face === 0 ? 1 : 0)
+  }, [open, hasBack, scryfallId, face])
 
   useEffect(() => {
     if (!open) setLoaded(false)
@@ -143,7 +182,7 @@ export default function CardZoom({
                 />
               )}
               <img
-                src={window.api.imageUrl(scryfallId, 'large', shown)}
+                src={window.api.imageUrl(scryfallId, 'large', painted)}
                 alt={title}
                 onLoad={() => setLoaded(true)}
                 style={{ maxWidth: MAX_W, maxHeight: MAX_H }}

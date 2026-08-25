@@ -879,6 +879,44 @@ async function main(): Promise<void> {
     `got ${byLocalized.total}`
   )
 
+  /*
+    What the card does, not just what it is called.
+
+    The search box read name, localized name, set, number and both type lines -- so
+    "3 damage" found nothing, on a collection full of cards that deal 3 damage. Both text
+    columns are searched rather than a COALESCE of them, which is what lets an English term
+    find a localized printing and the localized wording find it too.
+  */
+  {
+    const byRules = queryCollection(filters({ search: '3 damage' }), 'usd', 100, 0)
+    check('a term only in the rules text finds the card',
+      byRules.total === byEnglishName.total && byRules.total > 0,
+      `rules=${byRules.total} name=${byEnglishName.total}`)
+    check('and it is the same rows the name search finds, not a superset',
+      JSON.stringify(byRules.rows.map((r) => r.key).sort()) ===
+        JSON.stringify(byEnglishName.rows.map((r) => r.key).sort()),
+      JSON.stringify({ rules: byRules.rows.length, name: byEnglishName.rows.length }))
+
+    /*
+      The localized text too. Taken from the printing rather than typed in, so this asserts
+      what the database actually holds instead of what a Japanese Lightning Bolt is assumed
+      to say.
+    */
+    const jaText = (ja?.printed_text ?? '').trim()
+    if (jaText.length >= 4) {
+      const fragment = jaText.slice(0, 4)
+      const byJaText = queryCollection(filters({ search: fragment }), 'usd', 100, 0)
+      check(`a fragment of the localized text "${fragment}" finds the JA rows`,
+        byJaText.total === 2, `got ${byJaText.total}`)
+    } else {
+      check('the JA printing carries localized rules text to search',
+        false, `printed_text was ${JSON.stringify(jaText)}`)
+    }
+
+    check('and a term in no field still matches nothing',
+      queryCollection(filters({ search: 'zzzz-not-in-any-field' }), 'usd', 100, 0).total === 0)
+  }
+
   const jaOnly = queryCollection(filters({ langs: ['ja'] }), 'usd', 100, 0)
   const jaSql = (
     db.get(
@@ -3499,6 +3537,21 @@ async function main(): Promise<void> {
         'search matches what the row displays',
         all.some((c) => matchesDeckFilters(c, deckFilters({ search: c.name.slice(0, 4) })))
       )
+      /*
+        And what the card does, which the deck's haystack did not read either. Asserted
+        against the text the breakdown actually shipped, so this measures the query and the
+        filter together rather than an assumption about a Lightning Bolt.
+      */
+      {
+        const withText = all.filter((c) => (c.search_text ?? '').includes('3 damage'))
+        check('the deck breakdown carries the rules text for searching',
+          withText.length > 0, JSON.stringify(all.map((c) => (c.search_text ?? '').slice(0, 20))))
+        const found = all.filter((c) => matchesDeckFilters(c, deckFilters({ search: '3 damage' })))
+        check('and a rules-text term keeps exactly the cards whose text has it',
+          JSON.stringify(found.map((c) => c.id).sort()) ===
+            JSON.stringify(withText.map((c) => c.id).sort()),
+          JSON.stringify({ found: found.length, withText: withText.length }))
+      }
       const byColor = sortDeckCards(all, deckFilters({ sort: 'color', sort2: 'cmc' }))
       check(
         'sorting loses no card',
