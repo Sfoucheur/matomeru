@@ -1,3 +1,10 @@
+## [0.2.1](https://github.com/Sfoucheur/matomeru/compare/v0.2.0...v0.2.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* update and settings screen ([7d5eed8](https://github.com/Sfoucheur/matomeru/commit/7d5eed80ddef45b7b2a19dd150346036673071cc))
+
 # [0.2.0](https://github.com/Sfoucheur/matomeru/compare/v0.1.3...v0.2.0) (2026-08-25)
 
 
