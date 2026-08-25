@@ -21,6 +21,8 @@ import SettingsView from './views/SettingsView'
 import CardDetailModal from './components/CardDetailModal'
 import BackupDialog from './components/BackupDialog'
 import UpdateDialog, { UpdateDot } from './components/UpdateDialog'
+
+import { shouldPrompt } from '@shared/types'
 import type { TranslationKey } from '@shared/i18n/index'
 import { useT } from './hooks/useT'
 
@@ -101,10 +103,35 @@ export default function App(): React.ReactElement {
     stays regardless.
   */
   useEffect(() => {
-    return window.api.updates.onUpdate((state) => {
+    let heard = false
+    const off = window.api.updates.onUpdate((state) => {
+      heard = true
       setUpdateState(state)
-      if (state.available !== null) setUpdateOpen(true)
+      /*
+        `shouldPrompt` rather than a condition here, because the case that matters is the
+        one that is invisible: mid-download the answer has to be no, or the dialog reopens
+        on top of the progress it just started.
+      */
+      setUpdateOpen(shouldPrompt(state))
     })
+
+    /*
+      And what is already known, asked for once.
+
+      A push only reaches whoever was listening when it went out. The launch check waits
+      four seconds, so in practice this window is there to hear it — but a reload, a
+      second window, or a slow first paint each end with a pending update that announced
+      itself to nobody, which is what "it does not find new versions until I check by
+      hand" looks like from the outside. Skipped if a push got here first, so a download
+      already in progress is never overwritten by a staler answer.
+    */
+    void window.api.updates.state().then((state) => {
+      if (heard) return
+      setUpdateState(state)
+      setUpdateOpen(shouldPrompt(state))
+    })
+
+    return off
   }, [setUpdateState])
 
   // Alt+1..7 jumps between views — faster than reaching for the mouse while sorting.
@@ -314,6 +341,7 @@ function ProgressBar(): React.ReactElement {
           exit={{ y: 60, opacity: 0 }}
           transition={{ type: 'spring', stiffness: 420, damping: 34 }}
           className="absolute bottom-0 left-0 right-0 border-t border-ink-700 bg-ink-850/95 px-5 py-2.5 backdrop-blur"
+          data-field="progress"
         >
           <div className="mb-1.5 flex items-baseline justify-between gap-4 text-xs">
             <span className="truncate text-ink-200">

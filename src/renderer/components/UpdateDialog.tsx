@@ -26,10 +26,16 @@ export default function UpdateDialog({
   const available = state.available
   if (available === null) return null
 
-  const download = async (): Promise<void> => {
-    // Not closed on click: the progress bar reports the download, and the dialog is
-    // where "Restart and install" will appear when it finishes.
-    await guard(() => window.api.updates.download())
+  const download = (): void => {
+    /*
+      Closed on click, and deliberately not awaited.
+
+      It used to stay open for the whole transfer, which read as nothing having happened
+      — the button did not even change. The progress bar already reports the download,
+      and the dialog comes back on its own when the file lands, as the install prompt.
+    */
+    onClose()
+    void guard(() => window.api.updates.download())
   }
 
   const install = async (): Promise<void> => {
@@ -37,10 +43,17 @@ export default function UpdateDialog({
   }
 
   return (
-    <Modal open onClose={onClose} title={t('updates.dialogTitle')} width="max-w-lg">
+    <Modal
+      open
+      onClose={onClose}
+      title={state.downloaded ? t('updates.readyTitle') : t('updates.dialogTitle')}
+      width="max-w-lg"
+    >
       <div className="px-5 py-4" data-dialog="update">
         <p className="text-sm text-ink-100">
-          {t('updates.dialogBody', { version: available.version, current: state.current })}
+          {state.downloaded
+            ? t('updates.readyBody', { version: available.version })
+            : t('updates.dialogBody', { version: available.version, current: state.current })}
         </p>
 
         {available.notes.trim().length > 0 && (
@@ -49,10 +62,10 @@ export default function UpdateDialog({
               {t('updates.notes')}
             </p>
             {/*
-              The notes come from a release body, which is Markdown we deliberately do not
-              render: pulling in a Markdown parser to show a bullet list would be a
-              dependency for decoration, and raw HTML from a release body is not something
-              to inject. Pre-wrapped monospace is honest about what it is.
+              Already plain text: the feed hands these over as HTML and `notesToText`
+              converts them before they reach the state. Rendering that HTML directly
+              would mean injecting a release body into the page, and a Markdown parser
+              would be a runtime dependency for decoration.
             */}
             <pre
               className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border
@@ -93,7 +106,7 @@ export default function UpdateDialog({
               size="sm"
               icon={<CloudDownload size={13} />}
               disabled={state.downloading || state.mode !== 'auto'}
-              onClick={() => void download()}
+              onClick={download}
               data-action="updateDownload"
             >
               {state.downloading ? t('updates.downloading') : t('updates.download')}

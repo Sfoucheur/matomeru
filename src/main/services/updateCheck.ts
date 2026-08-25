@@ -75,6 +75,14 @@ export function isNewerVersion(candidate: string, current: string): boolean {
 export interface AutoUpdaterLike {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
+  /**
+   * No blockmaps are built (`nsis.differentialPackage: false`), so looking for one is a
+   * wasted request and an ERROR line that means nothing is wrong. The real run logged
+   * exactly that: a 404 on `Matomeru-Setup-0.2.0.exe.blockmap`, then a full download.
+   */
+  disableDifferentialDownload: boolean
+  /** electron-updater warns until this is said out loud, and we do not use one. */
+  disableWebInstaller: boolean
   logger: unknown
   /*
     Only the three events this app listens to, typed for what each one carries. A
@@ -140,4 +148,51 @@ export function parseFakeUpdate(argv: readonly string[], packaged: boolean): str
   const version = flag.slice('--fake-update='.length).trim()
   // Parsed the same way a real tag is, so nonsense cannot reach the dialog.
   return parseVersion(version) === null ? null : version
+}
+
+/**
+ * Release notes as text, because they arrive as HTML.
+ *
+ * electron-updater's GitHub provider reads the releases feed, whose content is HTML, so
+ * the dialog was showing raw markup. The two obvious alternatives are both worse:
+ * `dangerouslySetInnerHTML` on a release body is not something to do, and a Markdown
+ * parser would be a runtime dependency for decoration.
+ *
+ * Structure first, then tags, then entities — in that order, because stripping the tags
+ * before reading them would throw away the list and paragraph boundaries that make the
+ * result readable.
+ */
+export function notesToText(html: string): string {
+  const withBreaks = html
+    .replace(/<\s*(br|hr)\s*\/?>/gi, '\n')
+    .replace(/<\s*li[^>]*>/gi, '\n• ')
+    .replace(/<\s*\/\s*(p|div|h[1-6]|li|ul|ol|tr)\s*>/gi, '\n')
+    .replace(/<\s*(p|div|h[1-6])[^>]*>/gi, '\n')
+
+  const withoutTags = withBreaks.replace(/<[^>]*>/g, '')
+
+  const decoded = withoutTags
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    // Ampersand last, or an escaped entity like &amp;lt; would decode twice.
+    .replace(/&amp;/gi, '&')
+    .replace(/&#(\d+);/g, (_whole, code: string) => String.fromCodePoint(Number(code)))
+
+  return decoded
+    /*
+      List items are not paragraphs.
+
+      Each `</li>` ends a line and each `<li>` starts one, so a two-item list came out
+      double-spaced — visible the moment it was looked at in the running app, and
+      invisible to a check that only counts bullets.
+    */
+    .replace(/\n{2,}(?=• )/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line, index, all) => line.length > 0 || (index > 0 && all[index - 1].length > 0))
+    .join('\n')
+    .trim()
 }

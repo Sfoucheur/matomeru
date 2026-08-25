@@ -81,10 +81,12 @@ import {
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
 import {
   isNewerVersion,
+  notesToText,
   parseFakeUpdate,
   pickAutoUpdater,
   updateMode
 } from '../src/main/services/updateCheck.js'
+import { shouldPrompt } from '../src/shared/types.js'
 import {
   deckBreakdown,
   deckMoves,
@@ -5108,6 +5110,140 @@ async function main(): Promise<void> {
       check('and goes through the interop-safe accessor',
         source.includes('pickAutoUpdater('),
         'updates.ts no longer calls pickAutoUpdater')
+    }
+
+    /*
+      Release notes arrive as HTML, and the dialog shows text.
+
+      electron-updater's GitHub provider reads the releases feed, whose content is HTML,
+      so the first packaged update put markup in front of the user. The obvious test for
+      a converter — "no angle bracket survives" — is also passed by a function that
+      deletes everything, so both halves are asserted: the tags are gone, the words are
+      not.
+    */
+    {
+      const feed = [
+        '<h2>Highlights</h2>',
+        '<p>Backups are smaller &amp; faster.</p>',
+        '<ul>',
+        '<li>Fixed the <code>Ctrl+S</code> dialog</li>',
+        '<li>It&#39;s no longer 96&nbsp;MB</li>',
+        '</ul>',
+        '<p>See <a href="https://example.test">the notes</a>.<br>Thanks.</p>'
+      ].join('')
+      const text = notesToText(feed)
+      check('no markup survives the conversion',
+        !text.includes('<') && !text.includes('>'), text)
+      check('nor an undecoded entity',
+        !/&(amp|lt|gt|quot|nbsp|apos|#\d+);/i.test(text), text)
+      check('and the words are all still there, which over-stripping would lose',
+        ['Highlights', 'Backups are smaller & faster', 'Ctrl+S', 'the notes', 'Thanks']
+          .every((phrase) => text.includes(phrase)),
+        text)
+      check('a list reads as a list',
+        text.split('\n').filter((line) => line.startsWith('\u2022 ')).length === 2, text)
+      check('and the list is not double-spaced, which is how it looked in the app',
+        !/\n\n\u2022 /.test(text), JSON.stringify(text))
+      check('while a real paragraph break survives',
+        /Highlights\n\nBackups/.test(text), JSON.stringify(text))
+      check('an apostrophe entity decodes to an apostrophe',
+        text.includes("It's no longer 96 MB"), text)
+      check('blocks are separated rather than run together',
+        !/faster\.Fixed/.test(text) && !/dialogIt/.test(text), text)
+      check('plain text passes through unharmed',
+        notesToText('Just a line.') === 'Just a line.')
+      check('and nothing arrives wrapped in blank lines',
+        notesToText('<p>one</p>') === 'one', JSON.stringify(notesToText('<p>one</p>')))
+      console.log('        \u2192 ' + JSON.stringify(text).slice(0, 116) + '…')
+    }
+
+    /*
+      When the dialog goes up, as a function of the state.
+
+      The case this exists for is the middle row: the dialog closes on Download so the
+      progress bar is visible, and if a download in progress did not suppress the prompt,
+      the next announcement — one arrives per progress event — would reopen the dialog on
+      top of its own progress.
+    */
+    {
+      const pending = { version: '0.2.0', notes: '', url: 'https://example.test' }
+      check('an available update prompts',
+        shouldPrompt({ available: pending, downloading: false, downloaded: false }))
+      check('nothing available never prompts',
+        !shouldPrompt({ available: null, downloading: false, downloaded: false }))
+      check('a download in progress does not reopen the dialog over itself',
+        !shouldPrompt({ available: pending, downloading: true, downloaded: false }),
+        'the dialog would reappear on top of the progress it started')
+      check('and a landed download prompts again, which is the install-or-not question',
+        shouldPrompt({ available: pending, downloading: false, downloaded: true }),
+        'the download would sit there with nobody asked whether to install it')
+    }
+
+    /*
+      The four flags, as a tripwire on the file.
+
+      Every one of these is a line in the log of the real 0.1.3 → 0.2.0 update, and none
+      of them can be observed from a test: they are read by electron-updater inside a
+      packaged install. What is checkable is that they are still said.
+    */
+    {
+      const source = readFileSync(joinPath('src', 'main', 'services', 'updates.ts'), 'utf8')
+      check('no blockmap is hunted for, because none is built',
+        /autoUpdater\.disableDifferentialDownload\s*=\s*true/.test(source),
+        'the updater logs a 404 on a .blockmap that was never going to exist')
+      check('the web installer is declined out loud, as the warning asked',
+        /autoUpdater\.disableWebInstaller\s*=\s*true/.test(source),
+        'WARN disableWebInstaller is set to false')
+      check('nothing installs on quit, so Later means later',
+        /autoUpdater\.autoInstallOnAppQuit\s*=\s*false/.test(source),
+        'choosing Later and closing the app would install the update anyway')
+      check('and the download says it started before it waits for it',
+        /state\.downloading = true[\s\S]{0,600}?announce\(\)[\s\S]{0,200}?await updater\(/
+          .test(source),
+        'the button would keep saying Download while 96 MB moved behind it')
+    }
+
+    /*
+      The rehearsal, and the one thing that makes it acceptable.
+
+      `--fake-update` now reports `auto` mode and simulates a transfer, which is a lot of
+      pretending to have in a shipped file. All of it hangs off one variable, so what is
+      asserted is that the variable has exactly one source — the flag parser that refuses
+      to work in a packaged build — and that every rehearsed path is behind it.
+    */
+    {
+      const source = readFileSync(joinPath('src', 'main', 'services', 'updates.ts'), 'utf8')
+      const assignments = source.match(/^\s*pretending = .*$/gm) ?? []
+      check('the rehearsal has exactly one source, and it is the flag parser',
+        assignments.length === 1 && /pretending = faked/.test(assignments[0]),
+        JSON.stringify(assignments))
+      check('the fabricated mode is behind it, so a real build still reports its own',
+        /pretending === null \? mode\(\) : 'auto'/.test(source),
+        'updateState no longer asks whether it is pretending')
+      check('and the rehearsed download and install are both gated on it',
+        /if \(pretending !== null\) return rehearseDownload/.test(source) &&
+          /export async function installUpdate[\s\S]{0,120}if \(pretending !== null\)/
+            .test(source),
+        'a rehearsed path is reachable without the flag')
+    }
+
+    /*
+      And the click, from the other side: the dialog has to get out of the way.
+
+      Awaiting the download inside the handler is what made it look inert — the modal sat
+      there, unchanged, for the length of the transfer.
+    */
+    {
+      const source = readFileSync(
+        joinPath('src', 'renderer', 'components', 'UpdateDialog.tsx'), 'utf8')
+      const handler = source
+        .slice(source.indexOf('const download'), source.indexOf('const install'))
+        // Comments out first: this one explains that it is deliberately not awaited, and
+        // a check that reads the explanation instead of the code proves nothing.
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+      check('the update dialog closes on Download rather than waiting on it',
+        handler.includes('onClose()') && !handler.includes('await'),
+        handler.replace(/\s+/g, ' ').slice(0, 140))
     }
 
     check('and nonsense never triggers an update prompt',

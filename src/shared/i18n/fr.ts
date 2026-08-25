@@ -757,6 +757,8 @@ export const fr: Record<keyof typeof en, string> = {
 	"diag.debugHint": "Pour plus de détails, lancez l’application avec --verbose : elle journalise tout et ouvre les outils de développement. Ctrl+Maj+I les ouvre à tout moment.",
 	"err.logOpenFailed": "Le journal n’a pas pu être ouvert : {reason}",
 	// ----------------------------------------------------------------- updates
+	"updates.readyTitle": "Prête à être installée",
+	"updates.readyBody": "La version {version} a été téléchargée. L’application redémarre pour l’installer.",
 	"updates.dialogTitle": "Une mise à jour est disponible",
 	"updates.dialogBody": "La version {version} est prête à être téléchargée. Vous utilisez actuellement la version {current}.",
 	"updates.notes": "Ce qui a changé",

@@ -757,6 +757,8 @@ export const en = {
   'diag.debugHint': 'For more detail, start the app with --verbose: it logs everything and opens developer tools. Ctrl+Shift+I opens those at any time.',
   'err.logOpenFailed': 'The log could not be opened: {reason}',
   // ----------------------------------------------------------------- updates
+  'updates.readyTitle': 'Ready to install',
+  'updates.readyBody': 'Version {version} has been downloaded. The app restarts to install it.',
   'updates.dialogTitle': 'An update is available',
   'updates.dialogBody': 'Version {version} is ready to download. You are on {current}.',
   'updates.notes': 'What changed',

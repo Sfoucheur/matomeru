@@ -21,6 +21,7 @@ import { getLocale } from '../db/repos/settings.js'
 import {
   type AutoUpdaterLike,
   isNewerVersion,
+  notesToText,
   parseFakeUpdate,
   pickAutoUpdater,
   updateMode
@@ -57,6 +58,19 @@ const state: {
   error: null
 }
 
+/*
+  The version a fabricated update is pretending to be, or null.
+
+  Remembered rather than re-derived per call, because everything downstream has to agree:
+  a dialog that reports `disabled` mode disables its own Download button, so a seam that
+  only fabricated the *notice* could show the dialog and never let anyone click through
+  it — which is exactly how far this got before the real 0.2.0 release found the rest.
+
+  It cannot be set in a packaged build: `parseFakeUpdate` refuses there, and a check
+  asserts that.
+*/
+let pretending: string | null = null
+
 function mode(): ReturnType<typeof updateMode> {
   return updateMode({
     packaged: app.isPackaged,
@@ -65,7 +79,13 @@ function mode(): ReturnType<typeof updateMode> {
 }
 
 export function updateState(): UpdateState {
-  return { mode: mode(), current: app.getVersion(), ...state }
+  /*
+    A rehearsal reports `auto`, because that is the arrangement being rehearsed. In an
+    unpackaged build the real answer is `disabled`, and the dialog reads it: it would grey
+    out its own Download button and the flow under test would be unreachable.
+  */
+  const reported = pretending === null ? mode() : 'auto'
+  return { mode: reported, current: app.getVersion(), ...state }
 }
 
 /** Wired once, at startup, so events are never registered twice. */
@@ -126,7 +146,19 @@ async function updater(onProgress: ProgressSink): Promise<AutoUpdaterLike> {
     // Nothing downloads because the app launched. 96 MB moving unannounced is not a
     // courtesy, and the Settings panel asks explicitly.
     autoUpdater.autoDownload = false
-    autoUpdater.autoInstallOnAppQuit = true
+    /*
+      Nothing installs without a click.
+
+      This was true, and the log of a real run showed what that meant: the update was
+      downloaded, "Later" was chosen, the app was closed, and it installed anyway —
+      "Auto install update on quit". A prompt offering "install or not" has to be able to
+      mean not.
+    */
+    autoUpdater.autoInstallOnAppQuit = false
+    // No blockmaps are produced, so do not go looking for one and log a 404 about it.
+    autoUpdater.disableDifferentialDownload = true
+    // Said out loud, because electron-updater warns until it is.
+    autoUpdater.disableWebInstaller = true
     /*
       Its own diagnostics, into our log rather than the bin.
 
@@ -195,9 +227,20 @@ export async function checkForUpdates(
   */
   const faked = parseFakeUpdate(process.argv, app.isPackaged)
   if (faked !== null) {
+    pretending = faked
     state.available = {
       version: faked,
-      notes: `Pretend release notes for ${faked}.\n\n- Something was fixed\n- Something was added`,
+      /*
+        HTML, and then converted, because that is what a real release feed hands over.
+        Fake notes that were already plain text would have looked perfect throughout the
+        exact bug this seam exists to look at.
+      */
+      notes: notesToText(
+        `<h2>Pretend release notes for ${faked}</h2>` +
+          '<ul><li>Something was fixed &amp; tidied</li>' +
+          "<li>It&#39;s only a rehearsal</li></ul>" +
+          '<p>Nothing here was really released.</p>'
+      ),
       url: `${RELEASES_PAGE}/tag/v${faked}`
     }
     state.checkedAt = new Date().toISOString()
@@ -210,6 +253,7 @@ export async function checkForUpdates(
     return announce()
   }
 
+  let failure: string | null = null
   try {
     quiet = options.silent === true
     state.error = null
@@ -225,8 +269,9 @@ export async function checkForUpdates(
         version !== undefined && isNewerVersion(version, app.getVersion())
           ? {
               version,
+              // The feed hands these over as HTML; the dialog shows text.
               notes: typeof result?.updateInfo.releaseNotes === 'string'
-                ? result.updateInfo.releaseNotes
+                ? notesToText(result.updateInfo.releaseNotes)
                 : '',
               url: `${RELEASES_PAGE}/tag/v${version}`
             }
@@ -237,6 +282,9 @@ export async function checkForUpdates(
     // Recorded, not thrown: a failed check should leave the panel usable and saying
     // what went wrong, rather than surfacing as a broken button.
     state.error = (err as Error).message
+    // Kept for the log even when the panel is not told: a silent check that fails every
+    // launch is exactly the thing a log is for.
+    failure = state.error
     if (options.silent === true) state.error = null
   }
   /*
@@ -245,6 +293,22 @@ export async function checkForUpdates(
     clearing the flag on the way out would leave a window where a silent check's error
     still gets recorded. Each entry point sets it instead, which has no window at all.
   */
+  /*
+    The outcome, in one line.
+
+    electron-updater logs "Update for version X is not available" itself, but only on the
+    `auto` route and only when it gets that far: a disabled build, the portable route and
+    a thrown check all left the log holding a "Checking for update" with no answer under
+    it. Reading a log to find out whether a check happened should not need inference.
+  */
+  logInfo(
+    'updates',
+    failure !== null
+      ? `check failed (${current}${options.silent === true ? ', silent' : ''}): ${failure}`
+      : state.available === null
+        ? `up to date (${current}, running ${app.getVersion()})`
+        : `${state.available.version} available (${current}, running ${app.getVersion()})`
+  )
   return announce()
 }
 
@@ -276,13 +340,14 @@ async function latestRelease(): Promise<{ version: string; notes: string; url: s
   if (release.draft === true || release.tag_name === undefined) return null
   return {
     version: release.tag_name.replace(/^v/i, ''),
-    notes: release.body ?? '',
+    notes: notesToText(release.body ?? ''),
     url: release.html_url ?? RELEASES_PAGE
   }
 }
 
 /** Fetches the installer. Only ever reached in `auto` mode. */
 export async function downloadUpdate(onProgress: ProgressSink): Promise<UpdateState> {
+  if (pretending !== null) return rehearseDownload(onProgress)
   if (mode() !== 'auto') throw new Error(tr('err.updateNotInstallable'))
   if (state.available === null) throw new Error(tr('err.updateNothingToGet'))
   try {
@@ -290,6 +355,14 @@ export async function downloadUpdate(onProgress: ProgressSink): Promise<UpdateSt
     quiet = false
     state.downloading = true
     state.error = null
+    /*
+      Announced before the await, which is the whole point.
+
+      Without this the renderer learned nothing until the transfer finished, so clicking
+      Download left the button saying "Download update" while 96 MB moved behind it.
+      Nothing was broken; it just looked inert, which is worse than an error.
+    */
+    announce()
     const updaterInstance = await updater(onProgress)
     onProgress({ job: 'update', phase: 'Downloading', done: 0, total: 1 })
     await updaterInstance.downloadUpdate()
@@ -309,12 +382,53 @@ export async function downloadUpdate(onProgress: ProgressSink): Promise<UpdateSt
 }
 
 /**
+ * A download that moves, without a release to download.
+ *
+ * Slow on purpose: the two things worth watching both happen *during* a transfer — the
+ * dialog has to get out of the way and stay away while the progress bar runs, and it has
+ * to come back as "ready to install" when the bar finishes. A rehearsal that completed
+ * instantly would show neither.
+ */
+async function rehearseDownload(onProgress: ProgressSink): Promise<UpdateState> {
+  const steps = 8
+  const bytes = 96 * 1024 * 1024
+  quiet = false
+  state.downloading = true
+  state.downloaded = false
+  state.error = null
+  announce()
+  for (let step = 1; step <= steps; step++) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    const done = Math.round((bytes * step) / steps)
+    onProgress({ job: 'update', phase: 'Downloading', done, total: bytes })
+    announce()
+  }
+  state.downloading = false
+  state.downloaded = true
+  onProgress({ job: 'update', phase: 'Done', done: 1, total: 1, finished: true })
+  logInfo('updates', `rehearsal: ${pretending ?? '?'} "downloaded"`)
+  return announce()
+}
+
+/**
  * Quits and hands over to the installer.
  *
  * Nothing is saved here on purpose: the database is committed after every write and
  * closed on `before-quit`, so there is no in-memory work to lose.
  */
 export async function installUpdate(onProgress: ProgressSink): Promise<void> {
+  if (pretending !== null) {
+    /*
+      As far as it can go. `quitAndInstall` on an unpackaged build has no installer to
+      hand over to, so this says what would have happened and puts the state back to
+      "nothing pending" — which is what a successful install looks like from here.
+    */
+    logInfo('updates', `rehearsal: would install ${pretending} and restart`)
+    state.available = null
+    state.downloaded = false
+    announce()
+    return
+  }
   if (mode() !== 'auto') throw new Error(tr('err.updateNotInstallable'))
   if (!state.downloaded) throw new Error(tr('err.updateNotDownloaded'))
   quiet = false

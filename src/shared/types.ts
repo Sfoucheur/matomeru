@@ -1288,3 +1288,28 @@ export interface UpdateState {
   /** Set when the last check or download failed. Null after a success. */
   error: string | null
 }
+
+/**
+ * Whether an update is worth putting a dialog in front of someone.
+ *
+ * A function rather than a condition inside the subscription, because the interesting
+ * case is easy to get wrong and impossible to see: mid-download the answer must be no, or
+ * the dialog reopens on top of the progress it started. Downloaded is a yes again — that
+ * is the "install, or not" prompt.
+ *
+ * Declared here rather than beside the updater because the renderer decides when to show
+ * a dialog, and the renderer cannot import from the main process.
+ */
+export function shouldPrompt(state: {
+  available: UpdateState['available']
+  downloading: boolean
+  /**
+   * Taken, and deliberately not consulted: a landed download is a prompt again, because
+   * that is the "install, or not" question. Named so the state table can say so.
+   */
+  downloaded: boolean
+}): boolean {
+  if (state.available === null || state.available === undefined) return false
+  if (state.downloading) return false
+  return true
+}

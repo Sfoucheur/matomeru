@@ -326,6 +326,49 @@ which is the patched version, and the vulnerable 9.6.3 sits only under
 would "fix" it by moving electron-builder to 26.15.x, which is exactly the version
 range the pin exists to avoid.
 
+### What the first real update taught
+
+0.1.3 → 0.2.0 installed successfully and was still wrong in six ways. Every one of them
+was invisible in development, because every one of them lives on a path only a packaged
+install reaches. The log of that run is the reason they are all findable, which is why
+keeping the log of the next one is worth the trouble.
+
+| What happened | Why |
+|---|---|
+| `ERROR … Cannot download ".../Matomeru-Setup-0.2.0.exe.blockmap", status 404` | `nsis.differentialPackage: false` means no blockmap is built, but electron-updater still went looking. `disableDifferentialDownload = true` now says so. |
+| `WARN disableWebInstaller is set to false` | The log asking us to mean what we say. `disableWebInstaller = true`. |
+| The release notes appeared as raw HTML | electron-updater's GitHub provider reads the **releases feed**, whose content is HTML — not the Markdown body the API returns. `notesToText` converts it: `<li>` to a bullet, blocks to line breaks, entities decoded. Rendering that HTML would mean injecting a release body into the page, and a Markdown parser would be a dependency for decoration. |
+| Clicking Download looked inert | `downloadUpdate` raised `state.downloading` and **never announced it** before awaiting a 96 MB transfer, so the button kept reading "Download update". It announces before the await now, and the dialog closes on the click — the progress bar is the report, and a modal on top of it adds nothing. |
+| "Later", then quit, installed it anyway | `autoInstallOnAppQuit` was `true`: `INFO Auto install update on quit`, 14 seconds after the choice. A prompt offering *install or not* has to be able to mean not. It is `false`, and the dialog comes back as **Ready to install** when the file lands. |
+| Nothing prompted until Settings was opened | The launch check pushed its result to whoever was listening, and a renderer that mounted afterwards — a reload, a second window, a slow first paint — heard nothing. It now also asks once, on mount, and skips that answer if a push beat it. |
+
+Two smaller things fell out of looking: the check logs its own outcome at INFO on every
+route (`up to date`, `X available`, `check failed`), because a log holding *Checking for
+update* with no answer under it is a log you have to guess at. And a two-item list came
+out double-spaced — `</li>` ends a line and `<li>` starts one — which no check that
+counts bullets would have noticed.
+
+**Rehearsing it: `--fake-update=<version>`.** The reason all six of those shipped is
+that nothing could exercise the flow. `updateMode` reports `disabled` from source, the
+dialog reads that and greys out its own Download button, and electron-updater refuses to
+fetch without an installer to replace. So the flag fabricates the whole thing: the
+notice (as HTML, then converted, because plain-text fake notes would have looked perfect
+throughout the very bug they were meant to show), `auto` mode, a transfer that takes two
+seconds, and an install that stops short of restarting.
+
+```
+npm run build
+npx electron . --user-data-dir=/tmp/probe --remote-debugging-port=9334 --fake-update=9.9.9
+npm run probe:update
+```
+
+That drives the real dialog and checks fifteen things about it, including the two that
+only exist mid-transfer: the dialog gets out of the way on the click, and does **not**
+reopen on top of its own progress. `parseFakeUpdate` refuses in a packaged build, and
+`verify` asserts both that and that every rehearsed path is gated on one variable with a
+single source. What none of it settles is the real transfer and the real restart — only
+a release does that.
+
 ## Floating surfaces
 
 Popovers, dialogs and toasts use `.panel-floating`, not `.panel`. The two want
