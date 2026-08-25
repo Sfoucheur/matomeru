@@ -25,10 +25,32 @@ import { guard, useApp } from '../store/app'
 import type { ViewProps } from '../App'
 import { Button, Select } from '../components/primitives'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
+import { UpdateDot } from '../components/UpdateDialog'
 import type { BackupStatus, UpdateState } from '@shared/types'
 import { count, megabytes, relativeTime } from '../lib/format'
 
+/**
+ * The tabs, in the order they are used rather than the order they were written.
+ *
+ * Grouped by what someone came to change: their collection's behaviour, how it looks,
+ * where it is backed up, and facts about the app itself.
+ */
+const TABS = [
+  { id: 'collection', label: 'settings.tabCollection' },
+  { id: 'appearance', label: 'settings.tabAppearance' },
+  { id: 'backup', label: 'settings.tabBackup' },
+  { id: 'about', label: 'settings.tabAbout' }
+] as const
+
+type SettingsTab = (typeof TABS)[number]['id']
+
 export default function SettingsView(_props: ViewProps): React.ReactElement {
+  /*
+    Local state, deliberately. This app persists screen state that is expensive to
+    rebuild — a selected deck, a filter, a scroll position. Which settings tab was last
+    open is none of those.
+  */
+  const [tab, setTab] = useState<SettingsTab>('collection')
   const settings = useApp((s) => s.settings)
   const updateSettings = useApp((s) => s.updateSettings)
   const toast = useApp((s) => s.toast)
@@ -84,266 +106,344 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
         <h1 className="text-lg font-semibold tracking-tight text-ink-50">{t('settings.title')}</h1>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
-        <div className="max-w-2xl space-y-4">
-          <section className="panel p-4">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {t('settings.archidekt')}
-            </h2>
-            <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
-              {t('settings.username')}
-              <div className="flex gap-2">
-                <input
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void saveUsername()
-                  }}
-                  placeholder={t('settings.usernamePlaceholder')}
-                  className="field min-w-0 flex-1 text-sm outline-none placeholder:text-ink-600"
-                />
-                <Button icon={<Save size={13} />} onClick={() => void saveUsername()}>
-                  {t('common.save')}
-                </Button>
-                <Button
-                  variant="primary"
-                  icon={<RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />}
-                  onClick={() => void syncNow()}
-                  disabled={syncing}
-                >
-                  {syncing ? t('settings.syncing') : t('settings.syncNow')}
-                </Button>
+      {/*
+        Tabs, and the width the screen already had.
+
+        This was one `max-w-2xl` column of nine stacked panels: on a 1440-wide window most
+        of the screen was empty and everything past the third panel was below the fold.
+        The panels are unchanged — they are grouped and given room.
+      */}
+      <div className="shrink-0 border-b border-ink-800 px-5">
+        <div className="flex gap-1" role="tablist">
+          {TABS.map((entry) => {
+            const active = tab === entry.id
+            return (
+              <button
+                key={entry.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(entry.id)}
+                data-tab={entry.id}
+                className={`relative -mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
+                  active
+                    ? 'border-gold-400 text-ink-50'
+                    : 'border-transparent text-ink-400 hover:text-ink-200'
+                }`}
+              >
+                {t(entry.label)}
+                {entry.id === 'about' && <UpdateDot />}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        {/*
+          Two columns once there is room for them, and `items-start` so a short panel
+          beside a tall one does not stretch to match it.
+        */}
+        {/*
+          Two columns that pack independently, not a grid.
+
+          A grid makes every row as tall as its tallest item, so a short panel beside a
+          long one reserved the difference as dead space — 235px of nothing under the
+          Archidekt panel, next to the label colours. `items-start` stopped the short
+          panel stretching but not the row reserving the height. Flex columns cannot do
+          that: a column simply ends when it runs out of panels.
+
+          The cost is that panels are assigned a side by hand. With four on the busiest
+          tab that is a fair price for never having a gap; an auto-balancing multi-column
+          layout would remove the choice and scatter related settings instead.
+        */}
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 xl:flex-row xl:items-start">
+          {tab === 'collection' && (
+            <>
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                        <section className="panel p-4">
+                          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+                            {t('settings.archidekt')}
+                          </h2>
+                          <label className="flex flex-col gap-1.5 text-[11px] text-ink-400">
+                            {t('settings.username')}
+                            <div className="flex gap-2">
+                              <input
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void saveUsername()
+                                }}
+                                placeholder={t('settings.usernamePlaceholder')}
+                                className="field min-w-0 flex-1 text-sm outline-none placeholder:text-ink-600"
+                              />
+                              <Button icon={<Save size={13} />} onClick={() => void saveUsername()}>
+                                {t('common.save')}
+                              </Button>
+                              <Button
+                                variant="primary"
+                                icon={<RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />}
+                                onClick={() => void syncNow()}
+                                disabled={syncing}
+                              >
+                                {syncing ? t('settings.syncing') : t('settings.syncNow')}
+                              </Button>
+                            </div>
+                          </label>
+
+                          <p className="mt-3 text-[11px] leading-relaxed text-ink-500">
+                            {t('settings.syncNote')}
+                          </p>
+                          <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+                            {t('settings.privateNote')}
+                          </p>
+                          <a
+                            href="https://archidekt.com"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2.5 inline-flex items-center gap-1.5 text-[11px] text-ink-400 underline-offset-2 hover:text-gold-400 hover:underline"
+                          >
+                            <ExternalLink size={11} />
+                            {t('settings.openArchidekt')}
+                          </a>
+                        </section>
+
+                        <section className="panel p-4">
+                          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+                            {t('settings.pricesTitle')}
+                          </h2>
+
+                          <div className="space-y-3.5">
+                            <label className="flex items-center justify-between gap-4">
+                              <span className="text-sm text-ink-200">
+                                {t('settings.currency')}
+                                <span className="mt-0.5 block text-[11px] text-ink-500">
+                                  {t('settings.currencyHint')}
+                                </span>
+                              </span>
+                              <Select
+                                className="w-28 shrink-0"
+                                value={settings.currency}
+                                onChange={(currency: Currency) => void updateSettings({ currency })}
+                                options={[
+                                  { value: 'usd', label: 'USD ($)' },
+                                  { value: 'eur', label: 'EUR (€)' }
+                                ]}
+                              />
+                            </label>
+
+                            <label className="flex items-start justify-between gap-4">
+                              <span className="text-sm text-ink-200">
+                                {t('settings.exactMatch')}
+                                <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-500">
+                                  {t('settings.exactMatchHint')}
+                                </span>
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={settings.deckMatchExact}
+                                onChange={(e) => void updateSettings({ deckMatchExact: e.target.checked })}
+                                className="mt-1 shrink-0 accent-gold-500"
+                              />
+                            </label>
+
+                            <p className="text-[11px] text-ink-500">
+                              {t('settings.pricesRefreshed', {
+                                when: relativeTime(settings.lastPriceSync)
+                              })}
+                            </p>
+                          </div>
+                        </section>
+
+                <BoosterDataPanel />
               </div>
-            </label>
 
-            <p className="mt-3 text-[11px] leading-relaxed text-ink-500">
-              {t('settings.syncNote')}
-            </p>
-            <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
-              {t('settings.privateNote')}
-            </p>
-            <a
-              href="https://archidekt.com"
-              target="_blank"
-              rel="noreferrer"
-              className="mt-2.5 inline-flex items-center gap-1.5 text-[11px] text-ink-400 underline-offset-2 hover:text-gold-400 hover:underline"
-            >
-              <ExternalLink size={11} />
-              {t('settings.openArchidekt')}
-            </a>
-          </section>
-
-          <section className="panel p-4">
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {t('settings.labelsTitle')}
-            </h2>
-            <LabelPossessionPanel />
-          </section>
-
-          <section className="panel p-4">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {t('settings.pricesTitle')}
-            </h2>
-
-            <div className="space-y-3.5">
-              <label className="flex items-center justify-between gap-4">
-                <span className="text-sm text-ink-200">
-                  {t('settings.currency')}
-                  <span className="mt-0.5 block text-[11px] text-ink-500">
-                    {t('settings.currencyHint')}
-                  </span>
-                </span>
-                <Select
-                  className="w-28 shrink-0"
-                  value={settings.currency}
-                  onChange={(currency: Currency) => void updateSettings({ currency })}
-                  options={[
-                    { value: 'usd', label: 'USD ($)' },
-                    { value: 'eur', label: 'EUR (€)' }
-                  ]}
-                />
-              </label>
-
-              <label className="flex items-start justify-between gap-4">
-                <span className="text-sm text-ink-200">
-                  {t('settings.exactMatch')}
-                  <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-500">
-                    {t('settings.exactMatchHint')}
-                  </span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={settings.deckMatchExact}
-                  onChange={(e) => void updateSettings({ deckMatchExact: e.target.checked })}
-                  className="mt-1 shrink-0 accent-gold-500"
-                />
-              </label>
-
-              <p className="text-[11px] text-ink-500">
-                {t('settings.pricesRefreshed', {
-                  when: relativeTime(settings.lastPriceSync)
-                })}
-              </p>
-            </div>
-          </section>
-
-          <section className="panel p-4">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {t('settings.appearance')}
-            </h2>
-
-            <label className="mb-3.5 flex items-center justify-between gap-4">
-              <span className="text-sm text-ink-200">
-                {t('settings.language')}
-                <span className="mt-0.5 block text-[11px] text-ink-500">
-                  {t('settings.languageHint')}
-                </span>
-              </span>
-              <Select
-                className="w-40 shrink-0"
-                value={settings.locale}
-                onChange={(locale: LocaleSetting) => {
-                  void updateSettings({ locale }).then(() => {
-                    const resolved = resolveLocale(locale, navigator.language)
-                    toast(
-                      'success',
-                      tFor(resolved, 'settings.languageChanged', {
-                        language: LOCALE_NAMES[resolved]
-                      })
-                    )
-                  })
-                }}
-                options={[
-                  { value: 'system', label: t('settings.languageSystem') },
-                  ...LOCALES.map((code) => ({ value: code, label: LOCALE_NAMES[code] }))
-                ]}
-              />
-            </label>
-
-            <label className="mb-3.5 flex items-center justify-between gap-4">
-              <span className="text-sm text-ink-200">
-                {t('settings.themeMode')}
-                <span className="mt-0.5 block text-[11px] text-ink-500">
-                  {t('settings.themeModeHint')}
-                </span>
-              </span>
-              {/* The hook sits on a wrapper because Select takes a closed set of
-                  props and would drop it. It exists so checks can reach this
-                  control without matching a label that changes with the
-                  language — selecting by visible text is exactly how the theme
-                  probe first reported false passes against the French UI. */}
-              <span data-setting="themeMode" className="w-40 shrink-0">
-                <Select
-                  className="w-full"
-                  value={settings.themeMode}
-                  onChange={(themeMode: ThemeMode) => void updateSettings({ themeMode })}
-                  options={[
-                    { value: 'system', label: t('settings.themeModeSystem') },
-                    { value: 'light', label: t('settings.themeModeLight') },
-                    { value: 'dark', label: t('settings.themeModeDark') }
-                  ]}
-                />
-              </span>
-            </label>
-
-            {/*
-              Pure black only means something against a dark shell, so it is
-              hidden rather than disabled in light mode — a disabled control
-              invites the question of how to enable it.
-            */}
-            {resolvedDark && (
-              <label className="mb-3.5 flex items-start justify-between gap-4">
-                <span className="text-sm text-ink-200">
-                  {t('settings.pureBlack')}
-                  <span className="mt-0.5 block text-[11px] text-ink-500">
-                    {t('settings.pureBlackHint')}
-                  </span>
-                </span>
-                <input
-                  type="checkbox"
-                  data-setting="pureBlack"
-                  checked={settings.pureBlack}
-                  onChange={(e) => void updateSettings({ pureBlack: e.target.checked })}
-                  className="mt-1 shrink-0 accent-gold-500"
-                />
-              </label>
-            )}
-
-            <div className="mb-3.5">
-              <span className="text-sm text-ink-200">
-                {t('settings.theme')}
-                <span className="mt-0.5 block text-[11px] text-ink-500">
-                  {t('settings.themeHint')}
-                </span>
-              </span>
-              {/*
-                Swatches rather than a dropdown: each one previews its own accent
-                over its own shell, so the choice is visible before it is made.
-                A name alone does not tell you what "Tako" looks like.
-              */}
-              <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-                {THEMES.map((theme) => {
-                  const active = settings.theme === theme.name
-                  return (
-                    <button
-                      key={theme.name}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => void updateSettings({ theme: theme.name })}
-                      className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors ${
-                        active
-                          ? 'border-gold-500 bg-ink-750'
-                          : 'border-ink-700 hover:border-ink-600 hover:bg-ink-800'
-                      }`}
-                    >
-                      <span
-                        aria-hidden
-                        className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-black/30"
-                        style={{ backgroundColor: theme.shell }}
-                      >
-                        <span
-                          className="h-3 w-3 rounded-full"
-                          style={{ backgroundColor: theme.swatch }}
-                        />
-                      </span>
-                      <span className="truncate text-xs text-ink-200">{theme.label}</span>
-                    </button>
-                  )
-                })}
+              {/* The long one, alone, so nothing has to match its height. */}
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <section className="panel p-4">
+                  <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-ink-400">
+                    {t('settings.labelsTitle')}
+                  </h2>
+                  <LabelPossessionPanel />
+                </section>
               </div>
+            </>
+          )}
+
+          {/* One wide panel: the theme swatches are the reason this tab wants the room. */}
+          {tab === 'appearance' && (
+            <div className="w-full">
+                        <section className="panel p-4">
+                          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-400">
+                            {t('settings.appearance')}
+                          </h2>
+
+                          <label className="mb-3.5 flex items-center justify-between gap-4">
+                            <span className="text-sm text-ink-200">
+                              {t('settings.language')}
+                              <span className="mt-0.5 block text-[11px] text-ink-500">
+                                {t('settings.languageHint')}
+                              </span>
+                            </span>
+                            <Select
+                              className="w-40 shrink-0"
+                              value={settings.locale}
+                              onChange={(locale: LocaleSetting) => {
+                                void updateSettings({ locale }).then(() => {
+                                  const resolved = resolveLocale(locale, navigator.language)
+                                  toast(
+                                    'success',
+                                    tFor(resolved, 'settings.languageChanged', {
+                                      language: LOCALE_NAMES[resolved]
+                                    })
+                                  )
+                                })
+                              }}
+                              options={[
+                                { value: 'system', label: t('settings.languageSystem') },
+                                ...LOCALES.map((code) => ({ value: code, label: LOCALE_NAMES[code] }))
+                              ]}
+                            />
+                          </label>
+
+                          <label className="mb-3.5 flex items-center justify-between gap-4">
+                            <span className="text-sm text-ink-200">
+                              {t('settings.themeMode')}
+                              <span className="mt-0.5 block text-[11px] text-ink-500">
+                                {t('settings.themeModeHint')}
+                              </span>
+                            </span>
+                            {/* The hook sits on a wrapper because Select takes a closed set of
+                                props and would drop it. It exists so checks can reach this
+                                control without matching a label that changes with the
+                                language — selecting by visible text is exactly how the theme
+                                probe first reported false passes against the French UI. */}
+                            <span data-setting="themeMode" className="w-40 shrink-0">
+                              <Select
+                                className="w-full"
+                                value={settings.themeMode}
+                                onChange={(themeMode: ThemeMode) => void updateSettings({ themeMode })}
+                                options={[
+                                  { value: 'system', label: t('settings.themeModeSystem') },
+                                  { value: 'light', label: t('settings.themeModeLight') },
+                                  { value: 'dark', label: t('settings.themeModeDark') }
+                                ]}
+                              />
+                            </span>
+                          </label>
+
+                          {/*
+                            Pure black only means something against a dark shell, so it is
+                            hidden rather than disabled in light mode — a disabled control
+                            invites the question of how to enable it.
+                          */}
+                          {resolvedDark && (
+                            <label className="mb-3.5 flex items-start justify-between gap-4">
+                              <span className="text-sm text-ink-200">
+                                {t('settings.pureBlack')}
+                                <span className="mt-0.5 block text-[11px] text-ink-500">
+                                  {t('settings.pureBlackHint')}
+                                </span>
+                              </span>
+                              <input
+                                type="checkbox"
+                                data-setting="pureBlack"
+                                checked={settings.pureBlack}
+                                onChange={(e) => void updateSettings({ pureBlack: e.target.checked })}
+                                className="mt-1 shrink-0 accent-gold-500"
+                              />
+                            </label>
+                          )}
+
+                          <div className="mb-3.5">
+                            <span className="text-sm text-ink-200">
+                              {t('settings.theme')}
+                              <span className="mt-0.5 block text-[11px] text-ink-500">
+                                {t('settings.themeHint')}
+                              </span>
+                            </span>
+                            {/*
+                              Swatches rather than a dropdown: each one previews its own accent
+                              over its own shell, so the choice is visible before it is made.
+                              A name alone does not tell you what "Tako" looks like.
+                            */}
+                            <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                              {THEMES.map((theme) => {
+                                const active = settings.theme === theme.name
+                                return (
+                                  <button
+                                    key={theme.name}
+                                    type="button"
+                                    aria-pressed={active}
+                                    onClick={() => void updateSettings({ theme: theme.name })}
+                                    className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors ${
+                                      active
+                                        ? 'border-gold-500 bg-ink-750'
+                                        : 'border-ink-700 hover:border-ink-600 hover:bg-ink-800'
+                                    }`}
+                                  >
+                                    <span
+                                      aria-hidden
+                                      className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-black/30"
+                                      style={{ backgroundColor: theme.shell }}
+                                    >
+                                      <span
+                                        className="h-3 w-3 rounded-full"
+                                        style={{ backgroundColor: theme.swatch }}
+                                      />
+                                    </span>
+                                    <span className="truncate text-xs text-ink-200">{theme.label}</span>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+
+                          <label className="flex items-start justify-between gap-4">
+                            <span className="text-sm text-ink-200">
+                              {t('settings.reduceMotion')}
+                              <span className="mt-0.5 block text-[11px] text-ink-500">
+                                {t('settings.reduceMotionHint')}
+                              </span>
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={settings.reduceMotion}
+                              onChange={(e) => void updateSettings({ reduceMotion: e.target.checked })}
+                              className="mt-1 shrink-0 accent-gold-500"
+                            />
+                          </label>
+                        </section>
+
             </div>
+          )}
 
-            <label className="flex items-start justify-between gap-4">
-              <span className="text-sm text-ink-200">
-                {t('settings.reduceMotion')}
-                <span className="mt-0.5 block text-[11px] text-ink-500">
-                  {t('settings.reduceMotionHint')}
-                </span>
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.reduceMotion}
-                onChange={(e) => void updateSettings({ reduceMotion: e.target.checked })}
-                className="mt-1 shrink-0 accent-gold-500"
-              />
-            </label>
-          </section>
+          {tab === 'backup' && (
+            <>
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <BackupPanel />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <section className="panel p-4 text-[11px] leading-relaxed text-ink-500">
+                  <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">
+                    {t('settings.dataTitle')}
+                  </h2>
+                  <p>{t('settings.dataNote1')}</p>
+                  <p className="mt-2">{t('settings.dataNote2')}</p>
+                </section>
+              </div>
+            </>
+          )}
 
-          <BoosterDataPanel />
-
-          <BackupPanel />
-
-          <UpdatePanel />
-
-          <DiagnosticsPanel />
-
-          <section className="panel p-4 text-[11px] leading-relaxed text-ink-500">
-            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {t('settings.dataTitle')}
-            </h2>
-            <p>{t('settings.dataNote1')}</p>
-            <p className="mt-2">{t('settings.dataNote2')}</p>
-          </section>
+          {tab === 'about' && (
+            <>
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <UpdatePanel />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-4">
+                <DiagnosticsPanel />
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

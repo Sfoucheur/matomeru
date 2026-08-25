@@ -20,6 +20,7 @@ import StatsView from './views/StatsView'
 import SettingsView from './views/SettingsView'
 import CardDetailModal from './components/CardDetailModal'
 import BackupDialog from './components/BackupDialog'
+import UpdateDialog, { UpdateDot } from './components/UpdateDialog'
 import type { TranslationKey } from '@shared/i18n/index'
 import { useT } from './hooks/useT'
 
@@ -62,6 +63,9 @@ export default function App(): React.ReactElement {
   const toast = useApp((s) => s.toast)
   const invalidate = useApp((s) => s.invalidate)
   const t = useT()
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const updateState = useApp((s) => s.updateState)
+  const setUpdateState = useApp((s) => s.setUpdateState)
   const backupMode = useApp((s) => s.backupMode)
   const openBackup = useApp((s) => s.openBackup)
 
@@ -87,6 +91,21 @@ export default function App(): React.ReactElement {
       setProgress(event.finished ? null : event)
     })
   }, [setProgress])
+
+  /*
+    An update announcing itself.
+
+    The dialog opens whenever a push arrives carrying one, which includes the check that
+    runs at launch — the case that used to reach nobody. It reappears on every start while
+    an update is pending: dismissing it means "not now", and the dot on the Settings entry
+    stays regardless.
+  */
+  useEffect(() => {
+    return window.api.updates.onUpdate((state) => {
+      setUpdateState(state)
+      if (state.available !== null) setUpdateOpen(true)
+    })
+  }, [setUpdateState])
 
   // Alt+1..7 jumps between views — faster than reaching for the mouse while sorting.
   useEffect(() => {
@@ -208,6 +227,10 @@ export default function App(): React.ReactElement {
         </main>
 
         {detailFor && <CardDetailModal scryfallId={detailFor} />}
+        {updateOpen && updateState !== null && (
+          <UpdateDialog state={updateState} onClose={() => setUpdateOpen(false)} />
+        )}
+
         {backupMode !== null && (
           <BackupDialog initialMode={backupMode} onClose={() => openBackup(null)} />
         )}
@@ -262,6 +285,7 @@ function Sidebar({
               )}
               <span className={active ? 'text-gold-400' : ''}>{item.icon}</span>
               <span className="flex-1">{t(item.label)}</span>
+              {item.view === 'settings' && <UpdateDot />}
               <span className="text-[10px] text-ink-600 opacity-0 transition-opacity group-hover:opacity-100">
                 Alt{index + 1}
               </span>

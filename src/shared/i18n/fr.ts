@@ -89,6 +89,10 @@ export const fr: Record<keyof typeof en, string> = {
 	"time.days": "il y a {count} j",
 
 	// ----------------------------------------------------------------- settings
+	"settings.tabCollection": "Collection",
+	"settings.tabAppearance": "Apparence",
+	"settings.tabBackup": "Sauvegarde",
+	"settings.tabAbout": "À propos",
 	"settings.title": "Paramètres",
 	"settings.archidekt": "Archidekt",
 	"settings.username": "Nom d'utilisateur",
@@ -753,6 +757,10 @@ export const fr: Record<keyof typeof en, string> = {
 	"diag.debugHint": "Pour plus de détails, lancez l’application avec --verbose : elle journalise tout et ouvre les outils de développement. Ctrl+Maj+I les ouvre à tout moment.",
 	"err.logOpenFailed": "Le journal n’a pas pu être ouvert : {reason}",
 	// ----------------------------------------------------------------- updates
+	"updates.dialogTitle": "Une mise à jour est disponible",
+	"updates.dialogBody": "La version {version} est prête à être téléchargée. Vous utilisez actuellement la version {current}.",
+	"updates.notes": "Ce qui a changé",
+	"updates.later": "Plus tard",
 	"updates.title": "Mises à jour",
 	"updates.current": "Version {version}",
 	"updates.check": "Rechercher des mises à jour",

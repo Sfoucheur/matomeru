@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { CardContext } from '@shared/types'
+import type {
+  UpdateState, CardContext } from '@shared/types'
 import { resolveLocale, type Locale } from '@shared/i18n/index'
 import { setFormatLocale } from '../lib/format'
 import {
@@ -57,6 +58,16 @@ interface AppState {
 
   progress: ProgressEvent | null
   setProgress: (event: ProgressEvent | null) => void
+
+  /**
+   * The latest update state, pushed from the main process.
+   *
+   * Pushed rather than fetched, because the check that matters runs four seconds after
+   * launch — long after any panel has mounted and read the state once. Null until the
+   * first push arrives.
+   */
+  updateState: UpdateState | null
+  setUpdateState: (state: UpdateState) => void
 
   toasts: Toast[]
   toast: (kind: Toast['kind'], message: string) => void
@@ -191,6 +202,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   progress: null,
   setProgress: (progress) => set({ progress }),
+
+  updateState: null,
+  setUpdateState: (updateState) => set({ updateState }),
 
   toasts: [],
   toast: (kind, message) => {

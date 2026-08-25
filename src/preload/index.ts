@@ -269,7 +269,20 @@ const api = {
     download: () => call<UpdateState>('updates:download'),
     /** Quits and hands over to the installer, so nothing comes back. */
     install: () => call<void>('updates:install'),
-    openRelease: () => call<void>('updates:openRelease')
+    openRelease: () => call<void>('updates:openRelease'),
+    /**
+     * Told whenever the state changes, including by the check that runs at launch.
+     * Returns its own unsubscribe, like `onProgress`.
+     */
+    onUpdate: (listener: (state: UpdateState) => void) => {
+      const wrapped = (_event: unknown, state: UpdateState): void => listener(state)
+      ipcRenderer.on('app:update', wrapped)
+      // Braces matter: `removeListener` returns the emitter, and React's cleanup type
+      // is void. Returning it directly makes this unusable as a useEffect destructor.
+      return () => {
+        ipcRenderer.removeListener('app:update', wrapped)
+      }
+    }
   },
 
   backup: {

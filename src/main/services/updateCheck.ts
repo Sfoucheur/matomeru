@@ -121,3 +121,23 @@ export function pickAutoUpdater(mod: unknown): AutoUpdaterLike | null {
   }
   return namespace?.autoUpdater ?? namespace?.default?.autoUpdater ?? null
 }
+
+/**
+ * A fabricated update, for looking at the dialog without waiting for a release.
+ *
+ * `--fake-update=0.9.9`, and **only when the app is not packaged**. A test seam in
+ * shipped code is normally the wrong trade; the case for this one is specific. The
+ * dialog appears only in `auto` mode, `auto` mode exists only in a packaged install, so
+ * without a seam the one path that matters is again the one nothing can exercise — which
+ * is exactly how the updater's interop bug reached a release.
+ *
+ * Returning null when packaged is the whole guarantee, and it has a check of its own.
+ */
+export function parseFakeUpdate(argv: readonly string[], packaged: boolean): string | null {
+  if (packaged) return null
+  const flag = argv.find((arg) => arg.startsWith('--fake-update='))
+  if (flag === undefined) return null
+  const version = flag.slice('--fake-update='.length).trim()
+  // Parsed the same way a real tag is, so nonsense cannot reach the dialog.
+  return parseVersion(version) === null ? null : version
+}

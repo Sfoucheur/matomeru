@@ -4,7 +4,7 @@ import { closeDb, getDb, setDataDir } from './db/connection.js'
 import { registerHandlers } from './ipc/handlers.js'
 import { setAppVersion } from './services/backup.js'
 import { logInfo, parseDebugFlag, setVerboseLogging } from './services/log.js'
-import { checkForUpdates } from './services/updates.js'
+import { checkForUpdates, setUpdateListener } from './services/updates.js'
 import { getSettings } from './db/repos/settings.js'
 import { broadcastProgress } from './ipc/handlers.js'
 import { adoptOldData } from './services/adoptOldData.js'
@@ -109,6 +109,14 @@ if (!app.requestSingleInstanceLock()) {
         `${process.env.PORTABLE_EXECUTABLE_DIR ? ' · portable' : ''}` +
         `${debugging ? ' · debug' : ''} · data ${dataDir}`
     )
+    /*
+      Every window hears about an update, the same way it hears about progress. This is
+      the wire that was missing: the check used to update memory and stop.
+    */
+    setUpdateListener((state) => {
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('app:update', state)
+    })
+
     registerImageProtocol()
     registerHandlers()
     createWindow(debugging)

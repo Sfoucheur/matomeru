@@ -81,6 +81,7 @@ import {
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
 import {
   isNewerVersion,
+  parseFakeUpdate,
   pickAutoUpdater,
   updateMode
 } from '../src/main/services/updateCheck.js'
@@ -3329,6 +3330,8 @@ async function main(): Promise<void> {
       'settings.backupFolderPlaceholder',
       // 'Version' is the same word in French, and the number is interpolated.
       'updates.current',
+      // 'Collection' is the same word in French. 'Apparence' is not, so it is not here.
+      'settings.tabCollection',
       // French players say 'deck', and pluralise it the same way.
       'picks.deckCount_one', 'picks.deckCount_other',
       // 'Import / export', 'Export' and 'Finish / foil' read the same in French.
@@ -4922,6 +4925,27 @@ async function main(): Promise<void> {
     check('and none of our flags is a name Node or Electron already claims',
       DEBUG_FLAGS.every((flag) => !RESERVED_FLAGS.includes(flag)),
       `${DEBUG_FLAGS.filter((f) => RESERVED_FLAGS.includes(f)).join(', ')} is reserved`)
+    /*
+      The fabricated update, and the one thing about it that matters.
+
+      `--fake-update` exists so the update dialog can be looked at without waiting for a
+      release — the dialog only appears in `auto` mode, which only exists in a packaged
+      install, so without a seam the path that matters is again the one nothing can
+      exercise. What keeps that acceptable is that it cannot fire in anything shipped,
+      and that is what this asserts.
+    */
+    check('a fabricated update is ignored in a packaged build, whatever the flag says',
+      parseFakeUpdate(['electron', '.', '--fake-update=9.9.9'], true) === null,
+      'a test seam would have been live in a release')
+    check('and is honoured in a development one',
+      parseFakeUpdate(['electron', '.', '--fake-update=0.9.9'], false) === '0.9.9',
+      'the flag does nothing where it is meant to work')
+    check('a malformed version is refused rather than shown',
+      parseFakeUpdate(['electron', '.', '--fake-update=nightly'], false) === null &&
+        parseFakeUpdate(['electron', '.', '--fake-update='], false) === null)
+    check('and no flag means no fabricated update',
+      parseFakeUpdate(['electron', '.'], false) === null)
+
     check('--debug in particular is not accepted, because it prevents startup',
       !parseDebugFlag(['electron', '.', '--debug']),
       'the app would refuse to launch with the flag it documents')

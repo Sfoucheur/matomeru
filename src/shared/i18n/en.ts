@@ -84,6 +84,10 @@ export const en = {
   'time.days': '{count}d ago',
 
   // ----------------------------------------------------------------- settings
+  'settings.tabCollection': 'Collection',
+  'settings.tabAppearance': 'Appearance',
+  'settings.tabBackup': 'Backup',
+  'settings.tabAbout': 'About',
   'settings.title': 'Settings',
   'settings.archidekt': 'Archidekt',
   'settings.username': 'Username',
@@ -753,6 +757,10 @@ export const en = {
   'diag.debugHint': 'For more detail, start the app with --verbose: it logs everything and opens developer tools. Ctrl+Shift+I opens those at any time.',
   'err.logOpenFailed': 'The log could not be opened: {reason}',
   // ----------------------------------------------------------------- updates
+  'updates.dialogTitle': 'An update is available',
+  'updates.dialogBody': 'Version {version} is ready to download. You are on {current}.',
+  'updates.notes': 'What changed',
+  'updates.later': 'Later',
   'updates.title': 'Updates',
   'updates.current': 'Version {version}',
   'updates.check': 'Check for updates',

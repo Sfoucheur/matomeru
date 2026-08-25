@@ -21,6 +21,7 @@ import { getLocale } from '../db/repos/settings.js'
 import {
   type AutoUpdaterLike,
   isNewerVersion,
+  parseFakeUpdate,
   pickAutoUpdater,
   updateMode
 } from './updateCheck.js'
@@ -87,6 +88,27 @@ let wired = false
 let sink: ProgressSink = () => {}
 let quiet = false
 
+/*
+  Who to tell when the state changes.
+
+  Without this the launch check wrote to the object above and stopped: the renderer read
+  the state when its panel mounted and never again, so a found update was invisible
+  unless someone walked to Settings and pressed the button. Pushing instead of polling is
+  the fix, and the listener keeps the direction of dependency intact — this module still
+  knows nothing about windows.
+*/
+let listener: ((state: UpdateState) => void) | null = null
+
+export function setUpdateListener(fn: ((state: UpdateState) => void) | null): void {
+  listener = fn
+}
+
+function announce(): UpdateState {
+  const current = updateState()
+  listener?.(current)
+  return current
+}
+
 async function updater(onProgress: ProgressSink): Promise<AutoUpdaterLike> {
   sink = onProgress
   /*
@@ -132,11 +154,14 @@ async function updater(onProgress: ProgressSink): Promise<AutoUpdaterLike> {
       state.downloaded = true
       state.downloading = false
       sink({ job: 'update', phase: 'Done', done: 1, total: 1, finished: true })
+      // The dialog is waiting to become "Restart and install", and this is what tells it.
+      announce()
     })
     autoUpdater.on('error', (err) => {
       state.downloading = false
       if (!quiet) {
         state.error = err.message
+        announce()
         sink({
           job: 'update',
           phase: 'Failed',
@@ -163,9 +188,26 @@ export async function checkForUpdates(
   options: { silent?: boolean } = {}
 ): Promise<UpdateState> {
   const current = mode()
+
+  /*
+    The fabricated update comes first, and short-circuits everything: in an unpackaged
+    build the mode is `disabled`, so anything after this point would refuse to look.
+  */
+  const faked = parseFakeUpdate(process.argv, app.isPackaged)
+  if (faked !== null) {
+    state.available = {
+      version: faked,
+      notes: `Pretend release notes for ${faked}.\n\n- Something was fixed\n- Something was added`,
+      url: `${RELEASES_PAGE}/tag/v${faked}`
+    }
+    state.checkedAt = new Date().toISOString()
+    state.error = null
+    return announce()
+  }
+
   if (current === 'disabled') {
     state.error = options.silent === true ? null : tr('err.updateUnavailable')
-    return updateState()
+    return announce()
   }
 
   try {
@@ -203,7 +245,7 @@ export async function checkForUpdates(
     clearing the flag on the way out would leave a window where a silent check's error
     still gets recorded. Each entry point sets it instead, which has no window at all.
   */
-  return updateState()
+  return announce()
 }
 
 /**
@@ -260,9 +302,10 @@ export async function downloadUpdate(onProgress: ProgressSink): Promise<UpdateSt
   } catch (err) {
     state.downloading = false
     state.error = (err as Error).message
+    announce()
     throw err
   }
-  return updateState()
+  return announce()
 }
 
 /**
