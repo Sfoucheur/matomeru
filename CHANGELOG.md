@@ -1,3 +1,10 @@
+## [0.2.2](https://github.com/Sfoucheur/matomeru/compare/v0.2.1...v0.2.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* lots ([a14ebfa](https://github.com/Sfoucheur/matomeru/commit/a14ebfaa064c5eeb0cb1560420f81a7208c3e5ed))
+
 ## [0.2.1](https://github.com/Sfoucheur/matomeru/compare/v0.2.0...v0.2.1) (2026-08-25)
 
 
