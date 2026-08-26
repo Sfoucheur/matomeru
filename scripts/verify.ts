@@ -1358,11 +1358,10 @@ async function main(): Promise<void> {
         had four of read "have 4" and turned green.
       */
       check(
-        'in-deck, in-collection and missing account for every card that counts',
-        totals.ownedCards + totals.inCollectionCards + totals.missingCards ===
-          totals.inDeckCards,
+        'in-deck, in-bulk and missing account for every card, excluded ones included',
+        totals.ownedCards + totals.inCollectionCards + totals.missingCards === totals.cards,
         `${totals.ownedCards} + ${totals.inCollectionCards} + ${totals.missingCards}` +
-          ` != ${totals.inDeckCards}`
+          ` != ${totals.cards}`
       )
       check(
         'totals count cards, not rows',
@@ -1374,6 +1373,15 @@ async function main(): Promise<void> {
         'in-deck and excluded cards account for every card',
         totals.inDeckCards + totals.excludedCards === totals.cards,
         `${totals.inDeckCards} + ${totals.excludedCards} != ${totals.cards}`
+      )
+      check(
+        'and the sections add up to the same buckets the header reports',
+        exact!.groups.reduce((sum, g) => sum + g.ownedCards, 0) === totals.ownedCards &&
+          exact!.groups.reduce((sum, g) => sum + g.inCollectionCards, 0) ===
+            totals.inCollectionCards &&
+          exact!.groups.reduce((sum, g) => sum + g.missingCards, 0) === totals.missingCards,
+        `sections ${exact!.groups.reduce((sum, g) => sum + g.missingCards, 0)} missing` +
+          ` vs header ${totals.missingCards}`
       )
       /*
         The sections partition the deck.
@@ -3245,11 +3253,11 @@ async function main(): Promise<void> {
           `inCollection=${land?.inCollectionCards} missingValue=${land?.missingValue}`)
       }
       check(
-        'totals reconcile: the three buckets are the cards that count, entries is separate',
+        'totals reconcile: the three buckets are every card, entries is separate',
         grouped.totals.ownedCards +
           grouped.totals.inCollectionCards +
           grouped.totals.missingCards ===
-          grouped.totals.inDeckCards &&
+          grouped.totals.cards &&
           grouped.totals.cards === 15 &&
           grouped.totals.inDeckCards === 11 &&
           grouped.totals.entries === 6,
@@ -3261,6 +3269,55 @@ async function main(): Promise<void> {
         grouped.totals.inDeckCards === 11 && grouped.totals.excludedCards === 4,
         `${grouped.totals.inDeckCards} in / ${grouped.totals.excludedCards} out`
       )
+      /*
+        The header agrees with the filter.
+
+        The report: filtering for missing listed cards while the counter above them read 0.
+        The counters were computed over the entries that count towards the deck and the
+        filter over all of them, so a deck whose shortfall sat in the Maybeboard disagreed
+        with itself. Both sides are stated here on the same rows -- and on this fixture
+        rather than the Archidekt one, which has no excluded entry for them to disagree
+        about. One side lives in the main process and one in the renderer, which is why
+        nothing caught this.
+      */
+      {
+        const excluded = grouped.cards.filter((card) => !card.counts)
+        const shortfall = excluded.reduce((sum, c) => sum + allocateCopies(c).missing, 0)
+        check(
+          'an excluded entry you lack copies of is counted missing, not silently dropped',
+          shortfall > 0 && grouped.totals.missingCards >= shortfall,
+          JSON.stringify({
+            excluded: excluded.length,
+            shortfall,
+            missingTotal: grouped.totals.missingCards
+          })
+        )
+        for (const [ownership, field] of [
+          ['owned', 'ownedCards'],
+          ['inCollection', 'inCollectionCards'],
+          ['missing', 'missingCards']
+        ] as const) {
+          const shown = grouped.cards.filter((card) =>
+            matchesDeckFilters(card, { ...DEFAULT_DECK_FILTERS, ownership })
+          )
+          const sum = shown.reduce((total, card) => {
+            const allocated = allocateCopies(card)
+            return (
+              total +
+              (ownership === 'owned'
+                ? allocated.inDeck
+                : ownership === 'inCollection'
+                  ? allocated.fromCollection
+                  : allocated.missing)
+            )
+          }, 0)
+          check(
+            `the ${ownership} counter is what filtering for ${ownership} adds up to`,
+            sum === grouped.totals[field],
+            `filter ${sum} over ${shown.length} rows vs counter ${grouped.totals[field]}`
+          )
+        }
+      }
       /*
         The decision, checked where it bites: a card in Maybeboard *and* Ramp is drawn under
         Ramp and counts for nothing. Without this the rule is untestable -- and it was, until

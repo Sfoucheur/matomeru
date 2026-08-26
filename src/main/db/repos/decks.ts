@@ -849,9 +849,14 @@ function groupCards(
   /*
     The deck, counted once.
 
-    Nothing here sums the sections. An entry counts unless it carries a category Archidekt
-    excludes; `cards` stays the length of the decklist, and the three ownership buckets add
-    up to `inDeckCards` rather than to it.
+    Nothing here sums the sections. `inDeckCards` is the deck proper -- entries whose main
+    category Archidekt counts -- while the three ownership buckets are over *every* entry
+    and add up to `cards`.
+
+    They used to skip the excluded entries, and the missing filter never did: on a deck
+    whose shortfall sits in the Maybeboard the filter listed the cards and the counter above
+    them read 0. What is missing is missing wherever it sits; whether a category counts
+    towards the 100 is a separate question, and `inDeckCards` is where it is answered.
   */
   const counted = cards.filter((card) => card.counts)
   const sumQuantity = (list: DeckCardRow[]): number =>
@@ -861,7 +866,7 @@ function groupCards(
   let missingCards = 0
   let missingValue = 0
   let missingValueIsProxy = false
-  for (const card of counted) {
+  for (const card of cards) {
     const { inDeck: owned, fromCollection, missing } = allocateCopies(card)
     ownedCards += owned
     inCollectionCards += fromCollection

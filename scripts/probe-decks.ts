@@ -17,14 +17,18 @@ for (const deck of listDecks()) {
   console.log(`\n${deck.name} — ${deck.format ?? '?'} (${deck.cardCount} cards reported)`)
   console.log(
     `  totals: ${totals.cards} cards / ${totals.entries} entries · ` +
-      `${totals.ownedCards} owned + ${totals.missingCards} missing · ` +
+      `${totals.ownedCards} owned + ${totals.inCollectionCards} in bulk + ` +
+      `${totals.missingCards} missing · ` +
       `in deck ${totals.inDeckCards}, outside ${totals.excludedCards}`
   )
+  const buckets = totals.ownedCards + totals.inCollectionCards + totals.missingCards
+  const sections = groups.reduce((s, g) => s + g.cardCount, 0)
   console.log(
-    `  reconciles: owned+missing=${totals.ownedCards + totals.missingCards} ` +
-      `(${totals.ownedCards + totals.missingCards === totals.cards ? 'OK' : 'MISMATCH'}), ` +
-      `groups sum=${groups.reduce((s, g) => s + g.cardCount, 0)} ` +
-      `(${groups.reduce((s, g) => s + g.cardCount, 0) === totals.cards ? 'OK' : 'MISMATCH'})`
+    `  reconciles: buckets=${buckets} ` +
+      `(${buckets === totals.cards ? 'OK' : 'MISMATCH'}), ` +
+      `groups sum=${sections} (${sections === totals.cards ? 'OK' : 'MISMATCH'}), ` +
+      `sections missing=${groups.reduce((s, g) => s + g.missingCards, 0)} ` +
+      `(${groups.reduce((s, g) => s + g.missingCards, 0) === totals.missingCards ? 'OK' : 'MISMATCH'})`
   )
   for (const group of groups) {
     const tag = group.isPremier ? ' [PREMIER]' : group.inDeck ? '' : ' [not in deck]'
@@ -40,7 +44,7 @@ for (const deck of listDecks()) {
     .sort((a, b) => b.quantity - a.quantity)
     .slice(0, 3)
   for (const card of biggest) {
-    console.log(`    x${card.quantity} ${card.name} → held ${card.held} (${card.sections.join(', ')})`)
+    console.log(`    x${card.quantity} ${card.name} → held ${card.held} (${card.section})`)
   }
   console.log(`    labels: ${JSON.stringify(breakdown.labels)}`)
 }

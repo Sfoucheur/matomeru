@@ -796,8 +796,11 @@ export interface DeckTotals {
   /**
    * Σ what is neither in the deck nor in your collection.
    *
-   * The three sum to `inDeckCards`, not to `cards`: a card Archidekt excludes is not
-   * something this deck is missing.
+   * The three sum to `cards` — every entry, excluded categories included. They summed to
+   * `inDeckCards` for a while, on the reasoning that a card Archidekt excludes is not
+   * something the deck is missing; but the missing *filter* has always tested every entry,
+   * so a deck whose shortfall sat in the Maybeboard listed those cards under a counter
+   * reading 0. `inDeckCards` is where "does this count towards the 100" is answered.
    */
   missingCards: number
   missingValue: number

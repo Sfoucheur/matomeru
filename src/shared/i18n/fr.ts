@@ -624,7 +624,7 @@ export const fr: Record<keyof typeof en, string> = {
 	"decks.remove": "Retirer",
 	"decks.syncErrorNote": "{error}. Les decks privés renvoient 404 à toute requête non authentifiée, donc celui-ci ne peut pas être lu. Les decks non listés fonctionnent si vous les ajoutez par URL.",
 	"decks.owned": "{count} possédées",
-	"decks.inCollection": "{count} en collection",
+	"decks.inCollection": "{count} en bulk",
 	"decks.inCollectionHint":
 		"Des exemplaires que vous possédez mais que le deck ne contient pas : ils sont en bulk. Ils ne coûtent rien à retrouver, donc ils ne figurent pas dans le total manquant, mais le deck n’est pas complet pour autant.",
 	"decks.inBulk": "· {count} en bulk",

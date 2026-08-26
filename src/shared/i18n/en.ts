@@ -632,7 +632,7 @@ export const en = {
   'decks.remove': 'Remove',
   'decks.syncErrorNote': '{error}. Private decks return 404 to any unauthenticated request, so this one cannot be read. Unlisted decks work if you add them by URL.',
   'decks.owned': '{count} owned',
-  'decks.inCollection': '{count} in collection',
+  'decks.inCollection': '{count} in bulk',
   'decks.inCollectionHint':
     'Copies you own but the deck does not hold — loose in your bulk. They cost nothing to '
     + 'find, so they are not in the missing pile, but the deck is not finished either.',
