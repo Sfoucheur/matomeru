@@ -1,3 +1,10 @@
+## [0.3.5](https://github.com/Sfoucheur/matomeru/compare/v0.3.4...v0.3.5) (2026-08-26)
+
+
+### Features
+
+* all ([8376cd8](https://github.com/Sfoucheur/matomeru/commit/8376cd807a0ff87a00c9ca181a01c2ece483c291))
+
 ## [0.3.4](https://github.com/Sfoucheur/matomeru/compare/v0.3.3...v0.3.4) (2026-08-26)
 
 
