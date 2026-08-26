@@ -174,7 +174,7 @@ import {
   setCardPrinting,
   setDeckDefaultLang
 } from '../src/main/db/repos/decks.js'
-import { buildDeckBody, buildDeckSections } from '../src/renderer/lib/deckGroups.js'
+import { FLAT_CARDS, buildDeckBody, buildDeckSections } from '../src/renderer/lib/deckGroups.js'
 import { createThrottledBroadcaster } from '../src/main/ipc/progressThrottle.js'
 import {
   boosterOddsFor,
@@ -3713,29 +3713,102 @@ async function main(): Promise<void> {
         cardsIn(flat) === grouped.totals.cards && cardsIn(byCategory) === cardsIn(flat),
         `flat ${cardsIn(flat)} vs sections ${cardsIn(byCategory)}, deck ${grouped.totals.cards}`
       )
+      /*
+        One heading in the flat list, and it is the commander's.
+
+        These asserted no heading at all until now. The heading the app used to invent -- a
+        section called "Deck" -- had to go, and the commander's pinning went out with it; the
+        commander is the one category Archidekt marks premier, so it comes back and nothing
+        else does.
+      */
+      const flatCards = flat.flatMap((section) => section.cards)
+      const flatHeaders = buildDeckBody(flat, 'rows', 8).items.filter((i) => i.kind === 'header')
       check(
-        'the flat list invents no section, and draws no heading',
-        flat.length === 1 &&
-          flat[0].header === false &&
-          buildDeckBody(flat, 'rows', 8).items.every((item) => item.kind !== 'header'),
+        'the flat list pins the commander at the top, under its own heading',
+        flat[0].isPremier === true &&
+          flat[0].header === true &&
+          flatHeaders.length === 2 &&
+          flatHeaders[0].kind === 'header' &&
+          flatHeaders[0].group.isPremier === true,
         JSON.stringify(flat.map((s) => ({ name: s.name, header: s.header })))
       )
       check(
-        'and the commander is still marked, on its row rather than by its section',
+        'and names the rest of the deck as one section of cards, not as its categories',
+        flat.length === 2 && flat[1].name === FLAT_CARDS && flat[1].header === true,
+        JSON.stringify(flat.map((s) => ({ name: s.name, header: s.header })))
+      )
+      check(
+        'the excluded cards stay in that section rather than becoming piles of their own',
+        flat[1].cards.some((c) => !c.counts) && flat.length === 2,
+        JSON.stringify(flat.map((s) => `${s.name}:${s.cards.length}`))
+      )
+      check(
+        'and the commander is marked on its row too, not only by its section',
         flat[0].cards.some((c) => c.is_commander),
-        'no card in the flat list reports itself as the commander'
+        'no card in the pinned section reports itself as the commander'
       )
       check(
         'the flat list holds every entry exactly once',
-        flat[0].cards.length === grouped.cards.length &&
-          new Set(flat[0].cards.map((c) => c.id)).size === flat[0].cards.length,
-        `${flat[0].cards.length} of ${grouped.cards.length} entries`
+        flatCards.length === grouped.cards.length &&
+          new Set(flatCards.map((c) => c.id)).size === flatCards.length,
+        `${flatCards.length} of ${grouped.cards.length} entries`
       )
       check(
         'and it reports the deck, counted the way the header counts it',
-        flat[0].cardCount === grouped.totals.cards,
-        `${flat[0].cardCount} vs ${grouped.totals.cards}`
+        cardsIn(flat) === grouped.totals.cards,
+        `${cardsIn(flat)} vs ${grouped.totals.cards}`
       )
+      /*
+        Two headings, in order, with the boundary between the runs asserted.
+
+        The commander's block used to end where the next row began, with nothing between
+        them -- a rule was tried there before the run below was named instead.
+      */
+      {
+        const items = buildDeckBody(flat, 'rows', 8).items
+        const at = items.findIndex((i) => i.kind === 'header' && i.group.name === FLAT_CARDS)
+        const before = items[at - 1]
+        const after = items[at + 1]
+        check(
+          'the cards heading falls between the commander and the rest of the deck',
+          at > 0 &&
+            before?.kind === 'row' &&
+            before.section === flat[0].name &&
+            after?.kind === 'row' &&
+            after.section === FLAT_CARDS,
+          JSON.stringify(items.slice(0, 4).map((i) => `${i.kind}:${i.key}`))
+        )
+        check(
+          'and every item in the flat list has its own key',
+          new Set(items.map((i) => i.key)).size === items.length,
+          'two items share a key, so the virtualizer will hand one another height'
+        )
+      }
+      check(
+        'the cards section belongs to the flat list alone',
+        byCategory.every((section) => section.name !== FLAT_CARDS) &&
+          allDeckCards(grouped).every((card) => card.section !== FLAT_CARDS),
+        'the flat heading leaked into the categories'
+      )
+      /*
+        Filtering to something the commander is not in leaves the list and drops the heading,
+        because an emptied section is dropped like any other.
+      */
+      {
+        const onlyLand = { ...DEFAULT_DECK_FILTERS, categories: ['Land'] }
+        const filtered = buildDeckSections(grouped, onlyLand, false)
+        check(
+          'filtering to another category in flat mode leaves the cards section alone',
+          filtered.length === 1 && filtered[0].name === FLAT_CARDS,
+          JSON.stringify(filtered.map((s) => ({ name: s.name, header: s.header })))
+        )
+        check(
+          'and it keeps its heading, being a section like any other',
+          buildDeckBody(filtered, 'rows', 8).items.filter((i) => i.kind === 'header')
+            .length === 1,
+          'the surviving section drew no heading'
+        )
+      }
       const rows = buildDeckBody(byCategory, 'rows', 8)
       check(
         'row mode emits one row per card plus one header per section',
@@ -3764,21 +3837,6 @@ async function main(): Promise<void> {
             new Set(tiled.map((c) => c.id)).size === tiled.length,
           `${tiled.length} tiles for ${grid.ordered.length} cards`
         )
-        /*
-          Once per section, which is what a card in three categories means. Deduping by id
-          across the whole deck -- as this did -- now describes the flat list, not the
-          sections, and would fail on correct code.
-        */
-        const tileKeys = grid.items.flatMap((i) =>
-          i.kind === 'tiles' ? i.cards.map((c) => `${i.section}\u0000${c.id}`) : []
-        )
-        check(
-          `grid mode at ${columns} columns draws every card once per section`,
-          tiled.length === byCategory.reduce((sum, section) => sum + section.cards.length, 0) &&
-            new Set(tileKeys).size === tileKeys.length &&
-            new Set(tiled.map((c) => c.id)).size === grid.ordered.length,
-          `${tiled.length} tiles, ${new Set(tiled.map((c) => c.id)).size} distinct cards`
-        )
         check(
           `no tile row straddles two sections at ${columns} columns`,
           grid.items.every((item) =>
@@ -3794,6 +3852,25 @@ async function main(): Promise<void> {
           new Set(grid.items.map((i) => i.key)).size === grid.items.length,
           'two items share a key'
         )
+        {
+          // Tiles too: the boundary is between sections, so it does not depend on what a
+          // section draws. The commander's tile row, the cards heading, then the rest.
+          const flatGrid = buildDeckBody(flat, 'grid', columns).items
+          const at = flatGrid.findIndex(
+            (i) => i.kind === 'header' && i.group.name === FLAT_CARDS
+          )
+          const before = flatGrid[at - 1]
+          const after = flatGrid[at + 1]
+          check(
+            `the flat grid at ${columns} columns splits in the same place`,
+            flatGrid.filter((i) => i.kind === 'header').length === 2 &&
+              before?.kind === 'tiles' &&
+              before.section === flat[0].name &&
+              after?.kind === 'tiles' &&
+              after.section === FLAT_CARDS,
+            JSON.stringify(flatGrid.map((i) => i.kind))
+          )
+        }
         check(
           `no tile row exceeds ${columns} columns`,
           grid.items.every((item) => item.kind !== 'tiles' || item.cards.length <= columns)

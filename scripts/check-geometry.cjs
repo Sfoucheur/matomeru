@@ -264,6 +264,22 @@ async function main() {
     })()
   `)
   console.log('row mode:                ', await run(GEOMETRY))
+
+  // Row mode with grouping off: the one configuration that draws the rule under the
+  // pinned commander, which declares a height of its own like any other item.
+  await run(`
+    (async () => {
+      ${PANE}.querySelector('[aria-label="One flat list"]').click()
+      await new Promise((r) => setTimeout(r, 1600))
+    })()
+  `)
+  console.log('row mode, grouping off:  ', await run(GEOMETRY))
+  await run(`
+    (async () => {
+      ${PANE}.querySelector('[aria-label="Group by Archidekt category"]').click()
+      await new Promise((r) => setTimeout(r, 1600))
+    })()
+  `)
   await run(`
     (async () => {
       ${PANE}.querySelector('[aria-label="Grid view"]').click()

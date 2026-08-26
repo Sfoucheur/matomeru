@@ -50,6 +50,7 @@ import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
 import { PROXY_PRICE_HINT, bigMoney, count, relativeTime } from '../lib/format'
 import {
+  FLAT_CARDS,
   buildDeckBody,
   buildDeckSections,
   deckCardSelectable,
@@ -1032,7 +1033,7 @@ function DeckBody({
                 onZoom={onZoom}
                 section={item.section}
               />
-            ) : (
+            ) : item.kind === 'tiles' ? (
               <div
                 className="grid"
                 style={{
@@ -1055,7 +1056,7 @@ function DeckBody({
                   />
                 ))}
               </div>
-            )}
+            ) : null}
           </div>
         )
       })}
@@ -1086,7 +1087,11 @@ const SectionHeader = memo(function SectionHeader({
           group.isPremier ? 'text-gold-300' : 'text-ink-300'
         }`}
       >
-        {group.name === UNCATEGORIZED ? t('deck.uncategorized') : group.name}
+        {group.name === UNCATEGORIZED
+          ? t('deck.uncategorized')
+          : group.name === FLAT_CARDS
+            ? t('deck.flatCards')
+            : group.name}
       </h2>
       <span className="numeric text-[11px] text-ink-500">
         {t('decks.cardsCount', { count: count(group.cardCount) })}

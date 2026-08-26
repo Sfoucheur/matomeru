@@ -11,13 +11,22 @@ import { matchesDeckFilters, sortDeckCards } from './deckFilter'
  * rather than in someone's memory.
  */
 
+/**
+ * The flat list's second section, holding every card the commander's does not.
+ *
+ * A sentinel rather than a name, because the heading is translated: `SectionHeader` maps it
+ * the way it maps `UNCATEGORIZED`. Archidekt has no category by this name, and no card
+ * reports it as its `section` — nothing filters on it.
+ */
+export const FLAT_CARDS = '__cards__'
+
 /** A group whose counts describe the filtered cards, not the whole category. */
 export interface FilteredGroup extends DeckGroup {
   /**
    * Whether this section draws a heading.
    *
-   * False for the flat list, which is every card once and has no category to name. It used
-   * to be given one — a section called "Deck" that Archidekt has never heard of.
+   * Every section does now. Kept because the flat list spent a version without one, and a
+   * heading is not a property of the cards — it is a decision about how they are laid out.
    */
   header: boolean
 }
@@ -86,16 +95,27 @@ export function buildDeckSections(
 
   if (!groupByCategory) {
     /*
-      Every entry once. `breakdown.cards` is already the distinct list -- taking the union of
-      the sections would hand the same card back several times.
+      Two sections: the commander, then the cards.
+
+      Flat mode has been through three shapes. It used to merge the in-deck categories under
+      a heading the app made up -- "Deck", which Archidekt has never heard of -- with the
+      commander pinned above and the excluded piles below. That heading had to go, and the
+      commander's pinning went with it, which was a step too far. Then the commander came
+      back with a rule under it. Now the run below the commander is named as well, because a
+      heading separates the two better than a hairline did and says what the list is.
+
+      Only the commander is a real category here: everything else is one list of cards,
+      Maybeboard included, saying so on its own rows. `breakdown.cards` is the distinct list;
+      taking the union of the sections would hand the same card back once per section.
     */
-    const flat = totalsFor(
-      '',
-      { inDeck: true, isPremier: false } as DeckGroup,
-      keep(breakdown.cards),
-      false
-    )
-    return flat.cards.length > 0 ? [flat] : []
+    const premier = breakdown.groups.filter((group) => group.isPremier)
+    const pinned = new Set(premier.flatMap((group) => group.cards.map((card) => card.id)))
+    const rest = breakdown.cards.filter((card) => !pinned.has(card.id))
+
+    return [
+      ...premier.map((group) => totalsFor(group.name, group, keep(group.cards))),
+      totalsFor(FLAT_CARDS, { inDeck: true, isPremier: false } as DeckGroup, keep(rest))
+    ].filter((section) => section.cards.length > 0)
   }
 
   return breakdown.groups
