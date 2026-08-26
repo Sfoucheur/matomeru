@@ -40,7 +40,7 @@ for (const deck of listDecks()) {
     .sort((a, b) => b.quantity - a.quantity)
     .slice(0, 3)
   for (const card of biggest) {
-    console.log(`    x${card.quantity} ${card.name} → held ${card.held} (group ${card.group})`)
+    console.log(`    x${card.quantity} ${card.name} → held ${card.held} (${card.sections.join(', ')})`)
   }
   console.log(`    labels: ${JSON.stringify(breakdown.labels)}`)
 }

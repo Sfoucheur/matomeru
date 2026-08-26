@@ -174,7 +174,7 @@ import {
   setCardPrinting,
   setDeckDefaultLang
 } from '../src/main/db/repos/decks.js'
-import { buildDeckBody, buildDeckSections, FLAT_GROUP_NAME } from '../src/renderer/lib/deckGroups.js'
+import { buildDeckBody, buildDeckSections } from '../src/renderer/lib/deckGroups.js'
 import { createThrottledBroadcaster } from '../src/main/ipc/progressThrottle.js'
 import {
   boosterOddsFor,
@@ -254,8 +254,15 @@ function tokenPair(): { a: string; b: string; aName: string; bName: string } {
   return { a: rows[0].id, b: rows[1].id, aName: rows[0].name, bName: rows[1].name }
 }
 
+/**
+ * Every entry once.
+ *
+ * It used to flatten the sections, which was the same list while each card belonged to
+ * exactly one. A card is now drawn under every category it carries, so flattening returns
+ * it several times -- and any check that partitions or counts would be measuring rows.
+ */
 function allDeckCards(breakdown: DeckBreakdown | null): DeckCardRow[] {
-  return (breakdown?.groups ?? []).flatMap((group) => group.cards)
+  return breakdown?.cards ?? []
 }
 
 /** The UNIQUE key scope an add needs, since the row has no id yet. */
@@ -1259,7 +1266,7 @@ async function main(): Promise<void> {
     // leaves the Missing pile. And like the finish, the flag has to survive the
     // sync that rebuilds every deck_cards row.
     {
-      const cards0 = (deckBreakdown(deckId, 'usd', false)?.groups ?? []).flatMap((g) => g.cards)
+      const cards0 = (deckBreakdown(deckId, 'usd', false)?.cards ?? [])
       const short = cards0.find((c) => c.oracle_id && c.held < c.quantity)
       if (short?.oracle_id) {
         setCardProxied(deckId, short.oracle_id, true)
@@ -1351,10 +1358,11 @@ async function main(): Promise<void> {
         had four of read "have 4" and turned green.
       */
       check(
-        'in-deck, in-collection and missing account for every card',
-        totals.ownedCards + totals.inCollectionCards + totals.missingCards === totals.cards,
+        'in-deck, in-collection and missing account for every card that counts',
+        totals.ownedCards + totals.inCollectionCards + totals.missingCards ===
+          totals.inDeckCards,
         `${totals.ownedCards} + ${totals.inCollectionCards} + ${totals.missingCards}` +
-          ` != ${totals.cards}`
+          ` != ${totals.inDeckCards}`
       )
       check(
         'totals count cards, not rows',
@@ -1367,15 +1375,23 @@ async function main(): Promise<void> {
         totals.inDeckCards + totals.excludedCards === totals.cards,
         `${totals.inDeckCards} + ${totals.excludedCards} != ${totals.cards}`
       )
+      /*
+        The sections partition the deck.
+
+        A card is drawn under the category Archidekt lists first, not under all of them, so
+        the sections add up to the deck exactly. Between these two states this check briefly
+        asserted the opposite -- that they over-counted, one appearance per category -- which
+        is the model the report after it rejected.
+      */
       check(
-        'group card counts sum to the deck total, so no card is counted twice',
+        'the sections partition the deck: each card is drawn once',
         exact!.groups.reduce((sum, g) => sum + g.cardCount, 0) === totals.cards,
-        'a multi-category card is being counted in more than one group'
+        'the sections do not add up to the deck'
       )
       check(
-        'each card names exactly one owning group, and that group exists',
-        exactCards.every((card) => exact!.groups.some((g) => g.name === card.group)),
-        'a card points at a group the breakdown does not report'
+        'and each card is drawn under a section the breakdown reports',
+        exactCards.every((card) => exact!.groups.some((g) => g.name === card.section)),
+        'a card names a section the breakdown does not report'
       )
       if (otherLang) {
         console.log(`        → also cached a ${otherLang.lang} printing of the same card`)
@@ -3063,6 +3079,9 @@ async function main(): Promise<void> {
             { name: 'Commander', includedInDeck: true, isPremier: true },
             { name: 'Land', includedInDeck: true },
             { name: 'Ramp', includedInDeck: true },
+            // Defined and never used: a category you made and left empty is still a
+            // category, and must still be offered as a filter.
+            { name: 'Sideboard', includedInDeck: true },
             { name: 'Maybeboard', includedInDeck: false }
           ]
         }
@@ -3101,7 +3120,14 @@ async function main(): Promise<void> {
         entry(ja, boltOracleId, 1, ['Commander']),
         entry(fr, boltOracleId, 8, ['Land']),
         entry(ajaniEn, ajaniEn.oracle_id ?? 'x', 1, ['Ramp', 'Draw']),
-        entry(ajaniJa, ajaniJa.oracle_id ?? 'y', 2, ['Maybeboard'])
+        entry(ajaniJa, ajaniJa.oracle_id ?? 'y', 2, ['Maybeboard']),
+        /*
+          The case the whole decision turns on, and the one no fixture had: an excluded
+          category carried *alongside* an included one. It is drawn under Ramp, and it does
+          not count towards the deck -- which on the deck that prompted this is 57 of 145
+          entries, and the difference between a 157-card Commander deck and a 100-card one.
+        */
+        entry(fr, boltOracleId, 2, ['Maybeboard', 'Ramp'])
       ]
       replaceDeckCards(groupDeck, deckCards)
 
@@ -3219,20 +3245,36 @@ async function main(): Promise<void> {
           `inCollection=${land?.inCollectionCards} missingValue=${land?.missingValue}`)
       }
       check(
-        'totals reconcile: the three buckets are the cards, entries is separate',
+        'totals reconcile: the three buckets are the cards that count, entries is separate',
         grouped.totals.ownedCards +
           grouped.totals.inCollectionCards +
           grouped.totals.missingCards ===
-          grouped.totals.cards &&
-          grouped.totals.cards === 13 &&
-          grouped.totals.entries === 5,
-        `${grouped.totals.ownedCards}+${grouped.totals.missingCards}=${grouped.totals.cards}, entries ${grouped.totals.entries}`
+          grouped.totals.inDeckCards &&
+          grouped.totals.cards === 15 &&
+          grouped.totals.inDeckCards === 11 &&
+          grouped.totals.entries === 6,
+        `buckets=${grouped.totals.ownedCards}+${grouped.totals.inCollectionCards}+${grouped.totals.missingCards}` +
+          ` inDeck=${grouped.totals.inDeckCards} cards=${grouped.totals.cards} entries=${grouped.totals.entries}`
       )
       check(
         'an excluded category is separated from the deck proper',
-        grouped.totals.inDeckCards === 11 && grouped.totals.excludedCards === 2,
+        grouped.totals.inDeckCards === 11 && grouped.totals.excludedCards === 4,
         `${grouped.totals.inDeckCards} in / ${grouped.totals.excludedCards} out`
       )
+      /*
+        The decision, checked where it bites: a card in Maybeboard *and* Ramp is drawn under
+        Ramp and counts for nothing. Without this the rule is untestable -- and it was, until
+        the fixture gained that entry.
+      */
+      {
+        const ramp = grouped.groups.find((g) => g.name === 'Ramp')
+        const maybeboard = grouped.groups.find((g) => g.name === 'Maybeboard')
+        check(
+          'an excluded main category takes its cards with it, out of the deck and out of Ramp',
+          ramp?.cardCount === 1 && maybeboard?.cardCount === 4,
+          `Ramp ${ramp?.cardCount}, Maybeboard ${maybeboard?.cardCount}`
+        )
+      }
       check(
         'excluded groups sort last',
         grouped.groups[grouped.groups.length - 1]?.inDeck === false,
@@ -3241,21 +3283,67 @@ async function main(): Promise<void> {
 
       // A card carrying several categories is counted once but still shows both.
       const multi = allDeckCards(grouped).find((c) => c.scryfall_id === ajaniEn.scryfall_id)!
+      /*
+        Asserted against `categories`, which is what Archidekt sent, and never against
+        `section`, which is what the display derived from it. Comparing the derivation to
+        itself passes however wrong it is -- as it did when a version of this first ran
+        against a deliberately broken build.
+      */
       check(
-        'a multi-category card is counted under exactly one group',
-        grouped.groups.filter((g) => g.cards.some((c) => c.id === multi.id)).length === 1,
-        'card appears in more than one group'
+        'a multi-category card is drawn under its first category, and only that one',
+        grouped.groups.filter((g) => g.cards.some((c) => c.id === multi.id)).length === 1 &&
+          multi.section === multi.categories[0],
+        `section ${multi.section} of ${JSON.stringify(multi.categories)}`
       )
+      /*
+        The original report, as a check: a card whose *first* category is one Archidekt
+        excludes belongs in that category. The rule this replaces skipped excluded categories
+        when choosing, so such a card surfaced under whatever it carried second -- which is
+        how cards went missing from the Maybeboard pile and appeared in Ramp instead.
+      */
+      {
+        /*
+          The mixed entry specifically: Maybeboard *and* a real category.
+
+          Picking any card whose first category is Maybeboard finds the pure-Maybeboard one,
+          which lands in Maybeboard under the broken rule too -- so the check passed against a
+          deliberately broken build until this said which card it meant.
+        */
+        const maybe = allDeckCards(grouped).find(
+          (c) => c.categories[0] === 'Maybeboard' && c.categories.length > 1
+        )!
+        check(
+          'a card whose main category is excluded is drawn there, not in its second category',
+          maybe.section === 'Maybeboard' &&
+            grouped.groups
+              .find((g) => g.name === 'Ramp')!
+              .cards.every((c) => c.id !== maybe.id),
+          `${JSON.stringify(maybe.categories)} drawn under ${maybe.section}`
+        )
+      }
       check(
         'and still reports its other categories',
         multi.categories.length === 2 && multi.categories.includes('Draw'),
         JSON.stringify(multi.categories)
       )
+      /*
+        The category list is Archidekt's own, not the buckets that happened to fill.
+
+        Derived from the groups, as it was, a category you defined and left empty could not
+        be offered as a filter -- and neither could one whose every card also carried an
+        earlier category, which is how a whole category used to vanish from the screen *and*
+        from the dropdown at once.
+      */
       check(
-        'the dynamic category list covers every group, with card counts',
-        grouped.categories.length === grouped.groups.length &&
-          grouped.categories.every((c) => c.cardCount > 0),
-        JSON.stringify(grouped.categories)
+        'the category list is the deck definitions, not the sections that filled',
+        grouped.categories.some((c) => c.name === 'Sideboard' && c.cardCount === 0) &&
+          grouped.categories.length > grouped.groups.length,
+        JSON.stringify(grouped.categories.map((c) => `${c.name}:${c.cardCount}`))
+      )
+      check(
+        'and a category with no cards is a filter option, not an empty section',
+        !grouped.groups.some((g) => g.name === 'Sideboard'),
+        JSON.stringify(grouped.groups.map((g) => g.name))
       )
 
       // ---- language overrides ----
@@ -3488,12 +3576,27 @@ async function main(): Promise<void> {
           JSON.stringify(inCollection.slice(0, 2).map((c) => c.name))
         )
       }
+      /*
+        The filter matches what the screen shows.
+
+        This asserted the opposite until now -- that ticking a secondary tag found the card --
+        which was right while a card could be drawn under a category other than the one you
+        ticked. Under one section per card it would show the card under a heading you did not
+        ask for, which is the report that produced this rule.
+      */
       check(
-        'the category filter matches any of a card’s categories, not just its group',
+        'the category filter matches the section a card is drawn in, not its other tags',
         all
           .filter((c) => matchesDeckFilters(c, deckFilters({ categories: ['Draw'] })))
+          .every((c) => c.section === 'Draw'),
+        'a card was found by a category it is not drawn under'
+      )
+      check(
+        'and ticking its own category does find it',
+        all
+          .filter((c) => matchesDeckFilters(c, deckFilters({ categories: ['Ramp'] })))
           .some((c) => c.scryfall_id === ajaniEn.scryfall_id),
-        'a card tagged Draw but counted elsewhere was filtered out'
+        'a card was not found by the category it is drawn under'
       )
       check(
         'unlabelled cards are reachable through the no-label option',
@@ -3596,57 +3699,60 @@ async function main(): Promise<void> {
       const cardsIn = (sections: { cardCount: number }[]): number =>
         sections.reduce((sum, s) => sum + s.cardCount, 0)
 
-      check(
-        'collapsing the categories loses no card',
-        cardsIn(flat) === cardsIn(byCategory),
-        `${cardsIn(flat)} != ${cardsIn(byCategory)}`
-      )
-      check(
-        'the commander stays pinned in its own section',
-        flat[0]?.isPremier === true && flat[0]?.name === 'Commander',
-        `first section is ${flat[0]?.name}`
-      )
-      check(
-        'the in-deck categories collapse into exactly one section',
-        flat.filter((s) => s.inDeck && !s.isPremier).length === 1 &&
-          flat.some((s) => s.name === FLAT_GROUP_NAME),
-        JSON.stringify(flat.map((s) => s.name))
-      )
-      check(
-        'and the excluded piles stay separate',
-        flat.filter((s) => !s.inDeck).length ===
-          byCategory.filter((s) => !s.inDeck).length,
-        JSON.stringify(flat.filter((s) => !s.inDeck).map((s) => s.name))
-      )
-      const flatDeck = flat.find((s) => s.name === FLAT_GROUP_NAME)!
-      const mergedFrom = byCategory.filter((s) => s.inDeck && !s.isPremier)
-      check(
-        'the merged section sums the sections it replaced',
-        flatDeck.cardCount === mergedFrom.reduce((sum, s) => sum + s.cardCount, 0) &&
-          flatDeck.ownedCards === mergedFrom.reduce((sum, s) => sum + s.ownedCards, 0) &&
-          flatDeck.missingCards === mergedFrom.reduce((sum, s) => sum + s.missingCards, 0),
-        `merged ${flatDeck.cardCount}/${flatDeck.ownedCards}/${flatDeck.missingCards}`
-      )
+      /*
+        Flat mode is now where each card appears once.
 
-      // The commander section is smaller than a row at 8 columns — exactly the
-      // shape that used to render two enormous cards across the full width.
-      const shortRow = buildDeckBody(byCategory, 'grid', 8).items.find(
-        (i) => i.kind === 'tiles' && i.cards.length < 8
+        These checks used to assert a merge: an invented section called "Deck" holding the
+        in-deck categories, with the commander pinned above it and the excluded piles below.
+        With the categories overlapping, one list of every card exactly once is worth more
+        than the invented heading was -- and it is the only view that can answer "how many
+        cards is this" by counting what is drawn.
+      */
+      check(
+        'the flat list and the sections agree on the deck, because both count each card once',
+        cardsIn(flat) === grouped.totals.cards && cardsIn(byCategory) === cardsIn(flat),
+        `flat ${cardsIn(flat)} vs sections ${cardsIn(byCategory)}, deck ${grouped.totals.cards}`
       )
       check(
-        'a section shorter than one row still declares a full track count',
-        !!shortRow && shortRow.kind === 'tiles' && shortRow.columns === 8,
-        JSON.stringify(shortRow)
+        'the flat list invents no section, and draws no heading',
+        flat.length === 1 &&
+          flat[0].header === false &&
+          buildDeckBody(flat, 'rows', 8).items.every((item) => item.kind !== 'header'),
+        JSON.stringify(flat.map((s) => ({ name: s.name, header: s.header })))
       )
-
-      // Every card lands in exactly one row, and a tile row never mixes two
-      // categories — the property that keeps a grid honest about its headings.
+      check(
+        'and the commander is still marked, on its row rather than by its section',
+        flat[0].cards.some((c) => c.is_commander),
+        'no card in the flat list reports itself as the commander'
+      )
+      check(
+        'the flat list holds every entry exactly once',
+        flat[0].cards.length === grouped.cards.length &&
+          new Set(flat[0].cards.map((c) => c.id)).size === flat[0].cards.length,
+        `${flat[0].cards.length} of ${grouped.cards.length} entries`
+      )
+      check(
+        'and it reports the deck, counted the way the header counts it',
+        flat[0].cardCount === grouped.totals.cards,
+        `${flat[0].cardCount} vs ${grouped.totals.cards}`
+      )
       const rows = buildDeckBody(byCategory, 'rows', 8)
       check(
         'row mode emits one row per card plus one header per section',
         rows.items.filter((i) => i.kind === 'row').length === rows.ordered.length &&
           rows.items.filter((i) => i.kind === 'header').length === byCategory.length,
-        `${rows.items.length} items for ${rows.ordered.length} cards`
+        `${rows.items.length} items for ${rows.ordered.length} distinct cards`
+      )
+      check(
+        'the range order holds each card once, whatever the sections draw',
+        rows.ordered.length === new Set(rows.ordered.map((c) => c.id)).size &&
+          rows.ordered.length === grouped.cards.length,
+        `${rows.ordered.length} ordered, ${new Set(rows.ordered.map((c) => c.id)).size} distinct`
+      )
+      check(
+        'and every item drawn has its own key',
+        new Set(rows.items.map((i) => i.key)).size === rows.items.length,
+        'two items share a key, so the virtualizer will hand one another height'
       )
 
       for (const columns of [1, 3, 8]) {
@@ -3658,17 +3764,35 @@ async function main(): Promise<void> {
             new Set(tiled.map((c) => c.id)).size === tiled.length,
           `${tiled.length} tiles for ${grid.ordered.length} cards`
         )
-        const groupOf = new Map(
-          byCategory.flatMap((s) => s.cards.map((c) => [c.id, s.name] as const))
+        /*
+          Once per section, which is what a card in three categories means. Deduping by id
+          across the whole deck -- as this did -- now describes the flat list, not the
+          sections, and would fail on correct code.
+        */
+        const tileKeys = grid.items.flatMap((i) =>
+          i.kind === 'tiles' ? i.cards.map((c) => `${i.section}\u0000${c.id}`) : []
+        )
+        check(
+          `grid mode at ${columns} columns draws every card once per section`,
+          tiled.length === byCategory.reduce((sum, section) => sum + section.cards.length, 0) &&
+            new Set(tileKeys).size === tileKeys.length &&
+            new Set(tiled.map((c) => c.id)).size === grid.ordered.length,
+          `${tiled.length} tiles, ${new Set(tiled.map((c) => c.id)).size} distinct cards`
         )
         check(
           `no tile row straddles two sections at ${columns} columns`,
           grid.items.every((item) =>
             item.kind !== 'tiles'
               ? true
-              : new Set(item.cards.map((c) => groupOf.get(c.id))).size === 1
+              : item.cards.every((c) => c.section === item.section) &&
+                new Set(item.cards.map((c) => c.id)).size === item.cards.length
           ),
           'a tile row mixed cards from two categories'
+        )
+        check(
+          `every grid item at ${columns} columns has its own key`,
+          new Set(grid.items.map((i) => i.key)).size === grid.items.length,
+          'two items share a key'
         )
         check(
           `no tile row exceeds ${columns} columns`,

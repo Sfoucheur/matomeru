@@ -20,6 +20,7 @@ import {
 import {
   DEFAULT_DECK_FILTERS,
   NO_LABEL,
+  UNCATEGORIZED,
   allocateCopies,
   type Deck,
   type DeckBreakdown,
@@ -446,7 +447,24 @@ function DeckDetail({
     () => buildDeckBody(sections, mode, columns),
     [sections, mode, columns]
   )
-  const shown = sections.reduce((sum, section) => sum + section.cardCount, 0)
+  /*
+    Cards on screen, counted once.
+
+    Summing the sections would read "249 of 161" on a deck whose categories overlap, which
+    is true of the rows and nonsense about the deck.
+  */
+  const shown = useMemo(() => {
+    const seen = new Set<number>()
+    let total = 0
+    for (const section of sections) {
+      for (const card of section.cards) {
+        if (seen.has(card.id)) continue
+        seen.add(card.id)
+        total += card.quantity
+      }
+    }
+    return total
+  }, [sections])
 
   /** Open while the dialog is asking which list and what happens to the copies. */
   const [listDialog, setListDialog] = useState(false)
@@ -498,10 +516,15 @@ function DeckDetail({
     Order is the deck's, not the order things were clicked, so a partial refusal reports
     the same way it always has.
   */
-  const allDeckCards = useMemo(
-    () => breakdown.groups.flatMap((group) => group.cards),
-    [breakdown]
-  )
+  /*
+    Every entry once.
+
+    This used to flatten the sections, which was the same list while each card belonged to
+    exactly one. Now that a card is drawn under every category it carries, flattening hands
+    the same card back several times -- and a bulk action would then act on it several times.
+    `breakdown.cards` is the distinct list, built once in the main process.
+  */
+  const allDeckCards = breakdown.cards
   const selectedCards = useMemo(
     () => allDeckCards.filter((card) => selected.has(card.id)),
     [allDeckCards, selected]
@@ -607,7 +630,14 @@ function DeckDetail({
    * job itself.
    */
   const moveSelectedToCollection = async (): Promise<void> => {
-    const chosen = ordered.filter((card) => selected.has(card.id) && card.oracle_id)
+    /*
+      Through the selection, not through the drawn rows.
+
+      `ordered` holds each card once, but this used to read the rows: with the same card drawn
+      under three categories, moving it would have called the IPC three times and taken three
+      copies out of the deck. `selectedCards` is one entry per card, which is what a move means.
+    */
+    const chosen = selectedCards.filter((card) => card.oracle_id)
     if (!chosen.length) return
     setBusy(true)
     let moved = 0
@@ -1000,6 +1030,7 @@ function DeckBody({
                 onPreview={preview.onEnter}
                 onPreviewEnd={preview.onLeave}
                 onZoom={onZoom}
+                section={item.section}
               />
             ) : (
               <div
@@ -1055,7 +1086,7 @@ const SectionHeader = memo(function SectionHeader({
           group.isPremier ? 'text-gold-300' : 'text-ink-300'
         }`}
       >
-        {group.name}
+        {group.name === UNCATEGORIZED ? t('deck.uncategorized') : group.name}
       </h2>
       <span className="numeric text-[11px] text-ink-500">
         {t('decks.cardsCount', { count: count(group.cardCount) })}
@@ -1100,10 +1131,13 @@ const DeckCardLine = memo(function DeckCardLine({
   onSelect,
   onPreview,
   onPreviewEnd,
-  onZoom
+  onZoom,
+  section
 }: {
   card: DeckCardRow
   deck: Deck
+  /** Which category drew this row; the same card is drawn under each one it carries. */
+  section: string
   selected: boolean
   onSelect: (id: number, mode: PickMode) => void
   onZoom: (scryfallId: string, title: string, hasBack: boolean) => void
@@ -1136,6 +1170,9 @@ const DeckCardLine = memo(function DeckCardLine({
       /* A stable hook for the live checks: selection here is ctrl+click, with no
          checkbox to find, so a check that hunts for one selects nothing. */
       data-deck-card={card.id}
+      /* The same card is drawn under every category it carries, so the id alone no longer
+         identifies a row. */
+      data-deck-section={section}
       className={`group flex h-11 items-center gap-3 rounded-lg border px-3 ${
         selected ? 'border-gold-500/60 bg-gold-500/[0.08]' : 'border-ink-800 bg-ink-850'
       }`}
@@ -1457,7 +1494,7 @@ const DeckGridTile = memo(function DeckGridTile({
                 : 'want'}
             </span>
           )}
-          {!card.in_maindeck && (
+          {!card.counts && (
             <span className="rounded bg-ink-950 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-50">
               SB
             </span>

@@ -81,13 +81,16 @@ export function matchesDeckFilters(card: DeckCardRow, filters: DeckFilters): boo
     if (filters.ownership === 'missing' && missing === 0) return false
   }
 
-  // A card is kept if *any* of its categories is selected, not just its owning
-  // group — filtering by "Ramp" should find a card tagged ["Ramp","Creature"]
-  // even though it is counted under Creature.
-  if (filters.categories.length) {
-    const tags = card.categories.length ? card.categories : [card.group]
-    if (!tags.some((tag) => filters.categories.includes(tag))) return false
-  }
+  /*
+    The category a card is drawn under, and only that one.
+
+    This used to keep a card if *any* of its categories was selected, which was right while a
+    card could be drawn somewhere other than the category you ticked. It is not right now: a
+    card carrying "Aura Buffs" as a second tag is drawn under its main category, so finding it
+    by ticking Aura Buffs would show it under a heading you did not ask for -- which is the
+    complaint this rule came from, in miniature.
+  */
+  if (filters.categories.length && !filters.categories.includes(card.section)) return false
 
   if (filters.colors.length) {
     const colors = colorsOf(card.color_identity)

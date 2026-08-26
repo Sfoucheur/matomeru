@@ -1,7 +1,7 @@
 import { getDb, nowIso, transaction, type Sql } from '../connection.js'
 import { priceExpr, priceIsProxyExpr } from './printings.js'
 import { parseLabel } from '../../archidekt/mappers.js'
-import { allocateCopies, foilTreatmentOf } from '@shared/types'
+import { allocateCopies, deckSection, foilTreatmentOf } from '@shared/types'
 import type {
   Currency,
   Deck,
@@ -476,21 +476,40 @@ export function deleteDeck(deckId: number): void {
 }
 
 /**
- * The two things a deck's category list tells us: which categories are premier
- * (its commander, Oathbreaker, and so on) and which count towards the deck.
+ * What a deck's own category list tells us: which categories are premier (its commander,
+ * Oathbreaker, and so on), which count towards the deck, and what the full list is.
  *
  * Read from the stored deck JSON rather than a column, because `isPremier` and
  * `includedInDeck` are already in there: that means commanders resolve on decks
  * synced before this feature existed, with no migration and no re-sync. Parsed
  * once — it used to be parsed twice per breakdown, for one answer each.
+ *
+ * `defined` is what makes a category with no cards in it still a category: the filter can
+ * offer it, where a list derived from the cards on screen never could. There is no position
+ * field in Archidekt's JSON, so the order here is the order the deck stored them in.
  */
 interface DeckCategoryMeta {
   premier: Set<string>
   categoryInDeck: Map<string, boolean>
+  defined: string[]
+  /**
+   * Each card's Archidekt types, by oracle id.
+   *
+   * What Archidekt files an uncategorised card under: its UI shows no "Uncategorized" pile
+   * for a card whose types it knows, it shows an `Artifact` or a `Creature` heading. The
+   * types travel in the same deck JSON as the category flags, so using them costs nothing
+   * and invents nothing.
+   */
+  typesByOracle: Map<string, string[]>
 }
 
 function deckCategoryMeta(deckId: number): DeckCategoryMeta {
-  const meta: DeckCategoryMeta = { premier: new Set(), categoryInDeck: new Map() }
+  const meta: DeckCategoryMeta = {
+    premier: new Set(),
+    categoryInDeck: new Map(),
+    defined: [],
+    typesByOracle: new Map()
+  }
   const row = getDb().get('SELECT raw_json FROM decks WHERE id = ?', [deckId]) as
     | { raw_json: string | null }
     | undefined
@@ -498,14 +517,30 @@ function deckCategoryMeta(deckId: number): DeckCategoryMeta {
   try {
     const parsed = JSON.parse(row.raw_json) as {
       categories?: { name?: string; isPremier?: boolean; includedInDeck?: boolean }[] | null
+      cards?: { card?: { oracleCard?: { uid?: string; types?: string[] | null } | null } | null }[] | null
     }
     for (const category of parsed.categories ?? []) {
       if (typeof category?.name !== 'string') continue
       if (category.isPremier) meta.premier.add(category.name)
       meta.categoryInDeck.set(category.name, category.includedInDeck !== false)
+      // Exact case: a deck can define both `goad` and `Goad`, and they are two categories.
+      if (!meta.defined.includes(category.name)) meta.defined.push(category.name)
+    }
+    // Keyed on the oracle id because a type is a property of the card, not of the printing.
+    for (const entry of parsed.cards ?? []) {
+      const oracle = entry?.card?.oracleCard
+      if (typeof oracle?.uid !== 'string' || !Array.isArray(oracle.types)) continue
+      meta.typesByOracle.set(
+        oracle.uid,
+        oracle.types.filter((type): type is string => typeof type === 'string')
+      )
     }
   } catch {
-    /* fall back to the per-card in_maindeck flag */
+    /*
+      Nothing to say about categories, so the per-card `in_maindeck` is the only answer left.
+      The caller checks whether this map is empty and falls back to it -- which the comment
+      here used to claim without anything actually doing it.
+    */
   }
   return meta
 }
@@ -531,7 +566,8 @@ export function deckBreakdown(
   // now that it can be corrected, a foil copy should be valued as one.
   const price = priceExpr(currency, DECK_FINISH)
   const proxy = priceIsProxyExpr(currency, DECK_FINISH)
-  const { premier, categoryInDeck } = deckCategoryMeta(deckId)
+  const meta = deckCategoryMeta(deckId)
+  const { premier, categoryInDeck, typesByOracle } = meta
 
   const rows = db.all(
     `SELECT dc.id, dc.deck_id, dc.quantity,
@@ -610,7 +646,7 @@ export function deckBreakdown(
     | 'label_color'
     | 'held'
     | 'is_commander'
-    | 'group'
+    | 'counts'
     | 'price_is_proxy'
     | 'language_forced'
     | 'foil_treatment'
@@ -646,14 +682,41 @@ export function deckBreakdown(
     const categories = JSON.parse(row.categories) as string[]
     const commanderCategory = categories.find((c) => premier.has(c))
 
-    // Exactly one owning group per card. A card can carry several categories, so
-    // without this the group totals would double-count it and stop summing to the
-    // deck total. Premier wins, then the first in-deck category, then the first.
-    const group =
-      commanderCategory ??
-      categories.find((c) => categoryInDeck.get(c) !== false) ??
-      categories[0] ??
-      'Uncategorized'
+    /*
+      Whether this entry counts towards the deck.
+
+      Its main category decides: a card whose main category is Maybeboard is a maybe, whatever
+      else it carries. On the deck that prompted this that is 61 cards of 161 -- the
+      difference between reporting a 161-card Commander deck and a 100-card one. Measured over
+      744 entries, an excluded category never appears anywhere but first, so asking about the
+      main one and asking about all of them give the same answer on real data; this asks the
+      question the model is actually about.
+
+      With no parsable category list there is nothing to judge, so Archidekt's own per-card
+      answer stands.
+    */
+    const counts =
+      categoryInDeck.size > 0
+        ? categoryInDeck.get(categories[0] ?? '') !== false
+        : !!row.in_maindeck
+
+    /*
+      Where this entry is drawn: its main category.
+
+      Archidekt lists a card's categories main-first, so that is the first one -- and
+      deliberately *without* asking whether Archidekt counts it. Skipping excluded categories
+      here is the original defect: a card whose main category is Maybeboard was filed under
+      whatever it carried second, which is why its cards turned up in Interaction / Removal
+      and the Maybeboard pile looked short.
+
+      A card with no categories falls back to its type, which is what Archidekt's own UI
+      shows it under, and which travels in the same deck JSON.
+    */
+    const section = deckSection(
+      categories,
+      row.oracle_id ? typesByOracle.get(row.oracle_id) ?? [] : [],
+      premier
+    )
 
     return {
       ...row,
@@ -664,7 +727,8 @@ export function deckBreakdown(
       label_name: label.name,
       label_color: label.color,
       is_commander: !!commanderCategory,
-      group,
+      counts,
+      section,
       price_is_proxy: !!row.price_is_proxy,
       language_forced: !!row.forced_lang,
       finish_forced: row.override_finish !== null,
@@ -707,7 +771,7 @@ export function deckBreakdown(
 
   const priceOf = new Map(rows.map((r) => [r.id, r.unit_value]))
 
-  return { deck, ...groupCards(cards, categoryInDeck, premier, priceOf) }
+  return { deck, ...groupCards(cards, meta, priceOf) }
 }
 
 /**
@@ -717,15 +781,27 @@ export function deckBreakdown(
  */
 function groupCards(
   cards: DeckCardRow[],
-  categoryInDeck: Map<string, boolean>,
-  premier: Set<string>,
+  meta: DeckCategoryMeta,
   priceOf: Map<number, number | null>
 ): Omit<DeckBreakdown, 'deck'> {
+  const { premier, categoryInDeck, defined } = meta
+
+  /*
+    One section per card: the category Archidekt puts it in.
+
+    A card carrying several categories is drawn under the first, not under all of them --
+    Archidekt lists them main-first, and its own view groups by that. The sections therefore
+    partition the deck and add up to it.
+
+    The totals are still computed over the entries rather than by summing the sections,
+    because they have to skip the entries whose category Archidekt excludes, and that is a
+    question about a card.
+  */
   const byGroup = new Map<string, DeckCardRow[]>()
   for (const card of cards) {
-    const bucket = byGroup.get(card.group)
+    const bucket = byGroup.get(card.section)
     if (bucket) bucket.push(card)
-    else byGroup.set(card.group, [card])
+    else byGroup.set(card.section, [card])
   }
 
   const groups: DeckGroup[] = [...byGroup.entries()].map(([name, groupCardList]) => {
@@ -762,29 +838,71 @@ function groupCards(
   })
 
   // Premier first, then in-deck categories, then the excluded ones like Maybeboard.
-  groups.sort((a, b) => {
+  const order = (a: { isPremier: boolean; inDeck: boolean; name: string },
+                 b: { isPremier: boolean; inDeck: boolean; name: string }): number => {
     if (a.isPremier !== b.isPremier) return a.isPremier ? -1 : 1
     if (a.inDeck !== b.inDeck) return a.inDeck ? -1 : 1
     return a.name.localeCompare(b.name)
-  })
+  }
+  groups.sort(order)
 
+  /*
+    The deck, counted once.
+
+    Nothing here sums the sections. An entry counts unless it carries a category Archidekt
+    excludes; `cards` stays the length of the decklist, and the three ownership buckets add
+    up to `inDeckCards` rather than to it.
+  */
+  const counted = cards.filter((card) => card.counts)
+  const sumQuantity = (list: DeckCardRow[]): number =>
+    list.reduce((sum, card) => sum + card.quantity, 0)
+  let ownedCards = 0
+  let inCollectionCards = 0
+  let missingCards = 0
+  let missingValue = 0
+  let missingValueIsProxy = false
+  for (const card of counted) {
+    const { inDeck: owned, fromCollection, missing } = allocateCopies(card)
+    ownedCards += owned
+    inCollectionCards += fromCollection
+    missingCards += missing
+    const unit = priceOf.get(card.id)
+    if (unit) {
+      missingValue += unit * missing
+      if (missing > 0 && card.price_is_proxy) missingValueIsProxy = true
+    }
+  }
+  const inDeckCards = sumQuantity(counted)
   const totals: DeckTotals = {
-    cards: groups.reduce((sum, g) => sum + g.cardCount, 0),
+    cards: sumQuantity(cards),
     entries: cards.length,
-    inDeckCards: groups.filter((g) => g.inDeck).reduce((sum, g) => sum + g.cardCount, 0),
-    excludedCards: groups.filter((g) => !g.inDeck).reduce((sum, g) => sum + g.cardCount, 0),
-    ownedCards: groups.reduce((sum, g) => sum + g.ownedCards, 0),
-    inCollectionCards: groups.reduce((sum, g) => sum + g.inCollectionCards, 0),
-    missingCards: groups.reduce((sum, g) => sum + g.missingCards, 0),
-    missingValue: groups.reduce((sum, g) => sum + g.missingValue, 0),
-    missingValueIsProxy: groups.some((g) => g.missingValueIsProxy)
+    inDeckCards,
+    excludedCards: sumQuantity(cards) - inDeckCards,
+    ownedCards,
+    inCollectionCards,
+    missingCards,
+    missingValue,
+    missingValueIsProxy
   }
 
-  const categories = groups.map((g) => ({
-    name: g.name,
-    inDeck: g.inDeck,
-    cardCount: g.cardCount
-  }))
+  /*
+    Every category the deck has, not every category that ended up with cards.
+
+    Archidekt's own definitions first, so a category you made and left empty is still
+    something you can filter by — derived from the occupied buckets, as it was, an empty one
+    could not be. Then any name a card carries that the definitions do not mention, which is
+    where the type-based sections come from.
+  */
+  const countOf = new Map(groups.map((group) => [group.name, group.cardCount]))
+  const names = [...new Set([...defined, ...byGroup.keys()])]
+  const categories = names
+    .map((name) => ({
+      name,
+      inDeck: categoryInDeck.get(name) !== false,
+      isPremier: premier.has(name),
+      cardCount: countOf.get(name) ?? 0
+    }))
+    .sort(order)
 
   // Distinct labels actually present, so the filter offers only real options.
   const labelMap = new Map<string, { name: string | null; color: string | null; cardCount: number }>()
@@ -809,6 +927,9 @@ function groupCards(
   }
 
   return {
+    // The distinct list travels with the payload: everything that must count cards rather
+    // than rows resolves against it, now that a card can appear in several sections.
+    cards,
     groups,
     categories,
     labels: [...labelMap.values()].sort((a, b) => b.cardCount - a.cardCount),

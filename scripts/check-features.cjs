@@ -162,7 +162,7 @@ async function main() {
       if (!decks.length) return JSON.stringify({ skip: 'no decks synced' })
       const deck = decks[0]
       const breakdown = await window.api.decks.breakdown(deck.id)
-      const cards = (breakdown?.groups ?? []).flatMap((g) => g.cards)
+      const cards = (breakdown?.cards ?? [])
       const target = cards.find((c) => c.oracle_id && c.finish === 'nonfoil')
       if (!target) return JSON.stringify({ skip: 'no nonfoil deck entry' })
       await window.api.decks.setCardFinish(deck.id, [target.oracle_id], 'foil', 'surgefoil')
@@ -343,7 +343,7 @@ async function main() {
         ${marked.deckId}, [${JSON.stringify(marked.oracleId)}], null, null
       )
       const breakdown = await window.api.decks.breakdown(${marked.deckId})
-      const cards = (breakdown?.groups ?? []).flatMap((g) => g.cards)
+      const cards = (breakdown?.cards ?? [])
       // Only the entry this run touched: asserting that nothing anywhere is
       // marked would be testing the probe database, not the feature.
       const mine = cards.find((c) => c.oracle_id === ${JSON.stringify(marked.oracleId)})
@@ -361,7 +361,7 @@ async function main() {
         const decks = await window.api.decks.list()
         for (const d of decks) {
           const b = await window.api.decks.breakdown(d.id)
-          for (const c of (b?.groups ?? []).flatMap((g) => g.cards)) {
+          for (const c of (b?.cards ?? [])) {
             if (!c.scryfall_id || !c.set_code) continue
             const odds = await window.api.boosters.forCard(c.scryfall_id, c.set_code)
             if (odds.in_boosters === flag && odds.fetched === fetched) {
@@ -407,7 +407,7 @@ async function main() {
         const decks = await window.api.decks.list()
         for (const d of decks) {
           const b = await window.api.decks.breakdown(d.id)
-          for (const c of (b?.groups ?? []).flatMap((g) => g.cards)) {
+          for (const c of (b?.cards ?? [])) {
             if (!c.scryfall_id || !c.set_code) continue
             const odds = await window.api.boosters.forCard(c.scryfall_id, c.set_code)
             if (odds.fetched) return JSON.stringify({ name: c.name, set: c.set_code, odds })
@@ -1458,7 +1458,7 @@ async function main() {
 
       // The badge reads from the breakdown, so check the ledger reached it.
       const breakdown = await window.api.decks.breakdown(sources[0].deck_id)
-      const cards = (breakdown?.groups ?? []).flatMap((g) => g.cards)
+      const cards = (breakdown?.cards ?? [])
       const entry = cards.find((c) => c.oracle_id === sources[0].oracle_id)
 
       return JSON.stringify({

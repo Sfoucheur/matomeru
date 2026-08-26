@@ -126,7 +126,7 @@ console.log('\n--- a deck finish override, end to end ---')
 const deck = one<{ id: number; name: string } | undefined>('SELECT id, name FROM decks LIMIT 1')
 if (deck) {
   const allCards = (id: number) =>
-    (deckBreakdown(id, 'eur', false)?.groups ?? []).flatMap((g) => g.cards)
+    (deckBreakdown(id, 'eur', false)?.cards ?? [])
   const before = allCards(deck.id)
   const target = before.find((c) => c.oracle_id && c.finish === 'nonfoil')
   if (target) {

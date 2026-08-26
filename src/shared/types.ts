@@ -692,10 +692,34 @@ export interface DeckCardRow {
   /** True when this card sits in the deck's premier category (its commander). */
   is_commander: boolean
   /**
-   * The one category this card is counted under. A card can carry several, so a
-   * single owning group is what keeps the group totals summing to the deck total.
+   * The category this entry is drawn under: its main one, and only that one.
+   *
+   * Archidekt lists a card's categories with the main one first — measured across 744
+   * entries, an excluded category appears first 132 times and later never — so the first is
+   * the section. A card carrying `Aura Buffs` as a second tag is not drawn under Aura Buffs
+   * and is not found by filtering for it.
+   *
+   * When a card has no categories at all, Archidekt's UI files it under the card's *type*,
+   * and the types come down in the same deck JSON — so that is used rather than a bucket the
+   * app invents. `Uncategorized` is the last resort, for an entry with neither.
+   *
+   * Note what does *not* decide this: `includedInDeck`. A card whose main category is
+   * `Maybeboard` belongs in Maybeboard. Skipping excluded categories when choosing is what
+   * made those cards surface in whatever they happened to carry second.
    */
-  group: string
+  section: string
+  /**
+   * Whether this entry counts towards the deck's totals.
+   *
+   * True when none of its categories is one Archidekt excludes. Stricter than the stored
+   * `in_maindeck`, which asks whether *any* category is included: on the deck that prompted
+   * this, the two disagree about 57 entries — all of them Maybeboard cards that also carry a
+   * real category, and the difference between calling it a 157-card deck and a 100-card one.
+   *
+   * There is deliberately no owning-category field. A card is drawn under every category it
+   * carries, so which section a row belongs to is a property of the row, not of the card.
+   */
+  counts: boolean
   /** Language actually recorded for this entry, once an override is applied. */
   override_lang: string | null
   /** Joined from the printing, so the deck screen can filter and sort locally. */
@@ -730,7 +754,13 @@ export interface DeckGroup {
   /** The deck's premier category: its commander, Oathbreaker, and so on. */
   isPremier: boolean
   cards: DeckCardRow[]
-  /** Sums of quantity, not row counts — a Forest x8 entry counts as 8. */
+  /**
+   * Sums of quantity, not row counts — a Forest x8 entry counts as 8.
+   *
+   * Each card is drawn in one section, so these partition the deck: they add up to
+   * `DeckTotals.cards`. A section whose category Archidekt excludes counts towards that
+   * total and not towards `inDeckCards`.
+   */
   cardCount: number
   /** Copies the deck holds. */
   ownedCards: number
@@ -743,18 +773,32 @@ export interface DeckGroup {
   missingValueIsProxy: boolean
 }
 
+/**
+ * The deck, counted once.
+ *
+ * Computed over the entries rather than by summing the sections. The sections do partition
+ * the cards, so the two agree — but the totals have to skip the entries Archidekt excludes,
+ * which is a question about a card and not about a section.
+ */
 export interface DeckTotals {
-  /** Sum of quantity across every entry. */
+  /** Sum of quantity across every entry — how long the decklist is. */
   cards: number
   /** Row count, which is a different and much less useful number. */
   entries: number
+  /** Σ quantity over entries that count: `inDeckCards + excludedCards === cards`. */
   inDeckCards: number
+  /** Σ quantity over entries carrying a category Archidekt excludes. */
   excludedCards: number
   /** Σ min(in_deck, quantity) — copies the decks themselves hold. */
   ownedCards: number
   /** Σ of the shortfall your loose copies cover. Yours, but not in the deck. */
   inCollectionCards: number
-  /** Σ what is neither in the deck nor in your collection. The three sum to `cards`. */
+  /**
+   * Σ what is neither in the deck nor in your collection.
+   *
+   * The three sum to `inDeckCards`, not to `cards`: a card Archidekt excludes is not
+   * something this deck is missing.
+   */
   missingCards: number
   missingValue: number
   /** True when any card contributing to the value priced off another printing. */
@@ -765,13 +809,53 @@ export interface DeckBreakdown {
   deck: Deck
   /** Premier group first, then in-deck categories, then excluded ones. */
   groups: DeckGroup[]
-  /** Every category this deck has cards in, for the dynamic filter. */
-  categories: { name: string; inDeck: boolean; cardCount: number }[]
+  /**
+   * Every entry once, in name order.
+   *
+   * `groups[].cards` are references into this. The totals, the facets and the selection all
+   * resolve against this list rather than against the sections, so none of them can start
+   * counting rows if the grouping rule changes again.
+   */
+  cards: DeckCardRow[]
+  /**
+   * Every category Archidekt defines for this deck, plus any a card carries that the
+   * definitions do not, plus `Uncategorized` when something needs it. Card counts may be
+   * zero: a category with no cards is still a category, and still worth filtering by.
+   */
+  categories: { name: string; inDeck: boolean; isPremier: boolean; cardCount: number }[]
   /** Distinct Archidekt labels present on this deck's cards. */
   labels: { name: string | null; color: string | null; cardCount: number }[]
   /** Languages this deck's cards are actually in, for the dynamic filter. */
   languages: { lang: string; cardCount: number }[]
   totals: DeckTotals
+}
+
+/**
+ * The section for entries carrying no Archidekt category at all.
+ *
+ * Not a category the app invents to file things under — Archidekt shows one of these too,
+ * so this mirrors it. A deck whose cards are all categorised never sees it.
+ */
+export const UNCATEGORIZED = 'Uncategorized'
+
+/**
+ * The main category out of what Archidekt sent, resolved once in the main process.
+ *
+ * `premier` wins where the card carries one, so the commander keeps its own section whatever
+ * order its categories arrive in. Otherwise it is the first category, then the first type,
+ * then nothing to go on.
+ */
+export function deckSection(
+  categories: readonly string[],
+  types: readonly string[],
+  premier: ReadonlySet<string>
+): string {
+  return (
+    categories.find((name) => premier.has(name)) ??
+    categories[0] ??
+    types[0] ??
+    UNCATEGORIZED
+  )
 }
 
 // ---------- Deck screen filters ----------

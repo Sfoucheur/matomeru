@@ -12,12 +12,22 @@ import { matchesDeckFilters, sortDeckCards } from './deckFilter'
  */
 
 /** A group whose counts describe the filtered cards, not the whole category. */
-export interface FilteredGroup extends DeckGroup {}
+export interface FilteredGroup extends DeckGroup {
+  /**
+   * Whether this section draws a heading.
+   *
+   * False for the flat list, which is every card once and has no category to name. It used
+   * to be given one — a section called "Deck" that Archidekt has never heard of.
+   */
+  header: boolean
+}
 
-/** The name of the single section used when Archidekt categories are switched off. */
-export const FLAT_GROUP_NAME = 'Deck'
-
-function totalsFor(name: string, source: DeckGroup, cards: DeckCardRow[]): FilteredGroup {
+function totalsFor(
+  name: string,
+  source: DeckGroup,
+  cards: DeckCardRow[],
+  header = true
+): FilteredGroup {
   let cardCount = 0
   let ownedCards = 0
   let inCollectionCards = 0
@@ -41,6 +51,7 @@ function totalsFor(name: string, source: DeckGroup, cards: DeckCardRow[]): Filte
     name,
     inDeck: source.inDeck,
     isPremier: source.isPremier,
+    header,
     cards,
     cardCount,
     ownedCards,
@@ -55,71 +66,62 @@ function totalsFor(name: string, source: DeckGroup, cards: DeckCardRow[]): Filte
  * The sections to display, filtered and sorted, with counts recomputed from what
  * survived the filter so no number on screen describes cards you cannot see.
  *
- * With `groupByCategory` off, the commander stays pinned and the excluded piles
- * (Cut, Maybeboard) stay separate — only the in-deck categories collapse into one
- * list. Merging is a plain concat with no dedup, because `DeckCardRow.group`
- * already puts each card in exactly one category group: they are a partition.
+ * Grouped by category, the sections are Archidekt's own and each card appears in exactly
+ * one: the category Archidekt lists first, which is the one its own view groups by. So the
+ * sections partition the deck, and ticking a category shows that category.
+ *
+ * With `groupByCategory` off, there is one list of every card exactly once and no headings
+ * at all. That used to be a section named "Deck" — a category the app made up — with the
+ * commander pinned above it and the excluded piles below. Now that the categories overlap,
+ * this flat view is the only place each card appears once, which is worth more than the
+ * invented heading was.
  */
 export function buildDeckSections(
   breakdown: DeckBreakdown,
   filters: DeckFilters,
   groupByCategory: boolean
 ): FilteredGroup[] {
-  const source: DeckGroup[] = groupByCategory ? breakdown.groups : collapse(breakdown.groups)
-  return source
-    .map((group) =>
-      totalsFor(
-        group.name,
-        group,
-        sortDeckCards(group.cards.filter((card) => matchesDeckFilters(card, filters)), filters)
-      )
+  const keep = (cards: DeckCardRow[]): DeckCardRow[] =>
+    sortDeckCards(cards.filter((card) => matchesDeckFilters(card, filters)), filters)
+
+  if (!groupByCategory) {
+    /*
+      Every entry once. `breakdown.cards` is already the distinct list -- taking the union of
+      the sections would hand the same card back several times.
+    */
+    const flat = totalsFor(
+      '',
+      { inDeck: true, isPremier: false } as DeckGroup,
+      keep(breakdown.cards),
+      false
     )
+    return flat.cards.length > 0 ? [flat] : []
+  }
+
+  return breakdown.groups
+    .map((group) => totalsFor(group.name, group, keep(group.cards)))
     .filter((group) => group.cards.length > 0)
 }
 
-function collapse(groups: DeckGroup[]): DeckGroup[] {
-  const premier = groups.filter((g) => g.isPremier)
-  const inDeck = groups.filter((g) => g.inDeck && !g.isPremier)
-  const excluded = groups.filter((g) => !g.inDeck && !g.isPremier)
-
-  const merged: DeckGroup[] = [...premier]
-  if (inDeck.length > 0) {
-    merged.push({
-      name: FLAT_GROUP_NAME,
-      inDeck: true,
-      isPremier: false,
-      cards: inDeck.flatMap((g) => g.cards),
-      // Recomputed downstream from the filtered cards; these are placeholders.
-      cardCount: 0,
-      ownedCards: 0,
-      inCollectionCards: 0,
-      missingCards: 0,
-      missingValue: 0,
-      missingValueIsProxy: false
-    })
-  }
-  return [...merged, ...excluded]
-}
-
-/** One entry per rendered row: a section heading, a card line, or a row of tiles. */
+/**
+ * One item per thing the virtualized list draws.
+ *
+ * A row carries the section it was drawn in, because the same card can be drawn in several:
+ * the key has to include it, and so does anything that asks "which heading is this under".
+ */
 export type DeckBodyItem =
   | { kind: 'header'; key: string; group: FilteredGroup }
-  | { kind: 'row'; key: string; card: DeckCardRow }
-  /**
-   * A row of tiles, carrying the column count it was chunked by.
-   *
-   * The count travels with the row on purpose: a tile row's height is derived
-   * from that same number (via `tileWidth`), so laying it out with any other
-   * number of tracks makes the row taller than it claims and it overlaps its
-   * neighbours. Keeping both on one object is what stops the two drifting.
-   */
-  | { kind: 'tiles'; key: string; cards: DeckCardRow[]; columns: number }
+  | { kind: 'row'; key: string; card: DeckCardRow; section: string }
+  | { kind: 'tiles'; key: string; cards: DeckCardRow[]; columns: number; section: string }
 
 export interface DeckBody {
   items: DeckBodyItem[]
   /**
-   * Every visible card in display order, across sections. Shift-click ranges walk
-   * this, which is what makes a range mean what it looks like it means.
+   * Every visible card once, in first-appearance order.
+   *
+   * Distinct on purpose: this is the order a shift-range walks and the list select-all
+   * reads, and both are about cards. With the same card in three sections, a repeated key
+   * would make a range resolve to whichever copy came first and a select-all count rows.
    */
   ordered: DeckCardRow[]
 }
@@ -132,12 +134,21 @@ export function buildDeckBody(
   const items: DeckBodyItem[] = []
   const ordered: DeckCardRow[] = []
 
+  const seen = new Set<number>()
   for (const group of sections) {
-    items.push({ kind: 'header', key: `header:${group.name}`, group })
-    ordered.push(...group.cards)
+    if (group.header) items.push({ kind: 'header', key: `header:${group.name}`, group })
+    for (const card of group.cards) {
+      if (seen.has(card.id)) continue
+      seen.add(card.id)
+      ordered.push(card)
+    }
 
     if (mode === 'rows') {
-      for (const card of group.cards) items.push({ kind: 'row', key: `row:${card.id}`, card })
+      for (const card of group.cards) {
+        // Keyed by section as well as card: the same card is drawn under every category it
+        // carries, and a repeated key makes the virtualizer hand one row another's height.
+        items.push({ kind: 'row', key: `row:${group.name}:${card.id}`, card, section: group.name })
+      }
       continue
     }
     // Chunked per section, so a tile row never mixes two categories — the last
@@ -150,7 +161,8 @@ export function buildDeckBody(
         kind: 'tiles',
         key: `tiles:${group.name}:${cards[0].id}`,
         cards,
-        columns: size
+        columns: size,
+        section: group.name
       })
     }
   }

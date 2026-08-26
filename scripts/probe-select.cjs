@@ -606,7 +606,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     await new Promise((r) => setTimeout(r, 400))
 
     // Two cards that are not already proxies, so the mark is a real change.
-    const plain = rows().filter((r) => !(r.innerText || '').includes('Proxy'))
+    /*
+      Two distinct cards, not two rows.
+
+      A card is drawn under every category it carries, so the first two rows on screen can
+      be the same card twice -- which used to leave this block selecting one card, reading a
+      count of 1, and skipping itself without failing.
+    */
+    const byCard = new Map()
+    for (const r of rows()) {
+      if ((r.innerText || '').includes('Proxy')) continue
+      const id = r.getAttribute('data-deck-card')
+      if (!byCard.has(id)) byCard.set(id, r)
+    }
+    const plain = [...byCard.values()]
     if (plain.length < 2) return JSON.stringify({ plain: plain.length })
     /*
       The name button, by position: the checkbox, then the thumbnail, then the name. Read
@@ -641,7 +654,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     type(search(), names[0])
     await new Promise((r) => setTimeout(r, 700))
     const afterFilter = count()
-    const shownNow = rows().length
+    // Distinct cards, not rows: one card can be drawn several times.
+    const shownNow = new Set(rows().map((r) => r.getAttribute('data-deck-card'))).size
 
     // One click, on a selection whose second card is not on screen.
     const proxyButton = [...(bar()?.querySelectorAll('button') ?? [])].find((b) =>
@@ -661,7 +675,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       which is two questions at once and the wrong two.
     */
     const after = await window.api.decks.breakdown(biggest.id)
-    const all = (after?.groups ?? []).flatMap((g) => g.cards)
+    const all = (after?.cards ?? [])
     const nowProxied = ids.map((id) => flagOf(after, id))
     const changed = ids.filter((id, i) => nowProxied[i] !== wasProxied[i]).length
     const toast = ([...document.querySelectorAll('div')]
