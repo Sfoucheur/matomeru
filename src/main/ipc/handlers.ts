@@ -69,7 +69,8 @@ import { getPrinting } from '../db/repos/printings.js'
 import { cachedImage } from '../services/imageCache.js'
 import { addDeckByUrl, syncUserDecks } from '../services/deckSync.js'
 import { clearCardsLanguage, setCardsLanguage } from '../services/deckLanguage.js'
-import { setItemLanguage, setItemsLanguage } from '../services/collectionLanguage.js'
+import { applyLanguageToItem } from '../services/collectionLanguage.js'
+import { setRowLanguages } from '../services/rowLanguage.js'
 import {
   boosterOddsFor,
   collectionBoosterSets,
@@ -92,8 +93,10 @@ import {
   collectionKeyScope,
   moveScopes,
   withPickItems,
+  deckLanguageScopes,
   deckOverrideScopes,
   pickListScopes,
+  rowLanguageScopes,
   scryfallScope,
   scryfallScopeMany
 } from '../db/undoScopes.js'
@@ -287,19 +290,24 @@ export function registerHandlers(): void {
   */
   handle('collection:setLanguage', (itemId: number, lang: string) =>
     undoableAsync('undo.setLanguage', withPickItems(scryfallScope(itemId)), () =>
-      setItemLanguage(itemId, lang)
+      applyLanguageToItem(itemId, lang)
     )
   )
   /*
-    The same, for the rows you selected.
+    The same, for a whole selection — and it takes the selection's own row keys.
 
-    Whole-table scope, for the reason `moveScopes` gives: the printings these rows end up
-    on come back from Scryfall and are not knowable from the arguments, so a scope built
-    from the ids in hand would cover where the rows started and not where they land.
+    Not ids. The Collection screen lists copies you entered alongside copies sleeved in a
+    synced deck, and a sleeved row has no id, so mapping the selection to ids dropped
+    every one of them silently. The keys say which kind each row is, so nothing has to be
+    guessed and nothing can be quietly left out.
+
+    Renamed with the signature, deliberately. This boundary is not type-checked, so a call
+    site left passing `number[]` would parse to zero targets and do nothing at all — the
+    very failure being fixed. A channel that no longer exists is loud instead.
   */
-  handle('collection:setLanguages', (itemIds: number[], lang: string) =>
-    undoableAsync('undo.bulkSetLanguage', withPickItems(wholeTable('collection_items')), () =>
-      setItemsLanguage(itemIds, lang, broadcast)
+  handle('collection:setRowLanguages', (keys: string[], lang: string) =>
+    undoableAsync('undo.bulkSetLanguage', rowLanguageScopes(), () =>
+      setRowLanguages(keys, lang, broadcast)
     )
   )
   handle(
@@ -608,7 +616,8 @@ export function registerHandlers(): void {
   // set/number each lookup needs is read from the database rather than trusted.
   handle('decks:setCardsLanguage', (deckId: number, oracleIds: string[], lang: string) =>
     // Async: this looks the printing up on Scryfall before writing anything.
-    undoableAsync('undo.setDeckLanguage', deckOverrideScopes(deckId), () =>
+    // The deck row is in scope too: applying a language remembers it there.
+    undoableAsync('undo.setDeckLanguage', deckLanguageScopes(deckId), () =>
       setCardsLanguage(deckId, oracleIds, lang, broadcast)
     )
   )

@@ -38,6 +38,8 @@ import CardTile from '../components/CardTile'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
 import DeckToolbar from '../components/DeckToolbar'
 import DeckBulkBar from '../components/DeckBulkBar'
+import { useCardPreview } from '../components/CardHoverPreview'
+import CardZoom from '../components/CardZoom'
 import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import Popover from '../components/Popover'
@@ -448,6 +450,19 @@ function DeckDetail({
 
   /** Open while the dialog is asking which list and what happens to the copies. */
   const [listDialog, setListDialog] = useState(false)
+  /*
+    The closer look, opened from a row's thumbnail.
+
+    The deck screen had no way to it at all: in grid mode the artwork opens the card's
+    details, and in list mode the thumbnail did nothing of its own. The collection's list
+    has offered this from its thumbnail all along, and there is no reason the same picture
+    should be two clicks further away here.
+  */
+  const [zoom, setZoom] = useState<{
+    scryfallId: string
+    title: string
+    hasBack: boolean
+  } | null>(null)
   const [busy, setBusy] = useState(false)
 
   /*
@@ -466,22 +481,51 @@ function DeckDetail({
     keep
   } = useRangeSelection(selectableCards)
 
-  // A card filtered out of view must leave the selection with it, or a bulk action
-  // would reach cards you can no longer see.
+  /*
+    Every card in the deck, filtered or not — and every selected one, from that.
+
+    The selection used to be pruned to what the filters showed, so that a bulk action could
+    not reach cards you could no longer see. The reason was sound and the mechanism was the
+    problem: everything below derives from `ordered`, the *filtered* cards, so an off-filter
+    selection would have been silently skipped rather than refused. Now the actions resolve
+    against the whole deck instead, which is what lets a selection be built across filters.
+
+    A memo over the breakdown rather than a cache of what has been drawn: the deck is
+    already here in full, `buildDeckSections` only chooses what to show from it, and a
+    derivation that cannot go stale beats one that has to be kept fresh. It also prunes
+    itself — a card that leaves the deck leaves this with it.
+
+    Order is the deck's, not the order things were clicked, so a partial refusal reports
+    the same way it always has.
+  */
+  const allDeckCards = useMemo(
+    () => breakdown.groups.flatMap((group) => group.cards),
+    [breakdown]
+  )
+  const selectedCards = useMemo(
+    () => allDeckCards.filter((card) => selected.has(card.id)),
+    [allDeckCards, selected]
+  )
+
+  /*
+    What is gone is dropped; what is merely hidden is not.
+
+    This is the prune that remains, and it is about existence: a card moved out to the
+    collection, or dropped by an Archidekt re-sync, cannot stay selected. A filter, by
+    contrast, is a viewport.
+  */
   useEffect(() => {
-    const visible = new Set(ordered.map((card) => card.id))
-    keep((id) => visible.has(id))
-  }, [ordered, keep])
+    const inDeck = new Set(allDeckCards.map((card) => card.id))
+    keep((id) => inDeck.has(id))
+  }, [allDeckCards, keep])
 
 
   /** Oracle ids for the selection — what the language calls are keyed on. */
   const selectedOracleIds = useMemo(() => {
     const ids = new Set<string>()
-    for (const card of ordered) {
-      if (selected.has(card.id) && card.oracle_id) ids.add(card.oracle_id)
-    }
+    for (const card of selectedCards) if (card.oracle_id) ids.add(card.oracle_id)
     return [...ids]
-  }, [ordered, selected])
+  }, [selectedCards])
 
   /**
    * Whether every selected entry is already a proxy, so one button can toggle.
@@ -489,10 +533,10 @@ function DeckDetail({
    * "All of them" rather than "any of them": with a mixed selection the useful
    * action is to bring the rest up to proxied, not to clear the ones already set.
    */
-  const allSelectedProxied = useMemo(() => {
-    const chosen = ordered.filter((card) => selected.has(card.id))
-    return chosen.length > 0 && chosen.every((card) => card.proxied)
-  }, [ordered, selected])
+  const allSelectedProxied = useMemo(
+    () => selectedCards.length > 0 && selectedCards.every((card) => card.proxied),
+    [selectedCards]
+  )
 
   /**
    * Stages the selected entries for pulling out of this deck.
@@ -508,7 +552,7 @@ function DeckDetail({
     target: number | 'new',
     destination: PickDestination
   ): Promise<void> => {
-    const chosen = ordered.filter((card) => selected.has(card.id) && card.oracle_id)
+    const chosen = selectedCards.filter((card) => card.oracle_id)
     if (!chosen.length) return
     setBusy(true)
     const listId =
@@ -583,7 +627,7 @@ function DeckDetail({
     if (moved > 0) {
       toast(
         'success',
-        `${t('decks.movedToCollection', { count: moved })}${
+        `${t.p('decks.movedToCollection', moved)}${
           refused > 0 ? ` ${t.p('decks.pullRefused', refused)}` : ''
         }`
       )
@@ -601,22 +645,14 @@ function DeckDetail({
     )
     setBusy(false)
     if (result) {
-      const parts = [
-        t('bulk.langSet', { count: result.converted, lang: lang.toUpperCase() })
-      ]
-      if (result.unavailable.length) {
-        parts.push(
-          t('bulk.langNoPrinting', {
-            count: result.unavailable.length,
-            lang: lang.toUpperCase()
-          })
-        )
-      }
+      const upper = lang.toUpperCase()
+      const parts: string[] = []
+      if (result.converted) parts.push(t('bulk.langSet', { count: result.converted, lang: upper }))
+      // Not a shortfall: the card kept the print it is on and now says you hold that
+      // print in this language, which is the answer rather than the absence of one.
+      if (result.declared) parts.push(t.p('bulk.langDeclared', result.declared, { lang: upper }))
       if (result.failed) parts.push(t('bulk.langFailed', { count: result.failed }))
-      toast(
-        result.unavailable.length || result.failed ? 'warn' : 'success',
-        `${parts.join(', ')}.`
-      )
+      toast(result.failed ? 'warn' : 'success', `${parts.join(', ')}.`)
       invalidate()
     }
   }
@@ -632,11 +668,10 @@ function DeckDetail({
       toast(
         'success',
         finish
-          ? t('bulk.finishDone', {
-              count: changed,
+          ? t.p('bulk.finishDone', changed, {
               finish: treatment ? foilTreatmentLabel(treatment) : FINISH_LABEL[finish]
             })
-          : t('bulk.finishCleared', { count: changed })
+          : t.p('bulk.finishCleared', changed)
       )
       invalidate()
     }
@@ -653,7 +688,7 @@ function DeckDetail({
       toast(
         'success',
         proxied
-          ? t('proxy.marked', { count: changed })
+          ? t.p('proxy.marked', changed)
           : t('proxy.unmarked', { count: changed })
       )
       invalidate()
@@ -718,6 +753,9 @@ function DeckDetail({
               }`}
               aria-label={t('decks.rowView')}
               title={t('decks.rowView')}
+              /* A stable handle: the collection's toggle has one, and a check that
+                 reached this by its translated label would break with the language. */
+              data-view="rows"
             >
               <Rows3 size={15} />
             </button>
@@ -728,6 +766,7 @@ function DeckDetail({
               }`}
               aria-label={t('decks.gridView')}
               title={t('decks.gridView')}
+              data-view="grid"
             >
               <LayoutGrid size={15} />
             </button>
@@ -855,9 +894,20 @@ function DeckDetail({
             tileWidth={tileWidth}
             density={density}
             ready={ready || mode === 'rows'}
+            onZoom={(scryfallId, title, hasBack) => setZoom({ scryfallId, title, hasBack })}
           />
         )}
       </div>
+
+      {zoom && (
+        <CardZoom
+          open
+          scryfallId={zoom.scryfallId}
+          title={zoom.title}
+          hasBack={zoom.hasBack}
+          onClose={() => setZoom(null)}
+        />
+      )}
     </>
   )
 }
@@ -880,7 +930,8 @@ function DeckBody({
   onSelect,
   tileWidth,
   density,
-  ready
+  ready,
+  onZoom
 }: {
   items: DeckBodyItem[]
   deck: Deck
@@ -892,8 +943,12 @@ function DeckBody({
   tileWidth: number
   density: ReturnType<typeof useGridMetrics>['density']
   ready: boolean
+  /** Opens the closer look on the card whose thumbnail was clicked. */
+  onZoom: (scryfallId: string, title: string, hasBack: boolean) => void
 }): React.ReactElement {
   const tileRowHeight = tileWidth * CARD_ASPECT + GRID_GAP
+  // Declared before the `ready` bail-out below, because a hook cannot be conditional.
+  const preview = useCardPreview()
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -942,6 +997,9 @@ function DeckBody({
                 deck={deck}
                 selected={selected.has(item.card.id)}
                 onSelect={onSelect}
+                onPreview={preview.onEnter}
+                onPreviewEnd={preview.onLeave}
+                onZoom={onZoom}
               />
             ) : (
               <div
@@ -970,6 +1028,12 @@ function DeckBody({
           </div>
         )
       })}
+      {/*
+        One panel for the whole list. Inside a row it would be clipped by the scroller and
+        would overflow the height that row declares -- which is the failure check:geometry
+        exists to catch.
+      */}
+      {preview.panel}
     </div>
   )
 }
@@ -1033,12 +1097,19 @@ const DeckCardLine = memo(function DeckCardLine({
   card,
   deck,
   selected,
-  onSelect
+  onSelect,
+  onPreview,
+  onPreviewEnd,
+  onZoom
 }: {
   card: DeckCardRow
   deck: Deck
   selected: boolean
   onSelect: (id: number, mode: PickMode) => void
+  onZoom: (scryfallId: string, title: string, hasBack: boolean) => void
+  /** Show this card, big, beside the row. Stable, so this memoized row keeps its memo. */
+  onPreview: (scryfallId: string | null, anchor: HTMLElement | null) => void
+  onPreviewEnd: () => void
 }): React.ReactElement {
   const t = useT()
   const openCard = useApp((s) => s.openCard)
@@ -1096,7 +1167,37 @@ const DeckCardLine = memo(function DeckCardLine({
 
       <span className="numeric w-7 shrink-0 text-xs text-ink-500">×{card.quantity}</span>
 
-      <CardImage scryfallId={card.scryfall_id} className="h-8 w-6 shrink-0" alt={card.name} />
+      {/*
+        A button, like the collection's: hovering shows the card beside the row and clicking
+        opens the closer look. The click is stopped here rather than falling through to the
+        row, so pointing at the art and asking to see it does not also change the selection.
+
+        Focus and blur as well as hover, because a button can be reached with the keyboard
+        and arrowing through a deck should show you what pointing at it does.
+      */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          if (!card.scryfall_id) return
+          const sides = twoSides({
+            scryfall_id: card.scryfall_id,
+            name: card.name,
+            printed_name: null,
+            layout: card.layout
+          })
+          onZoom(card.scryfall_id, card.name, sides !== null)
+        }}
+        onMouseEnter={(e) => onPreview(card.scryfall_id, e.currentTarget)}
+        onMouseLeave={onPreviewEnd}
+        onFocus={(e) => onPreview(card.scryfall_id, e.currentTarget)}
+        onBlur={onPreviewEnd}
+        aria-label={t('coll.zoomHint')}
+        data-action="zoomArt"
+        data-thumb=""
+        className="shrink-0 cursor-zoom-in rounded"
+      >
+        <CardImage scryfallId={card.scryfall_id} className="h-8 w-6 shrink-0" alt={card.name} />
+      </button>
 
       <button
         onClick={(e) => {
@@ -1291,9 +1392,9 @@ const DeckGridTile = memo(function DeckGridTile({
         <>
           {card.moved !== 0 && (
             <span
-              title={t(
+              title={t.p(
                 card.moved < 0 ? 'decks.movedOutHint' : 'decks.movedInHint',
-                { count: Math.abs(card.moved) }
+                Math.abs(card.moved)
               )}
               className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950 ${
                 card.moved < 0 ? 'bg-warn' : 'bg-good'
@@ -1323,7 +1424,9 @@ const DeckGridTile = memo(function DeckGridTile({
               })}
               className="rounded bg-warn px-1.5 py-0.5 text-[9px] font-bold uppercase text-ink-950"
             >
-              no {card.language_unavailable}
+              {/* The mark, not a word: "no fr" was English on a French screen, and the
+                  row variant beside it already says it this way. */}
+              !{card.language_unavailable.toUpperCase()}
             </span>
           )}
           {card.override_lang && (
@@ -1414,7 +1517,7 @@ function PulledBadge({ card }: { card: DeckCardRow }): React.ReactElement {
     // list — putting them back would be claiming a card that no longer exists.
     const result = await guard(() => window.api.decks.revertMove(moveId))
     if (result) {
-      toast('success', t('decks.moveReverted', { count: result.quantity }))
+      toast('success', t.p('decks.moveReverted', result.quantity))
       invalidate()
     }
   }
@@ -1427,9 +1530,9 @@ function PulledBadge({ card }: { card: DeckCardRow }): React.ReactElement {
           e.stopPropagation()
           setOpen((v) => !v)
         }}
-        title={t(
+        title={t.p(
           card.moved < 0 ? 'decks.movedOutHint' : 'decks.movedInHint',
-          { count: Math.abs(card.moved) }
+          Math.abs(card.moved)
         )}
         className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase transition-colors ${
           card.moved < 0
@@ -1458,8 +1561,8 @@ function PulledBadge({ card }: { card: DeckCardRow }): React.ReactElement {
             <span className="min-w-0 flex-1 truncate text-ink-100">
                 {/* Which way it went, and how many. */}
               {move.quantity < 0
-                ? t('decks.movedOut', { count: -move.quantity })
-                : t('decks.movedIn', { count: move.quantity })}
+                ? t.p('decks.movedOut', -move.quantity)
+                : t.p('decks.movedIn', move.quantity)}
             </span>
             <span className="numeric shrink-0 text-[10px] text-ink-500">
               {count(Math.abs(move.quantity))}

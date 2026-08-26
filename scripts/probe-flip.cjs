@@ -481,6 +481,74 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   }
 
   /*
+    ---- 8b. crossing the gap between two rows must not flash the card back.
+
+    The rows sit 4px apart and each one clears the preview as the pointer leaves it, so
+    running the cursor down the list used to show the card's own art between every pair:
+    preview, card, preview, card. The report was exact -- "hover nothing between two prints
+    thus displaying the actual print".
+
+    Measured the way a pointer actually crosses: leave A, and a moment later enter B.
+    Sampling the frame during that moment is the whole check, so the sample happens between
+    the two events rather than after them.
+  */
+  const gap = JSON.parse(await ev(`(async () => {
+    const frameSrc = () => {
+      const img = document.querySelector('[role="dialog"] [data-card-frame] img')
+      return img ? (img.getAttribute('src') || '') : ''
+    }
+    const rows = [...document.querySelectorAll('[role="dialog"] [data-printing]')]
+      // A disabled row is the current printing and fires no mouse events at all, so
+      // hovering one would prove nothing -- which a check here did once already.
+      .filter((r) => !r.disabled)
+    if (rows.length < 2) return JSON.stringify({ rows: rows.length })
+
+    const own = frameSrc()
+    const [a, b] = rows
+    const idA = a.getAttribute('data-printing')
+    const idB = b.getAttribute('data-printing')
+
+    a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 420))
+    const onA = frameSrc()
+
+    // Out of A, into nothing: the gap.
+    a.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+    await new Promise((r) => setTimeout(r, 70))
+    const inTheGap = frameSrc()
+
+    // And on into B, as a pointer travelling down the list does.
+    b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 60))
+    const onB = frameSrc()
+
+    b.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+    await new Promise((r) => setTimeout(r, 300))
+    return JSON.stringify({
+      rows: rows.length,
+      showedA: onA.includes(idA),
+      // The point: mid-gap it is still A, never the card's own art.
+      keptDuringGap: inTheGap === onA,
+      flashedOwn: inTheGap === own && own !== onA,
+      switchedToB: onB.includes(idB),
+      restored: frameSrc() === own
+    })
+  })()`))
+  console.log('        → gap ' + JSON.stringify(gap))
+  if (gap.rows >= 2) {
+    check('hovering the first of two rows previews it', gap.showedA === true,
+      JSON.stringify(gap))
+    check('crossing the gap between rows does not flash the card back',
+      gap.flashedOwn === false && gap.keptDuringGap === true, JSON.stringify(gap))
+    check('and the next row takes over at once, with no wait of its own',
+      gap.switchedToB === true, JSON.stringify(gap))
+    check('while leaving the list still puts the card back', gap.restored === true,
+      JSON.stringify(gap))
+  } else {
+    console.log('        (fewer than two selectable printings, so no gap to cross)')
+  }
+
+  /*
     And the turn survives a preview. The frame is shared, so a preview that reset the flip
     would quietly undo what you were looking at -- which is why the preview is a still
     image rather than another stage.

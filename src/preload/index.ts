@@ -85,9 +85,15 @@ const api = {
     /** Repoints a copy you entered at a different printing; returns the surviving row id. */
     setPrinting: (itemId: number, scryfallId: string) =>
       call<number>('collection:setPrinting', itemId, scryfallId),
-    /** Switches a copy to another language, resolving the printing for it. */
+    /**
+     * Switches one copy to another language.
+     *
+     * Answers with what happened rather than a boolean: `converted` found the same print
+     * in that language, `declared` kept the print and recorded the language, `reserved`
+     * left an open pick list's copies alone.
+     */
     setLanguage: (itemId: number, lang: string) =>
-      call<{ ok: boolean; viaSearch?: boolean; itemId?: number; reason?: string }>(
+      call<'converted' | 'declared' | 'reserved' | 'gone' | 'failed'>(
         'collection:setLanguage',
         itemId,
         lang
@@ -107,20 +113,26 @@ const api = {
         filters
       ),
     /**
-     * Points the given rows at their printing in one language.
+     * Applies one language to a whole selection, sleeved deck rows included.
      *
-     * One lookup per row, so this is slow and partial by nature: `unavailable` is a card
-     * Scryfall has no printing of in that language, and `gone` is a row the selection
-     * still named but the collection no longer holds.
+     * Takes the selection's row keys, not ids: a row sleeved in a deck has no id, and
+     * mapping the selection to ids is what used to drop those rows without saying so.
+     *
+     * One lookup per row, so this is slow and partial by nature. Every selected row comes
+     * back in exactly one of the counts — `converted` moved to the same print in that
+     * language, `declared` kept its print and now says you hold it in that language,
+     * `reserved` was left alone because an open pick list holds those copies, `gone` no
+     * longer names anything — and they sum to the number of keys sent.
      */
-    setLanguages: (itemIds: number[], lang: string) =>
+    setRowLanguages: (keys: string[], lang: string) =>
       call<{
         converted: number
-        viaSearch: number
-        unavailable: { name: string; lang: string }[]
+        declared: number
+        reserved: number
         gone: number
         failed: number
-      }>('collection:setLanguages', itemIds, lang),
+        decks: number
+      }>('collection:setRowLanguages', keys, lang),
   },
 
   cards: {
@@ -235,7 +247,7 @@ const api = {
       call<{ deckId: number; quantity: number }>('decks:revertMove', moveId),
     /** Records which printing you own, for the cards you selected and no others. */
     setCardsLanguage: (deckId: number, oracleIds: string[], lang: string) =>
-      call<{ converted: number; unavailable: { name: string; lang: string }[]; failed: number }>(
+      call<{ converted: number; declared: number; failed: number }>(
         'decks:setCardsLanguage',
         deckId,
         oracleIds,

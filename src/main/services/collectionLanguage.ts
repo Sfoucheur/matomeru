@@ -1,7 +1,6 @@
 import { forceItemLanguage, setItemPrinting } from '../db/repos/collection.js'
 import { getDb } from '../db/connection.js'
 import { resolvePrintingInLanguage } from './languageResolve.js'
-import type { ProgressSink } from '../ipc/progressThrottle.js'
 import { t } from '@shared/i18n/index'
 import type { TranslationKey } from '@shared/types'
 import { getLocale } from '../db/repos/settings.js'
@@ -12,115 +11,98 @@ function tr(key: TranslationKey, vars?: Record<string, string | number>): string
 }
 
 /**
- * Language and printing changes for a card you entered yourself.
+ * Language changes for a card you entered yourself.
  *
- * The collection is simpler than a deck: a row *is* a printing, so switching
- * language means pointing the row at the printing in that language. Resolution is
- * shared with the deck path, so both agree on when a language genuinely does not
- * exist — and when it does not, `forceItemLanguage` lets you say you hold it
- * anyway.
+ * The collection is simpler than a deck: a row *is* a printing, so a language change
+ * points the row at the same print in that language. Resolution is shared with the deck
+ * path, so both agree on when a print genuinely has no version in a language — and when
+ * it does not, the print stays and `forced_lang` records the language you hold it in.
  */
-/** What applying a language to many rows did, in the four ways it can go. */
-export interface ItemsLanguageResult {
-  converted: number
-  /** Of those, how many were found only by searching every printing of the card. */
-  viaSearch: number
-  unavailable: { name: string; lang: string }[]
-  /**
-   * Rows that no longer existed by the time their turn came.
-   *
-   * Not a failure, and worth its own number rather than being lumped in with one. A
-   * selection can now outlive the page it was made on -- select-all reaches the whole
-   * filtered set and survives a refetch -- so an id can name a row that has since been
-   * removed or merged away. Without this it would be reported as a failure, which would
-   * make a run that did exactly what was asked look broken.
-   */
-  gone: number
-  failed: number
-}
 
 /**
- * Applies one language to the rows you selected, and to nothing else.
+ * What one row's turn came to.
  *
- * Sequential on purpose, like the deck path this mirrors: each row is a separate Scryfall
- * request, the client's queue paces them anyway, and firing them together would only
- * queue behind itself while making progress meaningless.
+ * A union rather than a boolean and a reason string: every outcome is a state worth
+ * counting, and only one of the five is a failure. The orchestrator adds them up and the
+ * total has to equal the number of rows selected, which is what makes a row that was
+ * silently skipped impossible to express.
  */
-export async function setItemsLanguage(
-  itemIds: number[],
-  lang: string,
-  onProgress: ProgressSink
-): Promise<ItemsLanguageResult> {
-  const result: ItemsLanguageResult = {
-    converted: 0,
-    viaSearch: 0,
-    unavailable: [],
-    failed: 0,
-    gone: 0
-  }
-  const phase = `Applying ${lang.toUpperCase()}`
-  onProgress({ job: 'collection-language', phase, done: 0, total: itemIds.length })
+export type ItemOutcome = 'converted' | 'declared' | 'reserved' | 'gone' | 'failed'
 
-  for (let i = 0; i < itemIds.length; i += 1) {
-    const id = itemIds[i]
-    // Read the row now rather than up front: an earlier merge may have taken it, and
-    // that is the normal case rather than an error.
-    const row = getDb().get('SELECT id FROM collection_items WHERE id = ?', [id]) as
-      | { id: number }
-      | undefined
-    if (!row) {
-      result.gone += 1
-    } else {
-      try {
-        const outcome = await setItemLanguage(id, lang)
-        if (outcome.ok) {
-          result.converted += 1
-          if (outcome.viaSearch) result.viaSearch += 1
-        } else {
-          result.unavailable.push({ name: outcome.reason ?? String(id), lang })
-        }
-      } catch {
-        result.failed += 1
-      }
-    }
-    onProgress({
-      job: 'collection-language',
-      phase,
-      done: i + 1,
-      total: itemIds.length
-    })
-  }
+/**
+ * Applies one language to one row you entered.
+ *
+ * Three outcomes are ordinary. `converted` found the same print in that language and
+ * repointed the row at it. `declared` did not, so the row keeps its print and says it is
+ * yours in that language. `reserved` did nothing at all, on purpose: see below.
+ */
+export async function applyLanguageToItem(itemId: number, lang: string): Promise<ItemOutcome> {
+  /*
+    A LEFT join, not an inner one.
 
-  onProgress({
-    job: 'collection-language',
-    phase: 'Done',
-    done: itemIds.length,
-    total: itemIds.length,
-    finished: true
-  })
-  return result
-}
-
-export async function setItemLanguage(
-  itemId: number,
-  lang: string
-): Promise<{ ok: boolean; viaSearch?: boolean; itemId?: number; reason?: string }> {
+    A row whose printing is not in the cache used to throw `err.itemNotFound` here and be
+    counted as a failure. It is not missing — it is a row we cannot look up a translation
+    for — so it falls through to being declared, which is the honest answer and the one
+    the user asked for.
+  */
   const row = getDb().get(
-    `SELECT p.name, p.oracle_id, p.set_code, p.collector_number
-     FROM collection_items ci JOIN printings p ON p.scryfall_id = ci.scryfall_id
+    `SELECT ci.id, p.name, p.oracle_id, p.set_code, p.collector_number,
+            (SELECT COALESCE(SUM(pli.quantity), 0)
+             FROM pick_list_items pli
+             JOIN pick_lists pl ON pl.id = pli.pick_list_id
+             WHERE pli.collection_item_id = ci.id AND pl.status = 'open') AS reserved
+     FROM collection_items ci
+     LEFT JOIN printings p ON p.scryfall_id = ci.scryfall_id
      WHERE ci.id = ?`,
     [itemId]
   ) as
-    | { name: string; oracle_id: string | null; set_code: string; collector_number: string }
+    | {
+        id: number
+        name: string | null
+        oracle_id: string | null
+        set_code: string | null
+        collector_number: string | null
+        reserved: number
+      }
     | undefined
-  if (!row) throw new Error(tr('err.itemNotFound'))
+  if (!row) return 'gone'
 
-  const found = await resolvePrintingInLanguage(row, lang)
+  /*
+    Copies an open pick list is holding are left alone, and not declared either.
+
+    Declaring would be safe mechanically — nothing moves — but the list has promised
+    those copies to someone, and quietly relabelling them changes what the list says it
+    is picking. Checked here rather than by catching `setItemPrinting`'s refusal so it
+    costs no Scryfall request; the refusal is still caught below, because it is the
+    invariant every other caller relies on and this must not be the one place that
+    assumes it away.
+  */
+  if (row.reserved > 0) return 'reserved'
+
+  const found = await resolvePrintingInLanguage(
+    {
+      name: row.name ?? '',
+      oracle_id: row.oracle_id,
+      set_code: row.set_code,
+      collector_number: row.collector_number
+    },
+    lang
+  )
+
   if (!found) {
-    return { ok: false, reason: `No ${lang.toUpperCase()} printing of ${row.name}.` }
+    // The print stays exactly as it is; only what language you hold it in changes. No
+    // localized name, because none was ever fetched — and inventing one would be a lie.
+    forceItemLanguage(itemId, lang)
+    return 'declared'
   }
-  // A real printing supersedes any language you had asserted for this row.
-  const survivor = setItemPrinting(itemId, found.scryfall_id)
-  forceItemLanguage(survivor, null)
-  return { ok: true, viaSearch: found.viaSearch, itemId: survivor }
+
+  try {
+    // A real printing supersedes any language you had asserted for this row.
+    const survivor = setItemPrinting(itemId, found.scryfall_id)
+    forceItemLanguage(survivor, null)
+    return 'converted'
+  } catch (err) {
+    if ((err as Error).message === tr('err.repointReserved')) return 'reserved'
+    throw err
+  }
 }

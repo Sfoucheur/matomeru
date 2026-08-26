@@ -1400,13 +1400,75 @@ export function deckCardIdentities(deckId: number, oracleIds?: string[]): DeckCa
   const filter = oracleIds
     ? ` AND dc.oracle_id IN (${oracleIds.map(() => '?').join(',')})`
     : ''
+  /*
+    The set and number of the print the entry *holds*, not the one Archidekt reports.
+
+    These two columns decide which print a language lookup asks about, and a language
+    lookup must never move an entry off the print you told it you own. Read from
+    `deck_cards` alone — as this did — an entry you had already repointed resolved
+    against Archidekt's print instead, and the answer moved it back off yours. The
+    override wins, and the synced columns are the fallback for an entry with no
+    override or a printing not cached yet.
+  */
   return getDb().all(
-    `SELECT DISTINCT dc.oracle_id, dc.set_code, dc.collector_number, dc.name
+    `SELECT DISTINCT dc.oracle_id,
+            COALESCE(p.set_code, dc.set_code)                 AS set_code,
+            COALESCE(p.collector_number, dc.collector_number) AS collector_number,
+            COALESCE(p.name, dc.name)                         AS name
      FROM deck_cards dc
+     ${DECK_OVERRIDE_JOIN}
+     LEFT JOIN printings p ON p.scryfall_id = ${DECK_PRINTING}
      WHERE dc.deck_id = ? AND dc.oracle_id IS NOT NULL${filter}
-     ORDER BY dc.name COLLATE NOCASE`,
+     ORDER BY name COLLATE NOCASE`,
     [deckId, ...(oracleIds ?? [])]
   ) as DeckCardIdentity[]
+}
+
+/** One deck entry a language can be applied to. */
+export interface DeckLanguageTarget {
+  deck_id: number
+  oracle_id: string
+  set_code: string | null
+  collector_number: string | null
+  name: string
+}
+
+/**
+ * Every deck entry a derived collection row was built from.
+ *
+ * The exact inverse of the deck branch of `ROW_SOURCES` in the collection repo: the same
+ * `label_possession`, the same print and finish expressions, the same grouping, the same
+ * `HAVING`. Written as the inverse on purpose — a row that appears in the collection and
+ * resolves to no target here is precisely the bug this exists to fix, so the two queries
+ * have to agree by construction rather than by coincidence.
+ *
+ * The print is matched exactly, not widened to the oracle id the way the deck *count*
+ * widens it. A derived row is one `GROUP BY print, finish` group; widening would reach
+ * entries belonging to other rows, which the user did not select and which get their own
+ * answer when they do.
+ */
+export function deckTargetsForPrinting(
+  scryfallId: string,
+  finish: string
+): DeckLanguageTarget[] {
+  return getDb().all(
+    `SELECT dc.deck_id                                     AS deck_id,
+            dc.oracle_id                                   AS oracle_id,
+            MAX(p.set_code)                                AS set_code,
+            MAX(p.collector_number)                        AS collector_number,
+            MAX(COALESCE(p.name, dc.name))                 AS name
+     FROM deck_cards dc
+     ${DECK_OVERRIDE_JOIN}
+     LEFT JOIN printings p ON p.scryfall_id = ${DECK_PRINTING}
+     WHERE dc.label_possession = 'owned'
+       AND dc.oracle_id IS NOT NULL
+       AND ${DECK_PRINTING} = ?
+       AND ${DECK_FINISH} = ?
+     GROUP BY dc.deck_id, dc.oracle_id
+     HAVING SUM(dc.quantity) > 0
+     ORDER BY dc.deck_id`,
+    [scryfallId, finish]
+  ) as DeckLanguageTarget[]
 }
 
 /** Scryfall ids referenced by decks that we have no cached printing for yet. */

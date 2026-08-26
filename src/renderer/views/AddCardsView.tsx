@@ -444,7 +444,7 @@ function PrintingTile({
 
       {printing.owned > 0 && (
         <span className="numeric absolute left-1.5 top-1.5 rounded bg-good px-1.5 py-0.5 text-[9px] font-bold text-ink-950">
-          {t('add.owned', { count: printing.owned })}
+          {t.p('add.owned', printing.owned)}
         </span>
       )}
 

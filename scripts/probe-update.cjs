@@ -69,6 +69,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     const out = {
       open: dialog !== null,
       dot: document.querySelector('[data-field="updateDot"]') !== null,
+      // The badge used to be an unlabelled 6px dot, which reads as a stray artifact
+      // rather than as news. What it says is the point of it, so it is read here.
+      dotText: (document.querySelector('[data-field="updateDot"]')?.innerText ?? '').trim(),
+      dotTitle: document.querySelector('[data-field="updateDot"]')?.title ?? '',
       progress: bar ? bar.innerText.replace(/\\s+/g, ' ').slice(0, 60) : null
     }
     if (dialog === null) return JSON.stringify(out)
@@ -118,8 +122,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   await sleep(400)
   const dismissed = JSON.parse(await ev(READ))
   check('Later closes the dialog', dismissed.open === false)
-  check('and the dot on Settings stays, so it is still findable', dismissed.dot === true,
+  check('and the badge on Settings stays, so it is still findable', dismissed.dot === true,
     'the update became invisible')
+  /*
+    And it says which version, rather than only that there is one.
+
+    A bare gold dot next to Settings was reported as "a weird badge like it has a
+    notification" -- accurate, and unreadable. The version is the whole message, and the
+    tooltip is what a pointer finds.
+  */
+  check('and it says which version is waiting', dismissed.dotText === '9.9.9',
+    JSON.stringify({ text: dismissed.dotText }))
+  check('and carries it as a tooltip too, for the shape that has no room for it',
+    dismissed.dotTitle.includes('9.9.9'), JSON.stringify({ title: dismissed.dotTitle }))
 
   // ---- 3. a fresh renderer prompts again, dismissed or not
   await ev(`location.reload()`)

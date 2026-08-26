@@ -695,7 +695,7 @@ function PickGrid({
               <>
                 <LangChip lang={item.lang} />
                 <span className="numeric rounded bg-gold-500 px-1.5 text-[10px] font-semibold text-ink-950">
-                  {t('picks.picked', { count: item.quantity })}
+                  {t.p('picks.picked', item.quantity)}
                 </span>
                 <span className="numeric ml-auto text-[10px] text-gold-300">
                   {money(
@@ -749,12 +749,12 @@ function ConfirmDialog({
       toast(
         'success',
         `${t.p('picks.pulled', result.cardsRemoved)}${
-          result.rowsDeleted ? t('picks.pulledRows', { count: result.rowsDeleted }) : ''
+          result.rowsDeleted ? t.p('picks.pulledRows', result.rowsDeleted) : ''
         }.${
           // Said separately because it is a different fact: these copies moved
           // out of a deck into your bulk, they did not leave your possession.
           result.cardsFreedFromDecks
-            ? ` ${t('picks.freedFromDecks', { count: result.cardsFreedFromDecks })}`
+            ? ` ${t.p('picks.freedFromDecks', result.cardsFreedFromDecks)}`
             : ''
         }`
       )

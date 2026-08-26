@@ -81,7 +81,9 @@ import {
 import { loopbackOnce, whenListening } from '../src/main/services/loopback.js'
 import { chooseSets, numberVariants, parseCollectorNumber } from '../src/shared/quickEntry.js'
 import { matchingRowKeys } from '../src/main/db/repos/collection.js'
-import { setItemsLanguage } from '../src/main/services/collectionLanguage.js'
+import { applyLanguageToItem } from '../src/main/services/collectionLanguage.js'
+import { setRowLanguages } from '../src/main/services/rowLanguage.js'
+import { setCardsLanguage } from '../src/main/services/deckLanguage.js'
 import { allocateCopies, bothSidesTitle, hasTwoImages, twoSides } from '../src/shared/types.js'
 import { ownedCount, ownedCounts } from '../src/main/db/repos/collection.js'
 import {
@@ -95,6 +97,7 @@ import { shouldPrompt } from '../src/shared/types.js'
 import {
   deckBreakdown,
   deckMoves,
+  deckTargetsForPrinting,
   discoverLabelColors,
   recomputeLabelPossession,
   replaceDeckCards,
@@ -117,8 +120,10 @@ import {
 // invented here is what let a bad scope ship.
 import {
   collectionKeyScope,
+  deckLanguageScopes,
   moveScopes,
   pickListScopes,
+  rowLanguageScopes,
   scryfallScopeMany,
   withPickItems
 } from '../src/main/db/undoScopes.js'
@@ -4372,8 +4377,11 @@ async function main(): Promise<void> {
       'rarity.rare', 'rarity.bonus', 'filters.min', 'filters.max',
       'sort.rarity', 'settings.title', 'nav.settings',
       // 'finish' and the foil-treatment names stay English for the same reason
-      // 'foil' and 'etched' do: they are the words French players use.
+      // 'foil' and 'etched' do: they are the words French players use. The filter
+      // and sort labels said 'Finition' while every sentence around them said
+      // 'finish', so they were brought into line rather than left disagreeing.
       'finishPicker.finish', 'bulk.setFinish', 'add.finish',
+      'filters.finish', 'sort.finish',
       // French players say 'proxy' and 'proxies', like 'foil'.
       'proxy.badge', 'proxy.filter',
       // The default backup folder is the app's own name, which does not translate.
@@ -4428,12 +4436,61 @@ async function main(): Promise<void> {
     )
 
     check('interpolation fills named holes', t('fr', 'common.of', { shown: 3, total: 9 }) === '3 sur 9')
-    check(
-      'plurals pick the right form',
-      tp('en', 'test.plural', 1) !== tp('en', 'test.plural', 2) ||
-        // No plural pairs exist yet; the helper still must not crash.
-        true
-    )
+    /*
+      Plural selection, per language, on a pair that exists.
+
+      What was here compared `test.plural` -- a key in neither dictionary -- and then said
+      `|| true`, so it could not fail. Twelve pairs exist, and one of them is asserted now.
+
+      The zero is the interesting case and the reason this is per language: English takes
+      the plural for none ("Staged 0 cards"), French takes the singular ("0 carte
+      préparée"). A selector that only asks `count === 1` gets French wrong at zero.
+    */
+    check('English pluralises one and not the other',
+      tp('en', 'coll.staged', 1) === 'Staged 1 card' &&
+        tp('en', 'coll.staged', 3) === 'Staged 3 cards',
+      `${tp('en', 'coll.staged', 1)} / ${tp('en', 'coll.staged', 3)}`)
+    check('and French agrees, including in the singular',
+      tp('fr', 'coll.staged', 1) === '1 carte préparée' &&
+        tp('fr', 'coll.staged', 3) === '3 cartes préparées',
+      `${tp('fr', 'coll.staged', 1)} / ${tp('fr', 'coll.staged', 3)}`)
+    check('English takes the plural for none, as English does',
+      tp('en', 'coll.staged', 0) === 'Staged 0 cards', tp('en', 'coll.staged', 0))
+    check('and French takes the singular for none, as French does',
+      tp('fr', 'coll.staged', 0) === '0 carte préparée', tp('fr', 'coll.staged', 0))
+
+    /*
+      And no French string hedges a plural with "(s)".
+
+      "{count} carte(s)" is the single most machine-translated thing a French UI can say,
+      and two of them were ungrammatical either way -- "{count} exemplaire(s) a quitté ce
+      deck" agrees with neither reading. The plural pairs above are the way to say it; this
+      is what stops the hedge coming back.
+    */
+    {
+      const hedged = Object.entries(frDict as Record<string, string>)
+        .filter(([, value]) => /\(s\)|\(e\)|\(es\)/.test(value))
+        .map(([key]) => key)
+      check('no French string hedges a plural with "(s)"',
+        hedged.length === 0, `${hedged.length}: ${hedged.slice(0, 6).join(', ')}`)
+    }
+
+    /*
+      And no accent was written through the wrong codec.
+
+      Three strings shipped mis-encoded -- "SystÃ¨me suit Windows", "Ã©crans OLED", and
+      "Change lâinterface" -- which is UTF-8 read back as if it were cp1252. It is invisible
+      in a diff and unmissable on screen. The tell is a capital A-tilde or A-circumflex, or a
+      lone circumflex-a, carrying a high byte behind it: no French word does that, so the
+      pattern only matches damage.
+    */
+    {
+      const mojibake = Object.entries(frDict as Record<string, string>)
+        .filter(([, value]) => /[\u00c2\u00c3\u00e2][\u0080-\u00ff\u2013-\u2122]/.test(value))
+        .map(([key]) => key)
+      check('no French string was written through the wrong codec',
+        mojibake.length === 0, mojibake.join(', '))
+    }
     check('an unknown locale falls back rather than blanking', t('en', 'nav.decks') === 'Decks')
     check(
       'system resolves against the OS language',
@@ -5007,7 +5064,7 @@ async function main(): Promise<void> {
       condition: 'GD',
       quantity: 1
     })
-    const applied = await setItemsLanguage([langRow], 'ja', () => undefined)
+    const applied = await setRowLanguages([`collection:${langRow}`], 'ja', () => undefined)
     check('applying a language repoints the row it was given',
       applied.converted === 1 && applied.failed === 0 && applied.gone === 0,
       JSON.stringify(applied))
@@ -5017,13 +5074,32 @@ async function main(): Promise<void> {
     )
     check('and the row now reports that language',
       after?.printing.lang === 'ja', JSON.stringify({ lang: after?.printing.lang }))
+    /*
+      And the row is on the *same* print, in the other language.
+
+      The assertion this whole path was missing. Language application used to fall back to
+      searching every printing of the card and taking the closest, so a row could come
+      back on a print from another set entirely -- a card its owner does not hold. Asserted
+      on the row rather than on the two fixtures: comparing the fixtures to each other only
+      proves what the recording contains, and would pass however wrong the code got.
+    */
+    const started = getPrinting(en.scryfall_id)
+    check('and on the same print it started on, not another one in that language',
+      after?.printing.set_code === started?.set_code &&
+        after?.printing.collector_number === started?.collector_number &&
+        after?.scryfall_id !== en.scryfall_id,
+      JSON.stringify({
+        from: `${started?.set_code} ${started?.collector_number} (${started?.lang})`,
+        to: `${after?.printing.set_code} ${after?.printing.collector_number} ` +
+          `(${after?.printing.lang})`
+      }))
 
     /*
       A row already in that language. Worth stating: the repoint is a merge into whatever
       row already holds the target printing, and if that lookup did not exclude the row
       itself, asking for the language a row is already in would delete it.
     */
-    const already = await setItemsLanguage([langRow], 'ja', () => undefined)
+    const already = await setRowLanguages([`collection:${langRow}`], 'ja', () => undefined)
     check('asking for the language a row already has changes nothing',
       already.converted === 1 && already.failed === 0 && already.gone === 0,
       JSON.stringify(already))
@@ -5037,9 +5113,20 @@ async function main(): Promise<void> {
       on now, so this is reachable rather than theoretical -- and it must read as "gone",
       not as a failure, or a successful run would look broken.
     */
-    const stale = await setItemsLanguage([999_999_999], 'ja', () => undefined)
-    check('an id that names nothing is reported as gone, not as a failure',
-      stale.gone === 1 && stale.failed === 0 && stale.converted === 0,
+    const stale = await setRowLanguages(
+      ['collection:999999999', `deck:${crypto.randomUUID()}:nonfoil`, 'not-a-key'],
+      'ja',
+      () => undefined
+    )
+    /*
+      Three ways of naming nothing, and none of them is a failure.
+
+      A stale collection id, a deck group that is no longer there, and a key that does not
+      parse at all. A selection outlives the page it was made on, so all three are
+      reachable rather than theoretical -- and a run that met one must not look broken.
+    */
+    check('keys that name nothing are reported as gone, not as failures',
+      stale.gone === 3 && stale.failed === 0 && stale.converted === 0,
       JSON.stringify(stale))
 
     /*
@@ -5054,12 +5141,27 @@ async function main(): Promise<void> {
     })
     const guardList = createPickList('Language refusal')
     addToPickList(guardList, { kind: 'collection', itemId: heldRow }, 1)
-    const refused = await setItemsLanguage([heldRow], 'ja', () => undefined)
-    check('a row an open pick list is holding is not repointed',
-      refused.failed === 1 && refused.converted === 0, JSON.stringify(refused))
+    const refused = await setRowLanguages([`collection:${heldRow}`], 'ja', () => undefined)
+    /*
+      Reported as a skip rather than a failure, which is what it is: nothing broke, those
+      copies are promised to a list. It used to be counted as `failed`, which made a
+      perfectly ordinary run look like it had gone wrong.
+    */
+    check('a row an open pick list is holding is skipped, not failed',
+      refused.reserved === 1 && refused.failed === 0 && refused.converted === 0,
+      JSON.stringify(refused))
     check('and it is still the printing it was',
       getItem(heldRow)?.scryfall_id === en.scryfall_id,
       JSON.stringify({ now: getItem(heldRow)?.scryfall_id }))
+    /*
+      And it was not quietly declared instead.
+
+      Declaring would move nothing, so it looks harmless -- but the list has promised
+      those copies to someone, and relabelling them changes what it says it is picking.
+    */
+    check('and it was not declared either, so the list still says what it did',
+      getItem(heldRow)?.language_forced === false,
+      JSON.stringify({ forced: getItem(heldRow)?.language_forced }))
     db.run('DELETE FROM pick_lists WHERE id = ?', [guardList])
     db.run('DELETE FROM collection_items WHERE id = ?', [heldRow])
 
@@ -5068,10 +5170,306 @@ async function main(): Promise<void> {
     const another = addToCollection({
       scryfall_id: en.scryfall_id, finish: 'etched', condition: 'HP', quantity: 1
     })
-    await setItemsLanguage([another], 'ja', (event) => seen.push(event.done))
+    const jobs = new Set<string>()
+    await setRowLanguages([`collection:${another}`], 'ja', (event) => {
+      seen.push(event.done)
+      jobs.add(event.job)
+    })
     check('progress is reported as it goes, and finishes',
       seen.length >= 2 && seen[0] === 0 && seen[seen.length - 1] === 1,
       JSON.stringify(seen))
+    /*
+      One job, whichever kinds of row were selected.
+
+      The job name is the progress bar's identity and the throttle's key, and the bar
+      hides on the first `finished` it sees -- so a run that reported its deck half under
+      a second name would hide the bar halfway through its own work.
+    */
+    check('and as one job, because it was one action',
+      jobs.size === 1 && jobs.has('collection-language'),
+      [...jobs].join(', '))
+  }
+
+  /*
+    Setting a language from the Collection screen, on both kinds of row.
+
+    The Collection screen lists copies you entered and copies sleeved in a synced deck as
+    one list. The action behind it took numeric ids, a sleeved row has none, and every one
+    of them was dropped between the selection and the call -- so selecting everything and
+    setting a language left the sleeved cards untouched and reported success. Nothing here
+    existed before, which is why nobody noticed.
+  */
+  section('Set language across a mixed selection')
+
+  if (en && ja) {
+    const langDeckA = upsertDeck({
+      external_id: 'verify-lang-a',
+      name: 'Language A',
+      format: 'commander',
+      owner_username: 'verify',
+      url: 'https://archidekt.com/decks/verify-lang-a',
+      external_updated_at: null,
+      last_synced_at: new Date(0).toISOString(),
+      is_private: false,
+      is_unlisted: false,
+      raw_json: '{}'
+    })
+    const langDeckB = upsertDeck({
+      external_id: 'verify-lang-b',
+      name: 'Language B',
+      format: 'commander',
+      owner_username: 'verify',
+      url: 'https://archidekt.com/decks/verify-lang-b',
+      external_updated_at: null,
+      last_synced_at: new Date(0).toISOString(),
+      is_private: false,
+      is_unlisted: false,
+      raw_json: '{}'
+    })
+
+    /*
+      A print with no collector number, for the case where no version exists.
+
+      The resolver answers null without a request when it has no set and number to ask
+      about, which is the same null a 404 produces -- so the declare path is exercised
+      exactly, offline, and without making the recording carry a 404 for a card that only
+      exists inside this suite.
+    */
+    const noNumber = 'verify-lang-nonumber'
+    getDb().run(
+      `INSERT INTO printings
+         (scryfall_id, oracle_id, name, lang, set_code, set_name, collector_number,
+          rarity, layout, fetched_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(scryfall_id) DO NOTHING`,
+      [noNumber, 'verify-lang-oracle', 'Verify Untranslatable', 'en', 'tvfy',
+        'Verify Tokens', '', 'common', 'normal', new Date(0).toISOString()]
+    )
+
+    const enPrinting = getPrinting(en.scryfall_id)
+    const deckCard = (
+      scryfallId: string,
+      oracleId: string,
+      setCode: string | null,
+      number: string | null,
+      name: string
+    ): DeckCardUpsert => ({
+      scryfall_id: scryfallId,
+      oracle_id: oracleId,
+      quantity: 1,
+      finish: 'nonfoil',
+      categories: [],
+      in_maindeck: true,
+      name,
+      lang: 'en',
+      set_code: setCode,
+      collector_number: number,
+      rarity: 'common',
+      image_uri_small: null,
+      label: 'Have it,#4CAF50'
+    })
+
+    // The same card in both decks, so "every deck holding it" is a real question.
+    const boltOracle = enPrinting?.oracle_id ?? 'verify-bolt-oracle'
+    replaceDeckCards(langDeckA, [
+      deckCard(en.scryfall_id, boltOracle, enPrinting?.set_code ?? null,
+        enPrinting?.collector_number ?? null, enPrinting?.name ?? 'Bolt'),
+      deckCard(noNumber, 'verify-lang-oracle', 'tvfy', '', 'Verify Untranslatable')
+    ])
+    replaceDeckCards(langDeckB, [
+      deckCard(en.scryfall_id, boltOracle, enPrinting?.set_code ?? null,
+        enPrinting?.collector_number ?? null, enPrinting?.name ?? 'Bolt')
+    ])
+    /*
+      Marked owned by hand rather than through `recomputeLabelPossession`.
+
+      That function is global -- it walks every deck against a colour map -- so calling it
+      here would rewrite the possession of fixtures other sections are still asserting on.
+      A check that quietly moves another check's ground is worse than no check.
+    */
+    getDb().run(
+      `UPDATE deck_cards SET label_possession = 'owned' WHERE deck_id IN (?,?)`,
+      [langDeckA, langDeckB]
+    )
+
+    const deckRows = queryCollection(filters({}), 'usd', 500, 0).rows.filter(
+      (row) => row.source === 'deck'
+    )
+    check('the sleeved rows show up in the collection at all',
+      deckRows.length >= 2, `${deckRows.length} derived rows`)
+
+    /*
+      Every derived row resolves back to the deck entries it was built from.
+
+      The two queries are inverses of each other by construction, and this is the coupling
+      that matters: a row that appears in the list and answers with no target here is a row
+      the action would skip -- which is the bug, exactly.
+    */
+    const unresolvable = deckRows.filter(
+      (row) => deckTargetsForPrinting(row.scryfall_id, row.finish).length === 0
+    )
+    check('and every one of them resolves back to a deck entry',
+      unresolvable.length === 0,
+      unresolvable.map((row) => `${row.printing.name} ${row.finish}`).join(', '))
+
+    // ---- a sleeved row, converted, in both decks that hold it
+    const boltKey = `deck:${en.scryfall_id}:nonfoil`
+    const converted = await setRowLanguages([boltKey], 'ja', () => undefined)
+    check('a sleeved row is applied rather than skipped',
+      converted.converted === 1 && converted.failed === 0 && converted.gone === 0,
+      JSON.stringify(converted))
+    check('and in every deck holding it, not just one',
+      converted.decks === 2, JSON.stringify({ decks: converted.decks }))
+    const overrides = getDb().all(
+      `SELECT deck_id, scryfall_id, lang, forced_lang FROM deck_card_overrides
+       WHERE oracle_id = ? ORDER BY deck_id`,
+      [boltOracle]
+    ) as { deck_id: number; scryfall_id: string; lang: string; forced_lang: string | null }[]
+    check('the override names the printing in that language',
+      overrides.length === 2 && overrides.every((o) => o.scryfall_id === ja.scryfall_id),
+      JSON.stringify(overrides))
+    const jaPrinting = getPrinting(ja.scryfall_id)
+    check('and it is the same print it was on, not another one in that language',
+      jaPrinting?.set_code === enPrinting?.set_code &&
+        jaPrinting?.collector_number === enPrinting?.collector_number,
+      JSON.stringify({
+        from: `${enPrinting?.set_code} ${enPrinting?.collector_number}`,
+        to: `${jaPrinting?.set_code} ${jaPrinting?.collector_number}`
+      }))
+
+    // ---- and one with no version in that language: the print stays, the language is kept
+    const noNumberRow = addToCollection({
+      scryfall_id: noNumber,
+      finish: 'nonfoil',
+      condition: 'NM',
+      quantity: 1
+    })
+    const declared = await setRowLanguages(
+      [`collection:${noNumberRow}`, `deck:${noNumber}:nonfoil`],
+      'ja',
+      () => undefined
+    )
+    check('a print with no version in that language is declared, not moved',
+      declared.declared === 2 && declared.converted === 0 && declared.failed === 0,
+      JSON.stringify(declared))
+    const declaredRow = getItem(noNumberRow)
+    check('the row keeps the print it was on',
+      declaredRow?.scryfall_id === noNumber, JSON.stringify({ now: declaredRow?.scryfall_id }))
+    check('and reads in the language you asked for, marked as yours',
+      declaredRow?.printing.lang === 'ja' && declaredRow?.language_forced === true,
+      JSON.stringify({
+        lang: declaredRow?.printing.lang,
+        forced: declaredRow?.language_forced
+      }))
+    const deckDeclared = getDb().get(
+      `SELECT scryfall_id, forced_lang FROM deck_card_overrides
+       WHERE deck_id = ? AND oracle_id = ?`,
+      [langDeckA, 'verify-lang-oracle']
+    ) as { scryfall_id: string; forced_lang: string | null } | undefined
+    check('the deck entry keeps its print and records the language too',
+      deckDeclared?.scryfall_id === noNumber && deckDeclared?.forced_lang === 'ja',
+      JSON.stringify(deckDeclared))
+    /*
+      And no "language unavailable" flag was written.
+
+      That flag used to be the whole answer here: the card kept its printing and got a
+      warning badge, and its language did not change. Declaring says the same thing about
+      Scryfall while also recording what you actually hold, so writing both would leave the
+      screen contradicting itself.
+    */
+    const missRows = (
+      getDb().get(
+        `SELECT COUNT(*) AS n FROM deck_card_lang_requests WHERE deck_id IN (?,?)`,
+        [langDeckA, langDeckB]
+      ) as { n: number }
+    ).n
+    check('and no unavailable-language flag was left behind', missRows === 0, `${missRows} rows`)
+
+    /*
+      ---- every selected key comes back in exactly one count
+
+      Through the real select-all query, and narrowed to this section's own card by name.
+      Not the whole collection: running it unfiltered set every row in the fixture to
+      Japanese and quietly broke a price check three sections later. A check that moves
+      another check's ground is worse than no check.
+
+      The filter still returns both kinds of row -- this card sits in the collection and
+      in a deck -- which is the mixed selection the invariant is about.
+    */
+    const allKeys = matchingRowKeys(filters({ search: 'Verify Untranslatable' }), 'usd')
+      .rows.map((row) => row.key)
+    check('the select-all query returns both kinds of row for it',
+      allKeys.length === 2 &&
+        allKeys.some((k) => k.startsWith('collection:')) &&
+        allKeys.some((k) => k.startsWith('deck:')),
+      allKeys.join(' | '))
+    const everything = await setRowLanguages(allKeys, 'ja', () => undefined)
+    const tallied =
+      everything.converted + everything.declared + everything.reserved +
+      everything.gone + everything.failed
+    /*
+      The invariant, and the point of the whole change.
+
+      Not "most rows worked" but "every row was answered for". Dropping a kind of row on
+      the floor is unrepresentable if this holds, and it is what did not hold before: the
+      sleeved rows were neither applied nor counted.
+    */
+    check('every selected row is accounted for, whichever kind it is',
+      tallied === allKeys.length,
+      JSON.stringify({ keys: allKeys.length, ...everything }))
+
+    // ---- two prints of one card in one deck: the first wins, and both are answered for
+    const otherPrint = getDb().get(
+      `SELECT scryfall_id FROM printings WHERE oracle_id = ? AND scryfall_id NOT IN (?,?)
+       LIMIT 1`,
+      [boltOracle, en.scryfall_id, ja.scryfall_id]
+    ) as { scryfall_id: string } | undefined
+    if (otherPrint) {
+      const twin = getPrinting(otherPrint.scryfall_id)
+      replaceDeckCards(langDeckB, [
+        deckCard(en.scryfall_id, boltOracle, enPrinting?.set_code ?? null,
+          enPrinting?.collector_number ?? null, enPrinting?.name ?? 'Bolt'),
+        deckCard(otherPrint.scryfall_id, boltOracle, twin?.set_code ?? null,
+          twin?.collector_number ?? null, twin?.name ?? 'Bolt')
+      ])
+      getDb().run(`UPDATE deck_cards SET label_possession = 'owned' WHERE deck_id = ?`,
+        [langDeckB])
+      getDb().run('DELETE FROM deck_card_overrides WHERE oracle_id = ?', [boltOracle])
+      /*
+        Two rows, one override.
+
+        `deck_card_overrides` is keyed on (deck, card), not on the print, so two prints of
+        one card in one deck are two rows in the list and one row there. Writing the first
+        one therefore moves *both* rows onto the printing it chose -- and the second key,
+        which names a printing nothing holds any more, correctly reads as naming nothing.
+
+        Worth pinning rather than glossing: it looks like a row was skipped, and it is the
+        one case where that is the honest answer. What must not happen is the totals losing
+        it, which is what the invariant catches.
+      */
+      const twoPrints = await setRowLanguages(
+        [`deck:${en.scryfall_id}:nonfoil`, `deck:${otherPrint.scryfall_id}:nonfoil`],
+        'ja',
+        () => undefined
+      )
+      check('two prints of one card in one deck are both answered for',
+        twoPrints.converted + twoPrints.declared + twoPrints.reserved +
+          twoPrints.gone + twoPrints.failed === 2 && twoPrints.converted >= 1,
+        JSON.stringify(twoPrints))
+      check('and the second reads as naming nothing, because the first absorbed it',
+        twoPrints.gone === 1, JSON.stringify(twoPrints))
+      const survivingOverride = getDb().all(
+        'SELECT deck_id, scryfall_id FROM deck_card_overrides WHERE oracle_id = ?',
+        [boltOracle]
+      ) as { deck_id: number; scryfall_id: string }[]
+      check('and one override per deck is what is left',
+        survivingOverride.length === new Set(survivingOverride.map((o) => o.deck_id)).size,
+        JSON.stringify(survivingOverride))
+    }
+
+    // Leave nothing behind: these decks and rows are this section's own.
+    getDb().run('DELETE FROM decks WHERE id IN (?,?)', [langDeckA, langDeckB])
+    getDb().run('DELETE FROM collection_items WHERE scryfall_id = ?', [noNumber])
   }
 
   section('Finishes: a foil-only printing can still be added')
@@ -5605,12 +6003,85 @@ async function main(): Promise<void> {
         await asyncRoundTrip('a language across several rows (real scopes)', () =>
           undoableAsync(
             'undo.bulkSetLanguage',
-            withPickItems(wholeTable('collection_items')),
-            () => setItemsLanguage([langA], 'ja', () => undefined)
+            // The real builder, not a copy of it: a scope that drifts from the handler's
+            // is exactly the failure this round trip exists to catch.
+            rowLanguageScopes(),
+            () => setRowLanguages([`collection:${langA}`], 'ja', () => undefined)
           )
         )
         db.run('DELETE FROM collection_items WHERE condition = ? AND scryfall_id IN (?, ?)',
           ['GD', en.scryfall_id, ja.scryfall_id])
+
+        /*
+          And the same action reaching a deck.
+
+          This is the half the scope had never covered, because until now the action could
+          not reach a deck at all. Two tables are in play and both are easy to forget:
+          `deck_card_overrides`, which the write lands in, and `deck_card_lang_requests`,
+          which it *deletes* from -- so an undo that does not capture the second cannot put
+          back a flag that was there before. Drop either from `rowLanguageScopes` and the
+          fingerprint below fails.
+        */
+        const undoDeck = upsertDeck({
+          external_id: 'verify-undo-lang',
+          name: 'Undo Language',
+          format: 'commander',
+          owner_username: 'verify',
+          url: 'https://archidekt.com/decks/verify-undo-lang',
+          external_updated_at: null,
+          last_synced_at: new Date(0).toISOString(),
+          is_private: false,
+          is_unlisted: false,
+          raw_json: '{}'
+        })
+        const undoPrinting = getPrinting(en.scryfall_id)
+        const undoOracle = undoPrinting?.oracle_id ?? 'verify-undo-oracle'
+        replaceDeckCards(undoDeck, [
+          {
+            scryfall_id: en.scryfall_id,
+            oracle_id: undoOracle,
+            quantity: 1,
+            finish: 'nonfoil',
+            categories: [],
+            in_maindeck: true,
+            name: undoPrinting?.name ?? 'Bolt',
+            lang: 'en',
+            set_code: undoPrinting?.set_code ?? null,
+            collector_number: undoPrinting?.collector_number ?? null,
+            rarity: 'common',
+            image_uri_small: null,
+            label: 'Have it,#4CAF50'
+          }
+        ])
+        db.run(`UPDATE deck_cards SET label_possession = 'owned' WHERE deck_id = ?`, [undoDeck])
+        // A flag already standing, so the undo has something to put back rather than
+        // only something to remove.
+        db.run(
+          `INSERT INTO deck_card_lang_requests (deck_id, oracle_id, requested_lang, created_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(deck_id, oracle_id) DO NOTHING`,
+          [undoDeck, undoOracle, 'de', new Date(0).toISOString()]
+        )
+        await asyncRoundTrip('a language reaching a deck row (real scopes)', () =>
+          undoableAsync('undo.bulkSetLanguage', rowLanguageScopes(), () =>
+            setRowLanguages([`deck:${en.scryfall_id}:nonfoil`], 'ja', () => undefined)
+          )
+        )
+
+        /*
+          And the deck screen's own version of the action.
+
+          It writes one more thing than its scopes admitted: the language it was asked for
+          is remembered on the deck row itself, to preselect the menu next time. `decks` is
+          in the fingerprint, but no round trip had ever run this action, so an undo that
+          left `default_lang` changed went unnoticed for as long as the feature existed.
+        */
+        await asyncRoundTrip('a deck language apply (real scopes)', () =>
+          undoableAsync('undo.setDeckLanguage', deckLanguageScopes(undoDeck), () =>
+            setCardsLanguage(undoDeck, [undoOracle], 'ja', () => undefined)
+          )
+        )
+        db.run('DELETE FROM decks WHERE id = ?', [undoDeck])
       }
       roundTrip('an add (real scopes)', () =>
         undoable(

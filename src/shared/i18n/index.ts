@@ -73,6 +73,14 @@ export function tp(
   count: number,
   vars?: Vars
 ): string {
-  const key = `${base}_${count === 1 ? 'one' : 'other'}` as TranslationKey
+  /*
+    Which form counts as singular is a fact about the language, not about the number.
+
+    English takes the plural for none -- "0 cards" -- and French takes the singular --
+    "0 carte". Asking only `count === 1` is right for English and made every French zero
+    read "0 cartes préparées", across all twelve plural pairs.
+  */
+  const singular = locale === 'fr' ? count === 0 || count === 1 : count === 1
+  const key = `${base}_${singular ? 'one' : 'other'}` as TranslationKey
   return t(locale, key, { count, ...vars })
 }

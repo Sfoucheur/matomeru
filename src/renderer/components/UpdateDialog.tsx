@@ -132,15 +132,48 @@ export default function UpdateDialog({
   )
 }
 
-/** The dot on the Settings entry. Small on purpose: present, not shouting. */
-export function UpdateDot(): React.ReactElement | null {
+/**
+ * "There is a newer version", on the Settings entry.
+ *
+ * It was a bare 6px dot, `aria-hidden`, with no tooltip — so it was read as a stray
+ * artifact rather than as news, and the only thing that explained it was on a screen you
+ * had to open first. It says the version now.
+ *
+ * Two shapes, because it has two homes. In the sidebar there is room for the number, and
+ * the number is the whole message. In the Settings tab strip there is not, so it stays a
+ * dot next to a tab that is one click away from the panel that explains it — and carries
+ * the same tooltip either way.
+ *
+ * `data-field="updateDot"` stays on both: a live check finds the indicator by that handle,
+ * and it names what the element is for rather than what it looks like.
+ */
+export function UpdateBadge({
+  variant = 'label'
+}: {
+  variant?: 'label' | 'dot'
+}): React.ReactElement | null {
+  const t = useT()
   const update = useApp((s) => s.updateState)
-  if (update?.available === null || update === null) return null
+  if (update === null || update.available === null) return null
+  const title = t('updates.available', { version: update.available.version })
+
+  if (variant === 'dot') {
+    return (
+      <span
+        className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-gold-400"
+        data-field="updateDot"
+        title={title}
+      />
+    )
+  }
   return (
     <span
-      className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-gold-400"
+      className="numeric ml-auto shrink-0 rounded bg-gold-500 px-1.5 py-0.5 text-[10px]
+        font-bold leading-none text-ink-950"
       data-field="updateDot"
-      aria-hidden="true"
-    />
+      title={title}
+    >
+      {update.available.version}
+    </span>
   )
 }

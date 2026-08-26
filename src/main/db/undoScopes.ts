@@ -184,3 +184,39 @@ export function deckOverrideScopes(deckId: number): UndoScope[] {
     { table: 'deck_card_lang_requests', where: 'deck_id = ?', params: [deckId] }
   ]
 }
+
+/**
+ * The same, plus the deck row itself.
+ *
+ * Applying a language remembers it on the deck as the one to preselect next time —
+ * `decks.default_lang` — which is outside the scopes above, so undo left it changed.
+ * `decks` is in the undo fingerprint, but no round trip had ever run this action, so
+ * nothing caught it.
+ */
+export function deckLanguageScopes(deckId: number): UndoScope[] {
+  return [...deckOverrideScopes(deckId), { table: 'decks', where: 'id = ?', params: [deckId] }]
+}
+
+/**
+ * Everything setting a language on a Collection selection can touch.
+ *
+ * Whole tables, and it has to be. `collection_items` was already whole here because the
+ * printings these rows land on come back from Scryfall: a scope built from the arguments
+ * covers where a row started and not where it ends up, and narrowing it leaves rows
+ * behind on their new printings. The two deck tables are whole for a second reason —
+ * which decks are involved is the answer to a query, not something the row keys say, so
+ * recomputing it here to build a narrow scope would risk disagreeing with the service
+ * and losing a deck's change silently.
+ *
+ * `deck_card_lang_requests` is here even though this path never writes a miss: declaring
+ * a language *deletes* one, and undo cannot put a pre-existing flag back if the table was
+ * never captured. `decks` is deliberately absent, because a Collection action has no
+ * business setting a deck's preferred language and this one does not.
+ */
+export function rowLanguageScopes(): UndoScope[] {
+  return withPickItems(
+    wholeTable('collection_items'),
+    wholeTable('deck_card_overrides'),
+    wholeTable('deck_card_lang_requests')
+  )
+}

@@ -22,13 +22,18 @@ import type {
   PickSource,
   Rarity
 } from '@shared/types'
-import { t } from '@shared/i18n/index'
+import { t, tp } from '@shared/i18n/index'
 import type { TranslationKey } from '@shared/types'
 import { getLocale } from './settings.js'
 
 /** Localised message, resolved at throw time from the stored locale. */
 function tr(key: TranslationKey, vars?: Record<string, string | number>): string {
   return t(getLocale(), key, vars)
+}
+
+/** The same, for a message whose noun has to agree with a count. */
+function trp(base: string, count: number, vars?: Record<string, string | number>): string {
+  return tp(getLocale(), base, count, vars)
 }
 
 /**
@@ -349,7 +354,7 @@ export function setPickItemQuantity(pickItemId: number, quantity: number): void 
   if (source) {
     const available = availableFor(source, pickItemId)
     if (quantity > available) {
-      throw new Error(tr('err.onlyAvailable', { count: available }))
+      throw new Error(trp('err.onlyAvailable', available))
     }
   }
   db.run('UPDATE pick_list_items SET quantity = ? WHERE id = ?', [quantity, pickItemId])

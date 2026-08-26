@@ -20,7 +20,7 @@ import StatsView from './views/StatsView'
 import SettingsView from './views/SettingsView'
 import CardDetailModal from './components/CardDetailModal'
 import BackupDialog from './components/BackupDialog'
-import UpdateDialog, { UpdateDot } from './components/UpdateDialog'
+import UpdateDialog, { UpdateBadge } from './components/UpdateDialog'
 
 import { shouldPrompt } from '@shared/types'
 import type { TranslationKey } from '@shared/i18n/index'
@@ -276,6 +276,7 @@ function Sidebar({
   onSelect: (view: ViewName) => void
 }): React.ReactElement {
   const t = useT()
+  const hasUpdate = useApp((s) => s.updateState?.available != null)
   return (
     <aside className="flex w-52 shrink-0 flex-col border-r border-ink-800 bg-ink-950">
       <div className="flex items-center gap-2.5 px-4 py-4">
@@ -312,10 +313,17 @@ function Sidebar({
               )}
               <span className={active ? 'text-gold-400' : ''}>{item.icon}</span>
               <span className="flex-1">{t(item.label)}</span>
-              {item.view === 'settings' && <UpdateDot />}
-              <span className="text-[10px] text-ink-600 opacity-0 transition-opacity group-hover:opacity-100">
-                Alt{index + 1}
-              </span>
+              {item.view === 'settings' && <UpdateBadge />}
+              {/*
+                The shortcut hint gives way to the badge. Both want the same end of a
+                208px row, and "Paramètres 0.3.1 Alt7" does not fit in it — one is news,
+                the other is a reminder you only need while pointing at the row anyway.
+              */}
+              {!(item.view === 'settings' && hasUpdate) && (
+                <span className="text-[10px] text-ink-600 opacity-0 transition-opacity group-hover:opacity-100">
+                  Alt{index + 1}
+                </span>
+              )}
             </button>
           )
         })}

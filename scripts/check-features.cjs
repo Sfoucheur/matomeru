@@ -1668,23 +1668,26 @@ async function main() {
   await wait(900)
   const rowZoom = JSON.parse(
     await evaluate(`(async () => {
-      const trigger = [...document.querySelectorAll('button')].find(
-        (b) => b.className.includes('cursor-zoom-in') && b.querySelector('img, div')
-      )
+      // By its handle, not by its styling: this used to look for cursor-zoom-in in a
+      // class list, which is the same coupling that broke four checks when .panel
+      // became .panel-floating. (No backticks in here -- this is inside a template
+      // literal, and one would end it.)
+      const trigger = document.querySelector('[data-action="zoomArt"]')
       if (!trigger) return JSON.stringify({ error: 'no zoomable thumbnail in a row' })
       const cursor = getComputedStyle(trigger).cursor
       trigger.click()
       await new Promise((r) => setTimeout(r, 700))
       const overlay = document.querySelector('[aria-label], .fixed')
-      const big = [...document.querySelectorAll('img')].filter(
-        (i) => i.getBoundingClientRect().width > 200
+      // Excluding the hover preview: it is a 240px card too, and counting it would make
+      // this read as "the closer look is still open" whenever a pointer rested on a row.
+      const wide = () => [...document.querySelectorAll('img')].filter(
+        (i) => i.getBoundingClientRect().width > 200 && !i.closest('[data-hover-preview]')
       ).length
+      const big = wide()
       // Escape closes it, as in the detail dialog.
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       await new Promise((r) => setTimeout(r, 500))
-      const stillBig = [...document.querySelectorAll('img')].filter(
-        (i) => i.getBoundingClientRect().width > 200
-      ).length
+      const stillBig = wide()
       return JSON.stringify({ cursor, big, stillBig, overlay: !!overlay })
     })()`)
   )

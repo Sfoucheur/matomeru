@@ -60,7 +60,7 @@ export default function DeckBulkBar({
     >
       <div className="flex flex-wrap items-center gap-2 px-5 py-2 text-xs">
         <span className="text-ink-300">
-          {t('common.selected', { count })}
+          {t.p('common.selected', count)}
         </span>
 
         {/*
@@ -129,6 +129,7 @@ export default function DeckBulkBar({
 
         <button
           onClick={onClear}
+          data-action="clearSelection"
           className="ml-auto flex items-center gap-1 text-[11px] text-ink-400 transition-colors hover:text-ink-100"
         >
           <X size={12} />

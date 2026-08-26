@@ -237,7 +237,7 @@ export default function PrintingPicker({
                     <RarityPip rarity={printing.rarity} />
                     {printing.owned > 0 && (
                       <span className="numeric rounded bg-good/15 px-1.5 py-0.5 text-[9px] text-good">
-                        {t('printing.own', { count: printing.owned })}
+                        {t.p('printing.own', printing.owned)}
                       </span>
                     )}
                     <span className="numeric w-14 shrink-0 text-right text-[10px] text-gold-300">

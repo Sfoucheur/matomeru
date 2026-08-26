@@ -370,6 +370,45 @@ function rowKey(
   return source === 'collection' ? `collection:${itemId}` : `deck:${scryfallId}:${finish}`
 }
 
+/** What a key names: a row you entered, or a group of deck entries. */
+export type RowRef =
+  | { source: 'collection'; itemId: number }
+  | { source: 'deck'; scryfallId: string; finish: string }
+
+/**
+ * `rowKey` read back.
+ *
+ * The inverse belongs next to the function it inverts, for the reason the comment above
+ * gives: the two have to agree, and a selection that quietly matches nothing is what
+ * disagreement looks like.
+ *
+ * Split on the first and last colon rather than every colon: a finish is a bare word
+ * today, but splitting on all of them would turn one containing a colon into a key that
+ * silently names something else. Anything that does not parse returns null, and the
+ * caller counts it as naming nothing rather than guessing at it.
+ */
+export function parseRowKey(key: string): RowRef | null {
+  const cut = key.indexOf(':')
+  if (cut < 0) return null
+  const source = key.slice(0, cut)
+  const rest = key.slice(cut + 1)
+
+  if (source === 'collection') {
+    // Not `parseInt`: that reads "12abc" as 12, and an id is either a number or not.
+    if (!/^\d+$/.test(rest)) return null
+    return { source: 'collection', itemId: Number(rest) }
+  }
+  if (source === 'deck') {
+    const split = rest.lastIndexOf(':')
+    if (split <= 0) return null
+    const scryfallId = rest.slice(0, split)
+    const finish = rest.slice(split + 1)
+    if (!scryfallId || !finish) return null
+    return { source: 'deck', scryfallId, finish }
+  }
+  return null
+}
+
 function toCollectionRow(row: JoinedRow): CollectionRow {
   const source = row.source === 'deck' ? 'deck' : 'collection'
   const row_printing = rowToPrinting(row)

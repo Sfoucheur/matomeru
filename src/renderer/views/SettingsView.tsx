@@ -25,7 +25,7 @@ import { guard, useApp } from '../store/app'
 import type { ViewProps } from '../App'
 import { Button, Select } from '../components/primitives'
 import LabelPossessionPanel from '../components/LabelPossessionPanel'
-import { UpdateDot } from '../components/UpdateDialog'
+import { UpdateBadge } from '../components/UpdateDialog'
 import type { BackupStatus, UpdateState } from '@shared/types'
 import { count, megabytes, relativeTime } from '../lib/format'
 
@@ -131,7 +131,7 @@ export default function SettingsView(_props: ViewProps): React.ReactElement {
                 }`}
               >
                 {t(entry.label)}
-                {entry.id === 'about' && <UpdateDot />}
+                {entry.id === 'about' && <UpdateBadge variant="dot" />}
               </button>
             )
           })}
@@ -890,11 +890,14 @@ function BoosterDataPanel(): React.ReactElement {
       toast(
         result.failed.length ? 'warn' : 'success',
         result.failed.length
-          ? t('boosters.loadAllFailed', {
+          ? t.p('boosters.loadAllFailed', result.sets, {
               sets: result.sets,
               failed: result.failed.join(', ')
             })
-          : t('boosters.loadAllDone', { sets: result.sets, skipped: result.skipped })
+          : t.p('boosters.loadAllDone', result.sets, {
+              sets: result.sets,
+              skipped: result.skipped
+            })
       )
       if (result.noData.length) {
         // Worth saying out loud: these are settled, not pending, so they will not
@@ -952,7 +955,7 @@ function BoosterDataPanel(): React.ReactElement {
           {sets.map((set) => (
             <span
               key={set.set_code}
-              title={t('boosters.setCards', { count: set.cards })}
+              title={t.p('boosters.setCards', set.cards)}
               className={`numeric rounded px-1.5 py-0.5 text-[10px] uppercase ${
                 set.fetched ? 'bg-good/15 text-good' : 'bg-ink-800 text-ink-400'
               }`}

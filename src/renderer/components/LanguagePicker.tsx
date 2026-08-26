@@ -49,7 +49,7 @@ export default function LanguagePicker({
       </button>
 
       <Popover open={open} onClose={() => setOpen(false)} trigger={trigger} width={196}>
-        <p className="px-2 pb-1 pt-1.5 text-[10px] leading-relaxed text-ink-500">{hint}</p>
+        <p className="px-2 pb-1 pt-1.5 text-[10px] leading-snug text-ink-500">{hint}</p>
         <div className="max-h-64 overflow-y-auto">
           {LANGUAGES.map((lang) => (
             <button

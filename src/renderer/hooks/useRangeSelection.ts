@@ -39,9 +39,11 @@ export function useRangeSelection<K>(ordered: readonly SelectableItem<K>[]): {
   clear: () => void
   /** Set the selection outright — for a select-all that reaches past what is drawn. */
   replace: (keys: readonly K[]) => void
-  /** Everything selectable that is currently drawn. */
+  /** Adds everything selectable that is currently drawn to the selection. */
   selectAllShown: () => void
-  /** Drop everything the predicate rejects, for callers that prune on a requery. */
+  /** Removes everything currently drawn from the selection, keeping the rest. */
+  dropShown: () => void
+  /** Drop everything the predicate rejects, for callers pruning what no longer exists. */
   keep: (predicate: (key: K) => boolean) => void
 } {
   const [selected, setSelected] = useState<Set<K>>(() => new Set())
@@ -111,12 +113,45 @@ export function useRangeSelection<K>(ordered: readonly SelectableItem<K>[]): {
     anchor.current = keys.length > 0 ? keys[keys.length - 1] : null
   }, [])
 
+  /*
+    Adds, rather than replaces.
+
+    It used to replace, which was right while a selection could not outlive a filter: what
+    was drawn was all there was. Now that a selection is built up across filters, ticking a
+    column header must not discard what was gathered under another one -- the header says
+    "everything on this page", not "only this page".
+  */
   const selectAllShown = useCallback(() => {
     const selectable = orderedRef.current.filter((item) => item.selectable)
-    setSelected(new Set(selectable.map((item) => item.key)))
+    setSelected((current) => {
+      const next = new Set(current)
+      for (const item of selectable) next.add(item.key)
+      return next.size === current.size ? current : next
+    })
     anchor.current = selectable.length > 0 ? selectable[selectable.length - 1].key : null
   }, [])
 
+  /*
+    The other half of that header: take the shown rows out and leave the rest alone.
+
+    `clear` is still the button that empties everything, and it is the one both bulk bars
+    offer by name. Unticking a page header is a smaller statement than that.
+  */
+  const dropShown = useCallback(() => {
+    const shown = new Set(orderedRef.current.map((item) => item.key))
+    setSelected((current) => {
+      const next = new Set([...current].filter((key) => !shown.has(key)))
+      return next.size === current.size ? current : next
+    })
+    if (anchor.current !== null && shown.has(anchor.current)) anchor.current = null
+  }, [])
+
+  /*
+    Drop everything the predicate rejects — for callers pruning what no longer exists.
+
+    Deliberately not for pruning what is merely out of view: a selection outlives a filter
+    now, and the distinction between "gone" and "hidden" is the whole point of it.
+  */
   const keep = useCallback((predicate: (key: K) => boolean) => {
     setSelected((current) => {
       const next = new Set([...current].filter(predicate))
@@ -125,5 +160,5 @@ export function useRangeSelection<K>(ordered: readonly SelectableItem<K>[]): {
     if (anchor.current !== null && !predicate(anchor.current)) anchor.current = null
   }, [])
 
-  return { selected, pick, clear, replace, selectAllShown, keep }
+  return { selected, pick, clear, replace, selectAllShown, dropShown, keep }
 }

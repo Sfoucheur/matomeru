@@ -46,6 +46,7 @@ import FilterBar from '../components/FilterBar'
 import ColumnStepper from '../components/ColumnStepper'
 import CardZoom from '../components/CardZoom'
 import LanguagePicker from '../components/LanguagePicker'
+import { useCardPreview } from '../components/CardHoverPreview'
 import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import SetIcon from '../components/SetIcon'
@@ -181,7 +182,8 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     pick,
     clear: clearSelection,
     replace: replaceSelection,
-    selectAllShown
+    selectAllShown,
+    dropShown
   } = useRangeSelection(selectableRows)
 
   /*
@@ -198,24 +200,39 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   }, [rows])
 
   /*
-    The selection survives a refetch and dies with a change of question.
+    The selection outlives a filter, because the filter is how you build one.
 
-    It used to be pruned to the loaded page on every requery, which would erase a
-    select-all the instant it happened. Editing does not change which rows match, so the
-    selection stays -- that is what makes "set the finish, then the condition, then stage
-    them" work. Changing a filter asks something else, and the answer to the old question
-    should not linger.
+    This used to clear on any change of filter, on the reasoning that a filter asks a new
+    question and the old answer should not linger. That reads well and it made the useful
+    thing impossible: select everything, narrow to the one card you did not mean, take it
+    out, widen again -- thirty-nine of forty. The first keystroke used to throw the forty
+    away. Sort was already exempt for the same underlying reason, that reordering the same
+    rows is not a new question; neither is looking at fewer of them.
 
-    Sort is deliberately not part of the key: reordering the same rows is not a new
-    question, and clearing a selection because you sorted it would be its own small bug.
+    So nothing here prunes. What empties a selection now is saying so -- the Clear button
+    on the bar -- or something that makes the rows stop existing: a removal, or a language
+    change, which merges rows and so clears on its own. A key that ends up naming nothing
+    is already handled at the far end, where it is reported as `gone` rather than failed.
   */
-  const filterKey = JSON.stringify({ ...filters, sort: '', dir: '', sort2: '', dir2: '' })
-  const lastFilterKey = useRef(filterKey)
-  useEffect(() => {
-    if (lastFilterKey.current === filterKey) return
-    lastFilterKey.current = filterKey
-    clearSelection()
-  }, [filterKey, clearSelection])
+
+  /** Selectable rows on screen, and how many of them are selected. */
+  const shownSelectable = useMemo(
+    () => selectableRows.filter((row) => row.selectable).length,
+    [selectableRows]
+  )
+  const shownSelected = useMemo(
+    () => selectableRows.filter((row) => row.selectable && selected.has(row.key)).length,
+    [selectableRows, selected]
+  )
+
+  /**
+   * The selection as it really is: one key per row, both kinds.
+   *
+   * `selectedIds` below is the lossy view of the same thing, and deliberately so — most
+   * actions need a collection row. Setting a language does not, and used to be handed
+   * that lossy view, which is how it came to ignore every sleeved row without a word.
+   */
+  const selectedKeys = useMemo(() => [...selected], [selected])
 
   /** Every collection row in the selection, loaded or not. */
   const selectedIds = useMemo(
@@ -223,7 +240,10 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       [...selected]
         .map((key) => idByKey.current.get(key) ?? null)
         .filter((id): id is number => id !== null),
-    [selected]
+    // `rows` because the map it reads is a ref filled as pages arrive: a key selected
+    // before its id was known would otherwise never pick the id up. Unreachable while a
+    // selection died with its filter; reachable now that one can span several.
+    [selected, rows]
   )
 
   const selectAllMatching = async (): Promise<void> => {
@@ -396,7 +416,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       // one, and there was no way to tell how many cards had not moved.
       toast(
         'success',
-        `${t('coll.movedToDeck', { count: moved, deck: deckName })}${
+        `${t.p('coll.movedToDeck', moved, { deck: deckName })}${
           refused > 0 ? ` ${t.p('coll.moveRefused', refused)}` : ''
         }`
       )
@@ -432,7 +452,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       toast(
         'success',
         `${t.p('coll.staged', result.added)}${
-          result.capped ? t('coll.stagedCapped', { count: result.capped }) : ''
+          result.capped ? t.p('coll.stagedCapped', result.capped) : ''
         }${name ? t('coll.stagedInto', { list: name }) : '.'}`
       )
       invalidate()
@@ -498,11 +518,19 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       )}
 
       <AnimatePresence>
-        {selectedRows.length > 0 && (
+        {/*
+          On the selection, not on what is drawn.
+
+          Gated on the loaded rows, a selection whose rows the current filter excludes drew
+          no bar at all: the count was invisible, the Clear button was out of reach, and
+          both reappeared when the filter widened again.
+        */}
+        {selected.size > 0 && (
           <BulkBar
             rows={selectedRows}
             count={selected.size}
             ids={selectedIds}
+            keys={selectedKeys}
             /*
               Whether the selection reaches past what is drawn. Some actions need a whole
               row rather than an id -- staging needs a quantity, a move needs what is
@@ -542,9 +570,17 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           selected={selected}
           onPick={pick}
           selectableCount={selectableRows.filter((row) => row.selectable).length}
+          shownSelectedCount={shownSelected}
           onToggleAll={() => {
-            const selectable = selectableRows.filter((row) => row.selectable).length
-            if (selected.size === selectable) clearSelection()
+            /*
+              About the rows on screen, both ways.
+
+              This compared the whole selection against the rows on this page, which was
+              the same number while a selection could not outlive a filter and is not any
+              more. Unticking drops what is drawn and keeps the rest -- emptying the whole
+              selection is what the Clear button is for, and it says so.
+            */
+            if (shownSelected > 0 && shownSelected === shownSelectable) dropShown()
             else selectAllShown()
           }}
           sort={filters.sort}
@@ -940,6 +976,7 @@ function BulkBar({
   rows,
   count,
   ids,
+  keys,
   beyondLoaded,
   onAddToList,
   onMove,
@@ -950,8 +987,22 @@ function BulkBar({
   rows: CollectionRow[]
   /** How many rows are selected, which is not `rows.length` after a select-all. */
   count: number
-  /** Collection rows in the selection, loaded or not. What every edit applies to. */
+  /**
+   * Collection rows in the selection, loaded or not.
+   *
+   * What the edits that need a row of their own apply to: finish, condition, proxy,
+   * removal, and moving into a deck. A row sleeved in a deck mirrors Archidekt and has
+   * none of those to edit.
+   */
   ids: number[]
+  /**
+   * Every selected row, whichever kind it is, as the keys the selection is made of.
+   *
+   * Setting a language works on both — a sleeved card is a card you own, and being able
+   * to say it is the French one without opening the deck screen is the point — so that
+   * action takes these and lets the main process work out what each key names.
+   */
+  keys: string[]
   /**
    * Whether the selection reaches past the loaded page.
    *
@@ -996,24 +1047,30 @@ function BulkBar({
   const [busy, setBusy] = useState(false)
 
   const applyLanguage = async (lang: string): Promise<void> => {
-    if (ids.length === 0) return
+    if (keys.length === 0) return
     setBusy(true)
-    const result = await guard(() => window.api.collection.setLanguages(ids, lang))
+    const result = await guard(() => window.api.collection.setRowLanguages(keys, lang))
     setBusy(false)
     if (!result) return
-    const parts = [t('bulk.langSet', { count: result.converted, lang: lang.toUpperCase() })]
-    if (result.unavailable.length) {
-      parts.push(
-        t('bulk.langNoPrinting', {
-          count: result.unavailable.length,
-          lang: lang.toUpperCase()
-        })
-      )
+    const upper = lang.toUpperCase()
+    /*
+      Every outcome that happened, and none that did not.
+
+      Four of the five are ordinary, so the toast only warns when copies were skipped or
+      something actually broke. A row that kept its print and took the language is a
+      success -- it is the answer to "I own this one in French", not a shortfall.
+    */
+    const parts: string[] = []
+    if (result.converted) parts.push(t('bulk.langSet', { count: result.converted, lang: upper }))
+    if (result.declared) {
+      parts.push(t.p('bulk.langDeclared', result.declared, { lang: upper }))
     }
+    if (result.reserved) parts.push(t.p('bulk.langReserved', result.reserved))
     if (result.gone) parts.push(t('bulk.langGone', { count: result.gone }))
     if (result.failed) parts.push(t('bulk.langFailed', { count: result.failed }))
+    if (result.decks > 1) parts.push(t('bulk.langInDecks', { decks: result.decks }))
     toast(
-      result.unavailable.length || result.failed ? 'warn' : 'success',
+      result.reserved || result.failed ? 'warn' : 'success',
       `${parts.join(', ')}.`
     )
     /*
@@ -1028,7 +1085,7 @@ function BulkBar({
   const applyFinish = async (finish: Finish): Promise<void> => {
     const ok = await guard(() => window.api.collection.bulkUpdate(ids, { finish }))
     if (ok) {
-      toast('success', t('coll.setFinishDone', { count: ids.length, finish: FINISH_LABEL[finish] }))
+      toast('success', t.p('coll.setFinishDone', ids.length, { finish: FINISH_LABEL[finish] }))
       onDone()
     }
   }
@@ -1043,11 +1100,10 @@ function BulkBar({
       toast(
         'success',
         value
-          ? t('coll.setTreatmentDone', {
-              count: ids.length,
+          ? t.p('coll.setTreatmentDone', ids.length, {
               treatment: foilTreatmentLabel(value)
             })
-          : t('coll.clearedTreatment', { count: ids.length })
+          : t.p('coll.clearedTreatment', ids.length)
       )
       onDone()
     }
@@ -1060,7 +1116,7 @@ function BulkBar({
       toast(
         'success',
         proxied
-          ? t('proxy.marked', { count: ids.length })
+          ? t.p('proxy.marked', ids.length)
           : t('proxy.unmarked', { count: ids.length })
       )
       onDone()
@@ -1069,7 +1125,7 @@ function BulkBar({
   const applyCondition = async (condition: Condition): Promise<void> => {
     const ok = await guard(() => window.api.collection.bulkUpdate(ids, { condition }))
     if (ok) {
-      toast('success', t('coll.setConditionDone', { count: ids.length, condition }))
+      toast('success', t.p('coll.setConditionDone', ids.length, { condition }))
       onDone()
     }
   }
@@ -1078,11 +1134,18 @@ function BulkBar({
     if (result) {
       toast(
         result.skipped ? 'warn' : 'success',
-        `${t('coll.removedRows', { count: result.removed })}${
-          result.skipped ? t('coll.removedSkipped', { count: result.skipped }) : '.'
+        `${t.p('coll.removedRows', result.removed)}${
+          result.skipped ? t.p('coll.removedSkipped', result.skipped) : '.'
         }`
       )
-      onDone()
+      /*
+        Cleared, like the language change and for the same reason: those keys name nothing
+        now. This used to happen by itself -- the rows left the list, so the bar went with
+        them -- which stopped being true when the bar started following the selection
+        rather than what is drawn.
+      */
+      invalidate()
+      onClear()
     }
   }
 
@@ -1096,7 +1159,7 @@ function BulkBar({
     >
       <div className="flex flex-wrap items-center gap-2.5 px-5 py-2.5">
         <span className="text-xs text-ink-200">
-          {t('common.selected', { count })}
+          {t.p('common.selected', count)}
           {sleeved > 0 && (
             <span className="ml-1.5 text-[11px] text-ink-400">
               {t('coll.sleevedNote', { count: sleeved })}
@@ -1135,7 +1198,12 @@ function BulkBar({
             )}
           </>
         )}
-        {ids.length > 0 && (
+        {/*
+          Offered for any selection, not only for rows you entered: a card sleeved in a
+          deck is still a card you own, and saying which language you hold it in should
+          not mean going to find it on the deck screen.
+        */}
+        {count > 0 && (
           <LanguagePicker
             busy={busy}
             hint={t('bulk.languageHintCollection')}
@@ -1144,9 +1212,14 @@ function BulkBar({
         )}
         {/*
           Hidden rather than disabled when nothing editable is selected: these
-          controls change a collection row, and a derived deck row has none. The
-          Select primitive takes no disabled prop, and inventing one to grey out
-          a control that can never apply would say less than not offering it.
+          controls change a collection row, and a derived deck row has none —
+          Archidekt records no condition, and the finish and proxy flag belong to
+          the deck entry, which the deck screen edits. The Select primitive takes
+          no disabled prop, and inventing one to grey out a control that can never
+          apply would say less than not offering it.
+
+          The language picker above is deliberately not in here: a language is a
+          fact about the physical card, so it applies to both kinds of row.
         */}
         {ids.length > 0 && (
           <>
@@ -1176,14 +1249,44 @@ function BulkBar({
         />
         {/* A proxy is a yes/no fact, so a pair of buttons beats a dropdown. Which
             one shows follows the selection: all proxies already, or not. */}
-        <Button
-          size="sm"
-          icon={<Copy size={13} />}
-          onClick={() => void applyProxied(!allProxied)}
-          title={t('proxy.hint')}
-        >
-          {allProxied ? t('proxy.unmark') : t('proxy.mark')}
-        </Button>
+        {/*
+          A toggle while the whole selection is on screen, and two buttons when it is not.
+
+          The comment on `allProxied` has always said this is what should happen past the
+          loaded page -- "both actions are offered explicitly rather than a toggle that
+          guesses from a sample" -- and the code offered only "mark", which left no way to
+          unmark at all. Rare enough to overlook while a selection died with its filter;
+          the ordinary case now that one does not.
+        */}
+        {beyondLoaded ? (
+          <>
+            <Button
+              size="sm"
+              icon={<Copy size={13} />}
+              onClick={() => void applyProxied(true)}
+              title={t('proxy.hint')}
+            >
+              {t('proxy.mark')}
+            </Button>
+            <Button
+              size="sm"
+              icon={<Copy size={13} />}
+              onClick={() => void applyProxied(false)}
+              title={t('proxy.hint')}
+            >
+              {t('proxy.unmark')}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="sm"
+            icon={<Copy size={13} />}
+            onClick={() => void applyProxied(!allProxied)}
+            title={t('proxy.hint')}
+          >
+            {allProxied ? t('proxy.unmark') : t('proxy.mark')}
+          </Button>
+        )}
         <Button variant="danger" size="sm" icon={<Trash2 size={13} />} onClick={removeAll}>
           {t('coll.remove')}
         </Button>
@@ -1191,6 +1294,9 @@ function BulkBar({
         )}
         <button
           onClick={onClear}
+          /* The escape hatch, now that a selection outlives a filter -- and reachable by
+             handle, because its label is translated. */
+          data-action="clearSelection"
           className="ml-auto text-[11px] text-ink-400 transition-colors hover:text-ink-100"
         >
           {t('common.clearSelection')}
@@ -1226,6 +1332,7 @@ function TableView({
   selected,
   onPick,
   selectableCount,
+  shownSelectedCount,
   onToggleAll,
   sort,
   dir,
@@ -1240,6 +1347,14 @@ function TableView({
   onPick: (key: string, mode: PickMode) => void
   /** How many rows on screen can be selected, so the header box can tell when all are. */
   selectableCount: number
+  /**
+   * How many of those are selected.
+   *
+   * The header box is about the rows it can see. Comparing the whole selection against
+   * this page was the same thing while a selection died with its filter, and stopped being
+   * so once it started outliving one.
+   */
+  shownSelectedCount: number
   onToggleAll: () => void
   sort: SortField
   dir: 'asc' | 'desc'
@@ -1257,6 +1372,8 @@ function TableView({
     overscan: 12
   })
 
+  const preview = useCardPreview()
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
@@ -1268,8 +1385,18 @@ function TableView({
         */}
         <input
           type="checkbox"
-          checked={selectableCount > 0 && selected.size >= selectableCount}
+          ref={(el) => {
+            // "Some of these, not all" has one honest state, and `indeterminate` is a
+            // property rather than an attribute, so a ref is the only way to set it.
+            if (el) {
+              el.indeterminate = shownSelectedCount > 0 && shownSelectedCount < selectableCount
+            }
+          }}
+          checked={selectableCount > 0 && shownSelectedCount >= selectableCount}
           onChange={onToggleAll}
+          /* A handle: the live checks used to reach this as the first checkbox in a
+             document that holds several mounted panes. */
+          data-action="toggleAllShown"
           className="accent-gold-500"
           aria-label={t('coll.selectAll')}
         />
@@ -1333,12 +1460,20 @@ function TableView({
                     )
                   }
                   onChanged={onChanged}
+                  onPreview={preview.onEnter}
+                  onPreviewEnd={preview.onLeave}
                 />
               </div>
             )
           })}
         </div>
       </div>
+      {/*
+        One panel for the whole list, rendered here rather than in the row: the rows are
+        virtualized, so a panel inside one would be clipped by the scroller and would
+        overflow the height the row declares.
+      */}
+      {preview.panel}
     </div>
   )
 }
@@ -1350,7 +1485,9 @@ function CardRow({
   onPick,
   onOpenCard,
   onZoom,
-  onChanged
+  onChanged,
+  onPreview,
+  onPreviewEnd
 }: {
   row: CollectionRow
   currency: 'usd' | 'eur'
@@ -1359,6 +1496,9 @@ function CardRow({
   onOpenCard: () => void
   onZoom: () => void
   onChanged: () => void
+  /** Show this card, big, beside the row. Stable, so the memoized row keeps its memo. */
+  onPreview: (scryfallId: string | null, anchor: HTMLElement | null) => void
+  onPreviewEnd: () => void
 }): React.ReactElement {
   const t = useT()
   const toast = useApp((s) => s.toast)
@@ -1397,6 +1537,9 @@ function CardRow({
         finds nothing and reports the screen wrong rather than failing honestly.
       */
       data-collection-row={row.key}
+      /* The card's own name, so a check can act on one particular row without
+         scraping a translated label out of it. */
+      data-name={printing.name}
       className={`flex h-full items-center gap-3 border-b border-ink-850 px-5 text-sm transition-colors ${
         isSelected ? 'bg-gold-500/[0.06]' : 'hover:bg-ink-850/60'
       }`}
@@ -1434,8 +1577,22 @@ function CardRow({
             e.stopPropagation()
             onZoom()
           }}
-          title={t('coll.zoomHint')}
+          /*
+            Hover shows the card beside the row; the click still opens the full-screen
+            look. Focus and blur too, because this is a button and arrowing through the
+            list should show you the same thing pointing at it does.
+          */
+          onMouseEnter={(e) => onPreview(row.scryfall_id, e.currentTarget)}
+          onMouseLeave={onPreviewEnd}
+          onFocus={(e) => onPreview(row.scryfall_id, e.currentTarget)}
+          onBlur={onPreviewEnd}
+          /*
+            No `title`. The native tooltip said what the preview now shows, and it would
+            have appeared on top of it a second later. The label stays for a reader.
+          */
           aria-label={t('coll.zoomHint')}
+          data-action="zoomArt"
+          data-thumb=""
           className="shrink-0 cursor-zoom-in rounded"
         >
           <CardImage
@@ -1464,7 +1621,7 @@ function CardRow({
             </button>
             {row.reserved > 0 && (
               <span
-                title={t('coll.reservedBadge', { count: row.reserved })}
+                title={t.p('coll.reservedBadge', row.reserved)}
                 /*
                   Solid, not a 15% wash of the text's own colour: measured, the
                   fill was alpha 38/255, so the label sat on whatever happened to
@@ -1684,7 +1841,7 @@ function GalleryView({
                 )}
                 {row.source === 'collection' && row.deck_count > 0 && (
                   <span
-                    title={t('coll.inDeckCount', { count: row.deck_count })}
+                    title={t.p('coll.inDeckCount', row.deck_count)}
                     className="inline-flex items-center gap-0.5 rounded bg-mana-u px-1.5 py-0.5 text-[9px] font-bold text-on-identity"
                   >
                     <MapPin size={8} />
@@ -1693,7 +1850,7 @@ function GalleryView({
                 )}
                 {row.reserved > 0 && (
                   <span
-                    title={t('coll.reservedBadge', { count: row.reserved })}
+                    title={t.p('coll.reservedBadge', row.reserved)}
                     className="rounded bg-warn px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
                   >
                     {row.reserved}

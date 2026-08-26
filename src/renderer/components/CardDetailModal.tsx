@@ -71,21 +71,36 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
   */
   const [preview, setPreview] = useState<string | null>(null)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** What is on screen, readable without making the hover callback depend on it. */
+  const showing = useRef<string | null>(null)
 
   /*
-    Shown after a moment, cleared at once.
+    Patient in both directions, but not equally.
 
-    Running the cursor down twenty printings would otherwise strobe the frame. One timer
-    here rather than one per row, and clearing never waits -- a preview that lingered after
-    the pointer left would be a preview you could not dismiss.
+    The rows are 4px apart, and each one clears the preview as the pointer leaves it. With
+    the show delayed and the clear immediate, crossing a gap read as leaving on purpose:
+    running the cursor down the list flashed the card's own art between every pair. So the
+    clear waits too -- longer than crossing a gap takes, short enough that leaving the list
+    still puts the card back while you are still looking at it.
+
+    The switch from one row to the next, on the other hand, is immediate. The delay exists
+    to stop twenty printings strobing the frame on the way past, and that is about the
+    first appearance; once a preview is up, waiting again only adds the stutter it was
+    meant to prevent. A ref mirrors the state so this stays one stable callback rather than
+    a new one per hover, which would re-render the whole list underneath the pointer.
   */
   const hoverPrinting = useCallback((scryfallId: string | null) => {
     if (previewTimer.current) clearTimeout(previewTimer.current)
+    const show = (next: string | null): void => {
+      showing.current = next
+      setPreview(next)
+    }
     if (scryfallId === null) {
-      setPreview(null)
+      previewTimer.current = setTimeout(() => show(null), 140)
       return
     }
-    previewTimer.current = setTimeout(() => setPreview(scryfallId), 180)
+    if (showing.current !== null) return show(scryfallId)
+    previewTimer.current = setTimeout(() => show(scryfallId), 180)
   }, [])
 
   // A dialog closing mid-hover must not fire a state update into nothing.
@@ -105,6 +120,13 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
   useEffect(() => {
     setFace(0)
     setSettled(0)
+    /*
+      And the preview goes with it. A different card is showing, so a preview of the last
+      one's printing has nothing to do with what is on screen — and now that the clear
+      waits, it would otherwise outlive the card it belonged to.
+    */
+    showing.current = null
+    setPreview(null)
   }, [scryfallId])
 
   /** The card whose data is on screen, so a refetch can tell itself from a first load. */

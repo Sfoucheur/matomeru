@@ -145,6 +145,16 @@ export default function CardZoom({
           transition={{ duration: 0.16 }}
           onClick={onClose}
           style={{ zIndex: 55 }}
+          /*
+            A stable handle for the live checks. They used to hunt for `.fixed` or for any
+            element with an aria-label, which is how three of them came to report a missing
+            backdrop -- a check should not have to guess which div is the overlay.
+
+            Deliberately not `role="dialog"`: this opens from the detail dialog, and the
+            checks that reach into that one address it as `[role="dialog"] ...`. A second
+            match would have them measuring the overlay instead of the card underneath.
+          */
+          data-zoom=""
           className="fixed inset-0 flex cursor-zoom-out items-center justify-center bg-black/85
             p-6 backdrop-blur-sm"
         >
