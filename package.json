@@ -1,6 +1,6 @@
 {
 	"name": "matomeru",
-	"version": "0.3.6",
+	"version": "0.3.5",
 	"engines": {
 		"node": ">=24"
 	},
