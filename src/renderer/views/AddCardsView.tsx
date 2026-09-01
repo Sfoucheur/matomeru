@@ -9,7 +9,7 @@ import {
   effectiveFinishFor,
   foilTreatmentLabel,
   foilTreatmentOf,
-  priceFor,
+  priceOfPrinting,
   twoSides,
   type Condition,
   type Finish,
@@ -33,7 +33,14 @@ import {
   RarityPip,
   Select
 } from '../components/primitives'
-import { FINISH_LABEL, count, foilLabelForDensity, languageName, money } from '../lib/format'
+import {
+  FINISH_LABEL,
+  count,
+  foilLabelForDensity,
+  languageName,
+  money,
+  proxyMoney
+} from '../lib/format'
 import { useT } from '../hooks/useT'
 import { parseCollectorNumber } from '@shared/quickEntry'
 
@@ -363,9 +370,14 @@ function PrintingTile({
   const t = useT()
   const effective = effectiveFinishFor(printing, finish)
   const substituted = effective !== finish
-  // priceFor is the one definition of which price column a finish reads; this
-  // tile used to re-implement the branch inline and could drift from it.
-  const price = priceFor(printing.prices, effective, currency)
+  /*
+    The printing's own price, else the English twin's, marked with a ≈.
+
+    `priceOfPrinting` is the one definition of which column a finish reads and of the order
+    the two sources are tried in; this tile used to re-implement the branch inline, and then
+    drew an em dash for every French card because Scryfall prices almost none of them.
+  */
+  const { value: price, borrowed: priceBorrowed } = priceOfPrinting(printing, effective, currency)
   // Which kind of foil THIS PRINTING's foil version is — asked as 'foil' rather
   // than as the finish you happen to have selected, because the point of the tag
   // is telling the printings apart while browsing. Keyed off `effective` it would
@@ -436,8 +448,11 @@ function PrintingTile({
             </span>
           )}
           {density === 'full' && <RarityPip rarity={printing.rarity} />}
-          <span className="numeric ml-auto text-[10px] text-gold-300">
-            {price === null ? '—' : money(price, currency)}
+          <span
+            className="numeric ml-auto text-[10px] text-gold-300"
+            title={priceBorrowed ? t('price.borrowed') : undefined}
+          >
+            {price === null ? '—' : priceBorrowed ? proxyMoney(price, currency) : money(price, currency)}
           </span>
         </div>
       </div>

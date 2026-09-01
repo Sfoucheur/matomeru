@@ -48,7 +48,7 @@ import { FINISH_LABEL } from '../lib/format'
 import { useT } from '../hooks/useT'
 import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
-import { PROXY_PRICE_HINT, bigMoney, count, relativeTime } from '../lib/format'
+import { bigMoney, count, relativeTime } from '../lib/format'
 import {
   FLAT_CARDS,
   buildDeckBody,
@@ -837,7 +837,7 @@ function DeckDetail({
           </span>
           <span
             className="numeric text-ink-400"
-            title={totals.missingValueIsProxy ? PROXY_PRICE_HINT : undefined}
+            title={totals.missingValueIsProxy ? t('price.borrowed') : undefined}
           >
             {t('decks.missingPile')}
             <span className="font-medium text-gold-400">
@@ -1111,7 +1111,7 @@ const SectionHeader = memo(function SectionHeader({
         {group.missingValue > 0 && (
           <span
             className="ml-2 text-ink-500"
-            title={group.missingValueIsProxy ? PROXY_PRICE_HINT : undefined}
+            title={group.missingValueIsProxy ? t('price.borrowed') : undefined}
           >
             {bigMoney(group.missingValue, currency)}
             {group.missingValueIsProxy && '*'}

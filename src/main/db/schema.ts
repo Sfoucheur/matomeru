@@ -908,5 +908,33 @@ export const MIGRATIONS: Migration[] = [
       DROP INDEX IF EXISTS idx_printing_pairs_paired;
       DROP TABLE IF EXISTS printing_pairs;
     `
+  },
+  {
+    version: 21,
+    name: 'fill_english_prices',
+    sql: `
+      -- Every card gets a price, which means fetching the English one.
+      --
+      -- Scryfall attaches its Cardmarket and TCGplayer figures to the *English* object of a
+      -- set and collector number and leaves every translation null. Measured on a real
+      -- collection: 254 of 259 English printings priced, 1 of 141 French ones. The read path
+      -- has always been willing to borrow a cached sibling's figure and mark it as a
+      -- stand-in -- but nothing ever fetched the English twin of a card held in French, so
+      -- there was nothing to borrow and a French deck priced at nothing at all.
+      --
+      -- This migration cannot fix that by itself. The figure is not in this database, and a
+      -- migration cannot ask Scryfall for it: the whole array runs before the first window
+      -- exists, synchronously, with a failure fatal. So it records the debt, and
+      -- \`fillEnglishPricesIfOwed\` pays it a few seconds after the window opens, retrying on
+      -- the next launch if the machine was offline. Migration 2 split the work the same way
+      -- when it nulled decks.external_updated_at to force a re-sync it could not perform,
+      -- and so did migration 9 when it deleted booster_sets.
+      --
+      -- INSERT OR REPLACE rather than INSERT: 'done' from a build that shipped this once and
+      -- was then restored over should go back to 'pending'. Asking again costs one request
+      -- per 75 cards and answers with the truth; not asking leaves an em dash where a price
+      -- belongs.
+      INSERT OR REPLACE INTO settings (key, value) VALUES ('prices.fillEnglish', 'pending');
+    `
   }
 ]

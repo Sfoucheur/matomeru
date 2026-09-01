@@ -5,6 +5,7 @@ import { registerHandlers } from './ipc/handlers.js'
 import { setAppVersion } from './services/backup.js'
 import { logInfo, parseDebugFlag, setVerboseLogging } from './services/log.js'
 import { checkForUpdates, setUpdateListener } from './services/updates.js'
+import { fillEnglishPricesIfOwed } from './services/priceFill.js'
 import { getSettings } from './db/repos/settings.js'
 import { broadcastProgress } from './ipc/handlers.js'
 import { adoptOldData } from './services/adoptOldData.js'
@@ -135,6 +136,21 @@ if (!app.requestSingleInstanceLock()) {
         void checkForUpdates(broadcastProgress, { silent: true })
       }, 4000)
     }
+
+    /*
+      The debt migration 21 recorded, paid once, on the first launch of the version that
+      introduced it.
+
+      Here rather than in the migration because the migration cannot make a request, and
+      here rather than in a script because a script is a developer's tool and is never
+      packaged. Delayed for the same reason the update check is: startup already has
+      migrations, a window and the first queries to get through, and a price nobody is
+      looking at yet can wait five seconds. Silent if it fails -- the flag stays set, so the
+      next launch tries again.
+    */
+    setTimeout(() => {
+      void fillEnglishPricesIfOwed(broadcastProgress)
+    }, 5000)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

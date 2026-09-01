@@ -574,19 +574,35 @@ function Row({ label, children }: { label: string; children: React.ReactNode }):
 }
 
 /**
- * The full price grid. Non-English printings frequently have no prices at all,
- * so every cell must be able to read `—` rather than implying zero.
+ * The full price grid.
+ *
+ * Scryfall prices a printing, and it prices non-English ones almost never — so this table
+ * read `— — — — —` for every French card, which is what prompted the English fill. Where the
+ * printing has nothing of its own the English twin's figure is shown instead, prefixed `≈`
+ * and explained once above the table, and a cell is still empty when nothing anywhere has a
+ * price. Every cell must go on being able to read `—` rather than implying zero.
  */
 function PriceTable({ printing }: { printing: Printing }): React.ReactElement {
   const t = useT()
-  const prices = printing.prices
+  const own = printing.prices
+  const borrowed = printing.borrowed_prices ?? null
+  // Own figure first, twin second — the same order `priceOfPrinting` resolves in, and the
+  // same order the SQL paths have always used.
+  const source = own && Object.values(own).some((value) => value !== null) ? own : borrowed
+  const isBorrowed = source !== null && source === borrowed
   const cell = (raw: string | null | undefined): string =>
     raw === null || raw === undefined ? '—' : Number(raw).toFixed(2)
+  const prices = source
 
   return (
     <section>
-      <h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
+      <h4 className="mb-1.5 flex items-baseline gap-2 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
         {t('detail.prices')}
+        {isBorrowed && (
+          <span className="font-normal normal-case tracking-normal text-ink-600">
+            {t('price.borrowedNote')}
+          </span>
+        )}
       </h4>
       <table className="w-full text-xs">
         <thead>

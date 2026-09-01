@@ -160,6 +160,26 @@ export function priceFor(
 }
 
 /**
+ * What a screen should show for a printing: its own price, else the English twin's.
+ *
+ * Scryfall prices a printing, and it prices non-English ones almost never — 1 of 141 French
+ * printings in one real collection, against 254 of 259 English. The SQL paths have borrowed a
+ * sibling's figure all along; this is the same answer for the screens that hold a `Printing`
+ * and have no way back to the database. `borrowed` is what earns the ≈: a stand-in is shown,
+ * never passed off as the exact figure. Null still means null — nowhere prices this card.
+ */
+export function priceOfPrinting(
+  printing: { prices: Prices | null; borrowed_prices?: Prices | null },
+  finish: Finish,
+  currency: Currency
+): { value: number | null; borrowed: boolean } {
+  const own = priceFor(printing.prices, finish, currency)
+  if (own !== null) return { value: own, borrowed: false }
+  const borrowed = priceFor(printing.borrowed_prices ?? null, finish, currency)
+  return { value: borrowed, borrowed: borrowed !== null }
+}
+
+/**
  * Layouts that carry a picture per face, as opposed to two names on one picture.
  *
  * Measured against Scryfall rather than reasoned about, because the distinction is
@@ -285,6 +305,14 @@ export interface Printing {
   released_at: string | null
   prices: Prices | null
   price_updated_at: string | null
+  /**
+   * The English twin's prices, filled in by the query, when this printing has none.
+   *
+   * Optional because a printing straight off a Scryfall search has no twin resolved yet —
+   * only a cached row can answer that. Read it through `priceOfPrinting`, never directly,
+   * so a borrowed figure always arrives with the fact that it was borrowed.
+   */
+  borrowed_prices?: Prices | null
 }
 
 export interface CollectionItem {
@@ -1195,6 +1223,7 @@ export interface ProgressEvent {
     | 'collection-language'
     | 'booster-odds'
     | 'price-sync'
+    | 'price-fill'
     | 'backup'
     | 'update'
   phase: string

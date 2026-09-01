@@ -66,7 +66,6 @@ import {
 } from '../components/primitives'
 import {
   FINISH_LABEL,
-  PROXY_PRICE_HINT,
   bigMoney,
   count,
   hasDistinctPrintedName,
@@ -1732,7 +1731,7 @@ function CardRow({
 
       <div
         className="numeric w-20 text-right text-xs text-ink-300"
-        title={row.price_is_proxy ? PROXY_PRICE_HINT : undefined}
+        title={row.price_is_proxy ? t('price.borrowed') : undefined}
       >
         {row.price_is_proxy
           ? proxyMoney(row.unit_value, currency)
@@ -1740,7 +1739,7 @@ function CardRow({
       </div>
       <div
         className="numeric w-20 text-right text-xs text-ink-100"
-        title={row.price_is_proxy ? PROXY_PRICE_HINT : undefined}
+        title={row.price_is_proxy ? t('price.borrowed') : undefined}
       >
         {row.price_is_proxy
           ? proxyMoney(row.total_value, currency)

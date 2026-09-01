@@ -15,6 +15,7 @@ import type {
 import { FOIL_TREATMENTS } from '@shared/types'
 import { addToCollection, exportRows, updateItem } from '../db/repos/collection.js'
 import { findLocalPrintings, getPrinting, upsertPrinting } from '../db/repos/printings.js'
+import { fillEnglishPricesQuietly } from './priceFill.js'
 import { cardsByNames, printingBySetNumberLang, cardById } from '../scryfall/client.js'
 import { toPrinting } from '../scryfall/mappers.js'
 import { t } from '@shared/i18n/index'
@@ -352,6 +353,20 @@ export async function dryRunCsv(
       })
     }
   }
+
+  /*
+    English prices for whatever the resolution just cached.
+
+    The set + collector number + language route is the only one that honours language, and
+    it is therefore the only one that caches a lone French printing -- which Scryfall prices
+    almost never. Batched here, once, rather than per row.
+  */
+  await fillEnglishPricesQuietly(
+    resolved
+      .map((row) => (row.status === 'matched' ? row.printing?.scryfall_id : null))
+      .filter((id): id is string => !!id),
+    onProgress
+  )
 
   onProgress({
     job: 'csv-import',

@@ -299,7 +299,15 @@ function buildWhere(filters: CollectionFilters, currency: Currency): WhereClause
     params.push(filters.cmcMax)
   }
 
-  const price = priceExpr(currency)
+  /*
+    `r.finish`, not the default.
+
+    The default is `ci.finish`, from when this queried `collection_items` directly. The FROM
+    is a derived table now, so `ci` is scoped inside the union and invisible here -- setting a
+    Value minimum or maximum raised `no such column: ci.finish` and took the page, the facets,
+    the select-all and the CSV export with it. Nothing in the suite set those filters.
+  */
+  const price = priceExpr(currency, 'r.finish')
   if (filters.valueMin !== null) {
     clauses.push(`COALESCE(${price}, 0) >= ?`)
     params.push(filters.valueMin)

@@ -38,7 +38,17 @@ export interface ResolvedPrinting {
  */
 export async function resolvePrintingInLanguage(
   card: CardIdentity,
-  lang: string
+  lang: string,
+  /**
+   * Ids this call cached, appended for the caller.
+   *
+   * A bulk conversion resolves hundreds of cards, and each new non-English printing needs
+   * its English twin fetched to have any price at all. Fetching that twin here would be one
+   * more request per card; handing the ids back lets the loop ask for all of them in batches
+   * of 75 once it is done. Passed explicitly rather than kept in module state, so it is
+   * visible at every call site whether anyone is collecting.
+   */
+  cachedInto?: string[]
 ): Promise<ResolvedPrinting | null> {
   if (!card.set_code || !card.collector_number) return null
 
@@ -56,5 +66,6 @@ export async function resolvePrintingInLanguage(
 
   // Cache it, so names and art work offline afterwards.
   upsertPrinting(toPrinting(exact), exact)
+  cachedInto?.push(exact.id)
   return { scryfall_id: exact.id, lang: exact.lang }
 }

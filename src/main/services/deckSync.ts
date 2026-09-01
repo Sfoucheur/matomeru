@@ -21,6 +21,7 @@ import {
 } from '../db/repos/decks.js'
 import { getLabelPossession } from '../db/repos/settings.js'
 import { upsertPrinting } from '../db/repos/printings.js'
+import { fillEnglishPricesQuietly } from './priceFill.js'
 import { cardsByIds } from '../scryfall/client.js'
 import { toPrinting } from '../scryfall/mappers.js'
 import { t } from '@shared/i18n/index'
@@ -275,20 +276,43 @@ export async function addDeckByUrl(
  * Caches Scryfall printings for cards that decks reference but the collection
  * has never seen, so deck views can show images and prices for cards you do not
  * own yet. Batched by id, which preserves each card's language.
+ *
+ * Loops until there is nothing left. It used to take one page of 1000 and stop, which on a
+ * first sync of several large decks left the remainder with no printing row at all — and a
+ * deck row with no printing row has no image and no price, and no way to get one: the only
+ * query that finds these asks for rows that are *missing*, so a card left behind stayed
+ * behind until some later sync happened to leave room for it.
+ *
+ * Then the English twins, for whatever came back unpriced, which is most of a French deck.
  */
 async function cacheDeckPrintings(onProgress: ProgressSink): Promise<void> {
-  const missing = deckPrintingsNeedingCache(1000)
-  if (!missing.length) return
+  const cached: string[] = []
+  for (;;) {
+    const missing = deckPrintingsNeedingCache(1000)
+    if (!missing.length) break
 
-  onProgress({ job: 'deck-sync', phase: 'Caching deck cards', done: 0, total: missing.length })
-  const cards = await cardsByIds(missing)
-  for (const card of cards) {
-    upsertPrinting(toPrinting(card), card)
+    onProgress({
+      job: 'deck-sync',
+      phase: 'Caching deck cards',
+      done: cached.length,
+      total: cached.length + missing.length
+    })
+    const cards = await cardsByIds(missing)
+    for (const card of cards) {
+      upsertPrinting(toPrinting(card), card)
+      cached.push(card.id)
+    }
+    // Scryfall returning nothing for a whole page would otherwise loop for ever: the ids it
+    // does not know stay missing, so the same page comes back next time round.
+    if (!cards.length) break
   }
+  if (!cached.length) return
+
   onProgress({
     job: 'deck-sync',
     phase: 'Caching deck cards',
-    done: missing.length,
-    total: missing.length
+    done: cached.length,
+    total: cached.length
   })
+  await fillEnglishPricesQuietly(cached, onProgress)
 }

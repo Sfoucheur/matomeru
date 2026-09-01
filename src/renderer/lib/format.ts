@@ -56,9 +56,6 @@ export function proxyMoney(
   return text === '—' ? text : `≈ ${text}`
 }
 
-/** Tooltip explaining a `≈` price, so the marker is never a mystery. */
-export const PROXY_PRICE_HINT =
-  'This printing has no price of its own, so this is another printing of the same card. Cardmarket prices a product largely regardless of language.'
 
 export function bigMoney(value: number, currency: Currency = 'usd'): string {
   return money(value, currency)

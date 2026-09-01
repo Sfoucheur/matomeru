@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { BarChart3, RefreshCw } from 'lucide-react'
+import { BarChart3, Coins, RefreshCw } from 'lucide-react'
 import type { Stats } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import type { ViewProps } from '../App'
@@ -19,6 +19,7 @@ export default function StatsView({ active }: ViewProps): React.ReactElement {
 
   const [stats, setStats] = useState<Stats | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [filling, setFilling] = useState(false)
 
   // A hidden view must not query: with every visited view kept mounted, one
   // invalidate() would otherwise fan out into a request from each screen. The
@@ -46,6 +47,30 @@ export default function StatsView({ active }: ViewProps): React.ReactElement {
             ? t('stats.refreshedUnpriced', { count: count(result.unpriced) })
             : ''
         }`
+      )
+      invalidate()
+    }
+  }
+
+  /*
+    Filling in the prices Scryfall only publishes in English.
+
+    The once-per-version run does this on its own; the button is for a first launch that was
+    offline, and for anyone who would rather not wait for it.
+  */
+  const fillPrices = async (): Promise<void> => {
+    setFilling(true)
+    const result = await guard(() => window.api.prices.fill())
+    setFilling(false)
+    if (result) {
+      toast(
+        'success',
+        result.requested === 0
+          ? t('stats.filledNone')
+          : t.p('stats.filled', result.requested, {
+              filled: count(result.filled),
+              requested: count(result.requested)
+            })
       )
       invalidate()
     }
@@ -87,9 +112,18 @@ export default function StatsView({ active }: ViewProps): React.ReactElement {
         </div>
         <Button
           size="sm"
+          variant="ghost"
+          icon={<Coins size={13} className={filling ? 'animate-pulse' : ''} />}
+          onClick={() => void fillPrices()}
+          disabled={filling || syncing}
+        >
+          {filling ? t('stats.filling') : t('stats.fillPrices')}
+        </Button>
+        <Button
+          size="sm"
           icon={<RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />}
           onClick={() => void refreshPrices()}
-          disabled={syncing}
+          disabled={syncing || filling}
         >
           {syncing ? t('stats.refreshing') : t('stats.refreshPrices')}
         </Button>

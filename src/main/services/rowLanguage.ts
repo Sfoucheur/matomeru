@@ -2,6 +2,7 @@ import { parseRowKey } from '../db/repos/collection.js'
 import { deckTargetsForPrinting } from '../db/repos/decks.js'
 import { applyLanguageToItem } from './collectionLanguage.js'
 import { setCardLanguage, type CardOutcome } from './deckLanguage.js'
+import { fillEnglishPricesQuietly } from './priceFill.js'
 import type { ProgressSink } from '../ipc/progressThrottle.js'
 
 /**
@@ -86,6 +87,8 @@ export async function setRowLanguages(
   */
   const written = new Set<string>()
   const decks = new Set<number>()
+  /** Printings cached while converting, whose English prices are fetched once at the end. */
+  const cached: string[] = []
 
   for (let i = 0; i < keys.length; i += 1) {
     const key = keys[i]
@@ -97,7 +100,7 @@ export async function setRowLanguages(
       result.gone += 1
     } else if (ref.source === 'collection') {
       try {
-        result[await applyLanguageToItem(ref.itemId, lang)] += 1
+        result[await applyLanguageToItem(ref.itemId, lang, cached)] += 1
       } catch {
         result.failed += 1
       }
@@ -121,7 +124,7 @@ export async function setRowLanguages(
           const id = `${target.deck_id}:${target.oracle_id}`
           if (written.has(id)) continue
           try {
-            const outcome = await setCardLanguage(target.deck_id, target, lang)
+            const outcome = await setCardLanguage(target.deck_id, target, lang, cached)
             written.add(id)
             decks.add(target.deck_id)
             outcomes.push(outcome)
@@ -145,6 +148,14 @@ export async function setRowLanguages(
 
     onProgress({ job, phase, done: i + 1, total: keys.length, message: name })
   }
+
+  /*
+    One batched pass for the English prices, after every row has been converted.
+
+    Scryfall prices a French printing almost never, so without this a selection converted to
+    French reads as worth nothing at all — and doing it per row would double the requests.
+  */
+  await fillEnglishPricesQuietly(cached, onProgress)
 
   result.decks = decks.size
   onProgress({ job, phase: 'Done', done: keys.length, total: keys.length, finished: true })

@@ -79,6 +79,7 @@ import {
 } from '../services/boosterOdds.js'
 import { createThrottledBroadcaster } from './progressThrottle.js'
 import { refreshPrices } from '../services/priceSync.js'
+import { fillEnglishPrices, fillEnglishPricesQuietly } from '../services/priceFill.js'
 import {
   commitCsv,
   dryRunCsv,
@@ -289,9 +290,16 @@ export function registerHandlers(): void {
     list's `collection_item_id` follows with ON DELETE SET NULL.
   */
   handle('collection:setLanguage', (itemId: number, lang: string) =>
-    undoableAsync('undo.setLanguage', withPickItems(scryfallScope(itemId)), () =>
-      applyLanguageToItem(itemId, lang)
-    )
+    undoableAsync('undo.setLanguage', withPickItems(scryfallScope(itemId)), async () => {
+      // One row, so one extra request at most: the English twin of whatever it just became,
+      // without which a French row shows no price at all.
+      const cached: string[] = []
+      const outcome = await applyLanguageToItem(itemId, lang, cached)
+      // Quietly: the row is already converted, and `undoableAsync` records the step only
+      // once this resolves -- a throw here would leave the change with no way back.
+      await fillEnglishPricesQuietly(cached)
+      return outcome
+    })
   )
   /*
     The same, for a whole selection — and it takes the selection's own row keys.
@@ -675,6 +683,11 @@ export function registerHandlers(): void {
 
   // ---------- Prices / stats / settings ----------
   handle('prices:refresh', () => refreshPrices(broadcast))
+  /*
+    Filling in the English prices by hand, for anyone who does not want to wait for the
+    once-per-version run -- or who was offline when it happened.
+  */
+  handle('prices:fill', () => fillEnglishPrices(undefined, broadcast))
   handle('stats:get', () => collectionStats())
   handle('settings:get', () => getSettings())
   // ---------- Undo / redo ----------

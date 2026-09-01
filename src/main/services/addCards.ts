@@ -1,7 +1,8 @@
 import { effectiveFinishFor } from '@shared/types'
-import type { AddCardInput, PrintingChoice, QuickAddInput } from '@shared/types'
+import type { AddCardInput, Printing, PrintingChoice, QuickAddInput } from '@shared/types'
 import { addToCollection, ownedCount, ownedCounts } from '../db/repos/collection.js'
-import { getPrinting, upsertPrinting } from '../db/repos/printings.js'
+import { borrowedPricesFor, getPrinting, upsertPrinting } from '../db/repos/printings.js'
+import { fillEnglishPricesQuietly } from './priceFill.js'
 import { transaction } from '../db/connection.js'
 import {
   autocomplete,
@@ -42,6 +43,16 @@ function cache(cards: ScryfallCard[]): PrintingChoice[] {
   // And one grouped query for the owned counts rather than one per printing.
   const owned = ownedCounts(printings.map((p) => p.scryfall_id))
   /*
+    The borrowed prices, in one more grouped query.
+
+    These printings came from a Scryfall search, so each carries only its own prices -- and
+    Scryfall prices non-English printings almost never, which is why every translated row in
+    the picker read as an em dash while the English one above it showed a figure. They have
+    just been upserted, so the query can see them and answer with the same rule the rest of
+    the app borrows by.
+  */
+  const borrowed = borrowedPricesFor(printings.map((p) => p.scryfall_id))
+  /*
     Deliberately no pairing here.
 
     A pairing says two printings are one card *in your collection*, and this is the
@@ -50,10 +61,14 @@ function cache(cards: ScryfallCard[]): PrintingChoice[] {
     two-faced cards still stack anywhere, because that is Scryfall's data; yours shows
     where your collection is involved.
   */
-  return printings.map((printing) => ({
-    ...printing,
-    owned: owned.get(printing.scryfall_id) ?? 0
-  }))
+  return printings.map((printing) => {
+    const lent = borrowed.get(printing.scryfall_id)
+    return {
+      ...printing,
+      owned: owned.get(printing.scryfall_id) ?? 0,
+      borrowed_prices: lent ? (JSON.parse(lent) as Printing['prices']) : null
+    }
+  })
 }
 
 /**
@@ -193,6 +208,18 @@ export async function quickAdd(
     condition: input.condition,
     quantity: input.quantity
   })
+
+  /*
+    A price for the card that just landed — after it lands, and never at its expense.
+
+    Fast entry reaches one printing in one language, the only route that does, so adding a
+    French card caches the French row alone and Scryfall prices French rows almost never. One
+    more request gets the English twin the row will borrow from. Ordered after the write and
+    quiet on failure on purpose: a 503 on a price must not swallow a card somebody typed.
+    The name-search route needs none of this — it caches every language already.
+  */
+  await fillEnglishPricesQuietly([printing.scryfall_id])
+
   return { itemId, printing: { ...printing, owned: ownedCount(printing.scryfall_id) } }
 }
 

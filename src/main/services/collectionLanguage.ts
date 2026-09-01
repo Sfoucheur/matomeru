@@ -36,7 +36,12 @@ export type ItemOutcome = 'converted' | 'declared' | 'reserved' | 'gone' | 'fail
  * repointed the row at it. `declared` did not, so the row keeps its print and says it is
  * yours in that language. `reserved` did nothing at all, on purpose: see below.
  */
-export async function applyLanguageToItem(itemId: number, lang: string): Promise<ItemOutcome> {
+export async function applyLanguageToItem(
+  itemId: number,
+  lang: string,
+  /** Printings cached along the way, for the caller to fetch English prices for. */
+  cachedInto?: string[]
+): Promise<ItemOutcome> {
   /*
     A LEFT join, not an inner one.
 
@@ -86,7 +91,8 @@ export async function applyLanguageToItem(itemId: number, lang: string): Promise
       set_code: row.set_code,
       collector_number: row.collector_number
     },
-    lang
+    lang,
+    cachedInto
   )
 
   if (!found) {

@@ -35,7 +35,7 @@ import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, join as joinPath } from 'node:path'
-import { closeDb, getDb, setDataDir } from '../src/main/db/connection.js'
+import { closeDb, getDb, nowIso, setDataDir } from '../src/main/db/connection.js'
 import {
   addToCollection,
   cardLocations,
@@ -84,7 +84,13 @@ import { matchingRowKeys } from '../src/main/db/repos/collection.js'
 import { applyLanguageToItem } from '../src/main/services/collectionLanguage.js'
 import { setRowLanguages } from '../src/main/services/rowLanguage.js'
 import { setCardsLanguage } from '../src/main/services/deckLanguage.js'
-import { allocateCopies, bothSidesTitle, hasTwoImages, twoSides } from '../src/shared/types.js'
+import {
+  allocateCopies,
+  bothSidesTitle,
+  hasTwoImages,
+  priceOfPrinting,
+  twoSides
+} from '../src/shared/types.js'
 import { ownedCount, ownedCounts } from '../src/main/db/repos/collection.js'
 import {
   isNewerVersion,
@@ -104,7 +110,14 @@ import {
   setCardProxied,
   upsertDeck
 } from '../src/main/db/repos/decks.js'
-import { getPrinting } from '../src/main/db/repos/printings.js'
+import {
+  borrowedPricesFor,
+  getPrinting,
+  pricedPrintingIds,
+  printingsMissingPrices,
+  unpricedAmong,
+  upsertPrinting
+} from '../src/main/db/repos/printings.js'
 import {
   byId,
   clearUndoHistory,
@@ -157,6 +170,11 @@ import {
   type Finish
 } from '../src/shared/types.js'
 import { colorRank, matchesDeckFilters, sortDeckCards } from '../src/renderer/lib/deckFilter.js'
+import {
+  FILL_FLAG,
+  fillEnglishPrices,
+  fillEnglishPricesQuietly
+} from '../src/main/services/priceFill.js'
 import {
   matchesPrintingFilters,
   printingFacets,
@@ -5878,6 +5896,444 @@ async function main(): Promise<void> {
         )
       }
     }
+  }
+
+  section('Prices: the English printing fills in for the French one')
+
+  /*
+    The report this section exists for: a French card showed no price at all, in a synced deck
+    and in the collection alike.
+
+    Scryfall prices a printing, and it prices non-English printings almost never — the
+    fixture proves it, `m10/146/fr` carries null in every currency while `/en` at the same set
+    and number carries both. The read path has always been willing to borrow a *cached*
+    sibling's figure; nothing ever cached the English twin, so there was nothing to borrow.
+    Migration 21 asks for the fill and `fillEnglishPrices` performs it.
+
+    Built on printings this suite inserts itself rather than on whatever the fixture happens
+    to hold, because the whole question is what is cached and what is not.
+  */
+  {
+    const priceless = JSON.stringify({
+      usd: null,
+      usd_foil: null,
+      usd_etched: null,
+      eur: null,
+      eur_foil: null,
+      tix: null
+    })
+    const withPrice = JSON.stringify({
+      usd: '4.00',
+      usd_foil: '9.00',
+      usd_etched: null,
+      eur: '3.00',
+      eur_foil: '7.00',
+      tix: null
+    })
+    const insert = (
+      id: string,
+      lang: string,
+      set: string,
+      number: string,
+      oracle: string | null,
+      prices: string
+    ): void => {
+      db.run(
+        `INSERT OR REPLACE INTO printings (
+           scryfall_id, oracle_id, name, printed_name, lang, set_code, set_name,
+           collector_number, rarity, colors, color_identity, layout, finishes,
+           prices_json, price_updated_at, fetched_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,'[]','[]','normal','["nonfoil"]',?, ?, ?)`,
+        [
+          id,
+          oracle,
+          `Fill Test ${number}`,
+          null,
+          lang,
+          set,
+          'Fill Set',
+          number,
+          'rare',
+          prices,
+          nowIso(),
+          nowIso()
+        ]
+      )
+    }
+
+    // A French card whose English twin nobody has cached: the reported case.
+    insert('fill-fr-alone', 'fr', 'fst', '1', 'oracle-alone', priceless)
+    // A French card whose English twin is cached and priced: already answerable.
+    insert('fill-fr-twinned', 'fr', 'fst', '2', 'oracle-twinned', priceless)
+    insert('fill-en-twin', 'en', 'fst', '2', 'oracle-twinned', withPrice)
+    // A French card with no oracle id at all — Scryfall omits it on reversible and
+    // art-series cards — whose twin can only be found by set and collector number.
+    insert('fill-fr-nooracle', 'fr', 'fst', '3', null, priceless)
+    insert('fill-en-nooracle', 'en', 'fst', '3', null, withPrice)
+    // An English card nothing prices: no twin exists and none would help.
+    insert('fill-en-orphan', 'en', 'fst', '4', 'oracle-orphan', priceless)
+
+    for (const id of [
+      'fill-fr-alone',
+      'fill-fr-twinned',
+      'fill-fr-nooracle',
+      'fill-en-orphan'
+    ]) {
+      addToCollection({ scryfall_id: id, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+    }
+
+    /*
+      Asked of the selection query, which is what decides whether a request is made.
+
+      `prices_json` is not NULL for these rows — the mapper keeps every key Scryfall sends,
+      so an unpriced printing holds an object full of nulls. A selection written against
+      `prices_json IS NULL` would find nothing and the fill would do nothing at all.
+    */
+    const wanted = printingsMissingPrices().map((row) => row.scryfall_id)
+    check(
+      'the fill wants the French card whose English twin is not cached',
+      wanted.includes('fill-fr-alone'),
+      JSON.stringify(wanted.filter((id) => id.startsWith('fill-')))
+    )
+    check(
+      'and leaves alone the one whose twin is cached and priced',
+      !wanted.includes('fill-fr-twinned'),
+      JSON.stringify(wanted.filter((id) => id.startsWith('fill-')))
+    )
+    check(
+      'and the card with no oracle id, because its twin is found by set and number',
+      !wanted.includes('fill-fr-nooracle'),
+      JSON.stringify(wanted.filter((id) => id.startsWith('fill-')))
+    )
+    /*
+      The work is finite, which is the property that makes this safe to run on every launch.
+
+      An English row is never queued: its own twin is itself, so there is nothing to fetch.
+      And a card whose English twin is already cached is never queued again even when that
+      twin turned out to be unpriced -- otherwise a card Scryfall prices in no language would
+      be asked about for ever, and the fill would never stop having work to do.
+    */
+    check(
+      'an English printing is never queued: its twin is itself',
+      !wanted.includes('fill-en-orphan'),
+      JSON.stringify(wanted.filter((id) => id.startsWith('fill-')))
+    )
+    check(
+      'and a card whose twin is cached but unpriced is not asked about again',
+      (() => {
+        insert('fill-fr-asked', 'fr', 'fst', '6', 'oracle-asked', priceless)
+        insert('fill-en-asked', 'en', 'fst', '6', 'oracle-asked', priceless)
+        addToCollection({
+          scryfall_id: 'fill-fr-asked',
+          finish: 'nonfoil',
+          condition: 'NM',
+          quantity: 1
+        })
+        return (
+          !printingsMissingPrices().some((row) => row.scryfall_id === 'fill-fr-asked') &&
+          unpricedAmong(['fill-fr-asked']).length === 0
+        )
+      })(),
+      'the fill would keep re-fetching a card Scryfall prices in no language'
+    )
+    check(
+      'the selection carries the set and number the English printing is fetched by',
+      printingsMissingPrices().every(
+        (row) => !!row.set_code && !!row.collector_number
+      ),
+      'a selected row has no set or collector number to look the twin up with'
+    )
+    check(
+      'and asking about specific printings gives the same answer',
+      JSON.stringify(unpricedAmong(['fill-fr-alone', 'fill-fr-twinned']).map((r) => r.scryfall_id)) ===
+        JSON.stringify(['fill-fr-alone']),
+      JSON.stringify(unpricedAmong(['fill-fr-alone', 'fill-fr-twinned']))
+    )
+    check(
+      'nothing is requested for a card that is already priced',
+      unpricedAmong(['fill-en-twin']).length === 0,
+      'a priced printing was queued for a fetch it does not need'
+    )
+
+    /*
+      The report, end to end: with the twin cached the French row prices, and says the figure
+      is not its own. Both are needed -- a borrowed figure shown as exact is the other half
+      of the same bug.
+    */
+    {
+      const rows = queryCollection(filters({ search: 'Fill Test' }), 'eur', 50, 0).rows
+      const twinned = rows.find((row) => row.scryfall_id === 'fill-fr-twinned')
+      const alone = rows.find((row) => row.scryfall_id === 'fill-fr-alone')
+      const noOracle = rows.find((row) => row.scryfall_id === 'fill-fr-nooracle')
+      check(
+        'a French row with a cached English twin shows a price, marked as borrowed',
+        twinned?.unit_value === 3 && twinned?.price_is_proxy === true,
+        `value=${twinned?.unit_value} proxy=${twinned?.price_is_proxy}`
+      )
+      check(
+        'a French row with no oracle id borrows through set and collector number',
+        noOracle?.unit_value === 3 && noOracle?.price_is_proxy === true,
+        `value=${noOracle?.unit_value} proxy=${noOracle?.price_is_proxy}`
+      )
+      check(
+        'and the one whose twin is missing still reports null rather than 0',
+        alone?.unit_value === null && alone?.price_is_proxy === false,
+        `value=${alone?.unit_value} proxy=${alone?.price_is_proxy}`
+      )
+    }
+
+    /*
+      And the same answer for the screens that hold a `Printing` rather than a row: the
+      details price grid, the printing picker, the Add-cards tiles. They read the object over
+      IPC and had no way back to the database, which is why they drew an em dash for every
+      French card even when the twin was cached.
+    */
+    {
+      const twinned = getPrinting('fill-fr-twinned')
+      const alone = getPrinting('fill-fr-alone')
+      const twin = getPrinting('fill-en-twin')
+      check(
+        'a printing carries its twin’s prices when it has none of its own',
+        twinned?.borrowed_prices?.eur === '3.00' && twinned?.prices?.eur === null,
+        JSON.stringify({ own: twinned?.prices?.eur, borrowed: twinned?.borrowed_prices?.eur })
+      )
+      check(
+        'and priceOfPrinting resolves own, then borrowed, then null',
+        priceOfPrinting(twin!, 'nonfoil', 'eur').value === 3 &&
+          priceOfPrinting(twin!, 'nonfoil', 'eur').borrowed === false &&
+          priceOfPrinting(twinned!, 'nonfoil', 'eur').value === 3 &&
+          priceOfPrinting(twinned!, 'nonfoil', 'eur').borrowed === true &&
+          priceOfPrinting(alone!, 'nonfoil', 'eur').value === null,
+        JSON.stringify({
+          own: priceOfPrinting(twin!, 'nonfoil', 'eur'),
+          borrowed: priceOfPrinting(twinned!, 'nonfoil', 'eur'),
+          neither: priceOfPrinting(alone!, 'nonfoil', 'eur')
+        })
+      )
+      check(
+        'a borrowed foil price comes from the twin’s foil column, not its plain one',
+        priceOfPrinting(twinned!, 'foil', 'eur').value === 7,
+        `${priceOfPrinting(twinned!, 'foil', 'eur').value}`
+      )
+    }
+
+    /*
+      The picker and the Add-cards tiles, which hold printings off a Scryfall search rather
+      than rows out of the database.
+
+      This was the gap the first attempt left: `priceOfPrinting` was wired into all three
+      screens, but nothing on that path ever set `borrowed_prices`, so every translated row
+      went on drawing an em dash next to a priced English one. `cache()` in addCards resolves
+      them in one query now, and this asserts the query rather than the screen.
+    */
+    {
+      const lent = borrowedPricesFor(['fill-fr-twinned', 'fill-en-twin', 'fill-fr-alone'])
+      check(
+        'a batch lookup lends the twin’s prices to the printing that has none',
+        JSON.parse(lent.get('fill-fr-twinned') ?? '{}').eur === '3.00',
+        JSON.stringify([...lent.entries()])
+      )
+      check(
+        'and lends nothing to a printing that has its own, or has no lender',
+        !lent.has('fill-en-twin') && !lent.has('fill-fr-alone'),
+        JSON.stringify([...lent.keys()])
+      )
+      check(
+        'and it survives more ids than SQLite will bind at once',
+        borrowedPricesFor([
+          ...Array.from({ length: 40000 }, (_, i) => `bulk-${i}`),
+          'fill-fr-twinned'
+        ]).has('fill-fr-twinned'),
+        'a large batch threw or lost its answer'
+      )
+      check(
+        'so does the unpriced lookup, which a large CSV import hands its whole file',
+        unpricedAmong([
+          ...Array.from({ length: 40000 }, (_, i) => `bulk-${i}`),
+          'fill-fr-alone'
+        ]).some((row) => row.scryfall_id === 'fill-fr-alone'),
+        'a large batch threw or lost its answer'
+      )
+    }
+
+    /*
+      A price is never worth the operation it rode in on.
+
+      Two shapes of the same mistake, both found in review before they shipped: fast entry
+      awaited the price fetch *before* writing the row, so a 503 from Scryfall meant the card
+      somebody typed was never added; and the bulk language flows awaited it after every row
+      was committed but inside `undoableAsync`, which records its undo step only once the
+      action resolves -- so a throw there left the conversion done and impossible to undo.
+
+      Driven by making the fetch actually fail, on a card the fill actually asks about. The
+      first version of these checks used a card whose English twin was already cached, so the
+      fill returned early, the POST was never reached and both checks passed against code that
+      had been deliberately broken. This is that lesson, kept.
+    */
+    {
+      const realFetch = globalThis.fetch
+      const withDeadPost = async <T>(run: () => Promise<T>): Promise<T> => {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+          if ((init?.method ?? 'GET') === 'POST' && String(input).includes('/cards/collection')) {
+            throw new Error('Scryfall is down')
+          }
+          return realFetch(input, init)
+        }) as typeof fetch
+        try {
+          return await run()
+        } finally {
+          globalThis.fetch = realFetch
+        }
+      }
+
+      // The card the fill genuinely wants: French, unpriced, no English twin cached.
+      check(
+        'the fill really does reach the network for a card with no twin',
+        unpricedAmong(['fill-fr-alone']).length === 1,
+        'the checks below would prove nothing about a card that is never fetched'
+      )
+
+      let loudThrew = false
+      await withDeadPost(async () => {
+        try {
+          await fillEnglishPrices(['fill-fr-alone'])
+        } catch {
+          loudThrew = true
+        }
+      })
+      check(
+        'a failed price fetch is a real failure when someone asked for it',
+        loudThrew,
+        'the fill swallowed a fetch failure the Stats button needs to see'
+      )
+
+      const quiet = await withDeadPost(() => fillEnglishPricesQuietly(['fill-fr-alone']))
+      check(
+        'but it costs the caller nothing when it was nobody’s errand',
+        quiet.requested === 0 && quiet.filled === 0,
+        JSON.stringify(quiet)
+      )
+
+      /*
+        And the order fast entry does its two jobs in, which no fixture can reach: the card
+        this suite can add is one whose twin is already cached, so the fetch never runs and a
+        behavioural check cannot tell the two orders apart. Asserted as text, deliberately,
+        because the alternative is asserting nothing -- and the failure it guards against is
+        losing a card somebody typed.
+      */
+      {
+        const source = readFileSync(joinPath('src', 'main', 'services', 'addCards.ts'), 'utf8')
+        check(
+          'fast entry writes the row before it asks about prices',
+          source.indexOf('addToCollection({') < source.indexOf('fillEnglishPricesQuietly('),
+          'the price fetch is back in front of the write it must not be able to veto'
+        )
+      }
+    }
+
+    /*
+      What the price refresh covers. It was the collection alone, which is how a synced deck's
+      French cards went un-refreshed indefinitely: the only job that updates prices could not
+      see them.
+    */
+    {
+      /*
+        A printing nobody owns, named only by a deck -- which is the reported case: the cards
+        with no price were in a deck synced from Archidekt, and the refresh could not see
+        them. Inserted straight into `deck_cards`, with no collection row anywhere, because
+        that is the shape of the problem.
+      */
+      insert('fill-deck-only', 'fr', 'fst', '5', 'oracle-deck-only', priceless)
+      const anyDeck = db.get('SELECT id FROM decks LIMIT 1') as { id: number } | undefined
+      if (anyDeck) {
+        db.run(
+          `INSERT INTO deck_cards (deck_id, scryfall_id, oracle_id, quantity, name, lang,
+                                   set_code, collector_number)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [anyDeck.id, 'fill-deck-only', 'oracle-deck-only', 1, 'Fill Test 5', 'fr', 'fst', '5']
+        )
+      }
+
+      const ids = pricedPrintingIds()
+      check(
+        'the price refresh covers a printing only a deck names',
+        anyDeck ? ids.includes('fill-deck-only') : false,
+        anyDeck
+          ? 'a deck-only printing is invisible to the only job that refreshes prices'
+          : 'no deck to hang the check on'
+      )
+      check(
+        'and the fill wants it too, since nothing prices it',
+        printingsMissingPrices().some((row) => row.scryfall_id === 'fill-deck-only'),
+        'a deck-only unpriced printing was not selected for the fill'
+      )
+      check(
+        'the price refresh covers the English twins it borrows from',
+        ids.includes('fill-en-twin'),
+        'a twin nobody owns would never be refreshed again'
+      )
+      check(
+        'and every printing the collection holds',
+        ids.includes('fill-fr-alone') && ids.includes('fill-fr-twinned'),
+        'a held printing is missing from the refresh set'
+      )
+    }
+
+    /*
+      Migration 21 asked for all of this, and it is the only thing that makes the fill run on
+      an existing database. Asked of the settings row rather than of the migration's text: a
+      check that greps the source cannot tell running from being mentioned.
+    */
+    check(
+      'migration 21 leaves the English price fill pending',
+      (db.get('SELECT value FROM settings WHERE key = ?', [FILL_FLAG]) as
+        | { value: string }
+        | undefined)?.value === 'pending',
+      JSON.stringify(db.get('SELECT * FROM settings WHERE key = ?', [FILL_FLAG]))
+    )
+    check(
+      'and running its statement again changes nothing',
+      (() => {
+        db.exec(
+          "INSERT OR REPLACE INTO settings (key, value) VALUES ('prices.fillEnglish', 'pending')"
+        )
+        const rows = db.all('SELECT value FROM settings WHERE key = ?', [FILL_FLAG]) as {
+          value: string
+        }[]
+        return rows.length === 1 && rows[0].value === 'pending'
+      })(),
+      'the flag is not a single pending row after a second run'
+    )
+
+    /*
+      The value filter, which threw for as long as it existed: `priceExpr`'s default finish
+      column names an alias that is scoped inside the union this query selects from. Nothing
+      in the suite ever set a value range, so nothing caught it.
+    */
+    check(
+      'a value range filters instead of throwing',
+      (() => {
+        try {
+          const page = queryCollection(filters({ valueMin: 1 }), 'eur', 50, 0)
+          return page.rows.every((row) => (row.unit_value ?? 0) >= 1)
+        } catch (err) {
+          return `threw: ${(err as Error).message}` === ''
+        }
+      })(),
+      'setting a minimum value raised instead of filtering'
+    )
+    check(
+      'and a maximum too, with the facets it drives',
+      (() => {
+        try {
+          queryFacets(filters({ valueMax: 2 }))
+          return true
+        } catch {
+          return false
+        }
+      })(),
+      'the facet query raised on a value range'
+    )
   }
 
   section('Prices and null handling')

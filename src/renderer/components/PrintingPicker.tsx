@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Globe, Languages, RefreshCw } from 'lucide-react'
-import { LANGUAGES, type CardContext, type PrintingChoice } from '@shared/types'
+import { LANGUAGES, priceOfPrinting, type CardContext, type PrintingChoice } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import { CardImage, LangChip, RarityPip } from './primitives'
 import Popover from './Popover'
 import PrintingFilterBar from './PrintingFilterBar'
 import { matchesPrintingFilters } from '../lib/printingFilter'
-import { languageName, money } from '../lib/format'
+import { languageName, money, proxyMoney } from '../lib/format'
 import { useT } from '../hooks/useT'
 
 /**
@@ -241,14 +241,17 @@ export default function PrintingPicker({
                       </span>
                     )}
                     <span className="numeric w-14 shrink-0 text-right text-[10px] text-gold-300">
-                      {money(
-                        Number(
-                          currency === 'eur'
-                            ? (printing.prices?.eur ?? NaN)
-                            : (printing.prices?.usd ?? NaN)
-                        ),
-                        currency
-                      )}
+                      {(() => {
+                        /*
+                          The twin's figure where the printing has none, marked with a ≈.
+
+                          This list is every printing of the card, so the English row showed
+                          a price and every translation under it an em dash -- side by side,
+                          which is where the gap was most obvious.
+                        */
+                        const { value, borrowed } = priceOfPrinting(printing, 'nonfoil', currency)
+                        return borrowed ? proxyMoney(value, currency) : money(value, currency)
+                      })()}
                     </span>
                     {current && <Check size={12} className="shrink-0 text-gold-400" />}
                   </button>

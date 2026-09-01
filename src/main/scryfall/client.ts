@@ -322,6 +322,35 @@ export async function cardsByIds(ids: string[]): Promise<ScryfallCard[]> {
   return found
 }
 
+/**
+ * Batch lookup by set and collector number, which hands back the **English** printing.
+ *
+ * The API ignores `lang` on this route — the hazard `cardsByIds` exists to avoid — and here
+ * that is exactly the point: one request per 75 cards returns the English twin of each, which
+ * is the only printing Scryfall reliably prices. Missing cards are simply absent from the
+ * reply, so the caller must match on what came back rather than on order.
+ */
+export async function cardsBySetNumber(
+  cards: { set_code: string; collector_number: string }[]
+): Promise<ScryfallCard[]> {
+  const found: ScryfallCard[] = []
+  for (let i = 0; i < cards.length; i += COLLECTION_BATCH) {
+    const batch = cards.slice(i, i + COLLECTION_BATCH)
+    const result = await request<{ data: ScryfallCard[] }>('/cards/collection', {
+      method: 'POST',
+      body: {
+        identifiers: batch.map((card) => ({
+          set: card.set_code.toLowerCase(),
+          collector_number: card.collector_number
+        }))
+      },
+      allowNotFound: true
+    })
+    if (result) found.push(...result.data)
+  }
+  return found
+}
+
 /** Batch lookup by name (English only — the API has no multilingual batch route). */
 export async function cardsByNames(
   names: string[]

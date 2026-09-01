@@ -8,6 +8,7 @@ import {
   type DeckCardIdentity
 } from '../db/repos/decks.js'
 import { resolvePrintingInLanguage } from './languageResolve.js'
+import { fillEnglishPricesQuietly } from './priceFill.js'
 
 export type ProgressSink = (event: ProgressEvent) => void
 
@@ -54,9 +55,11 @@ export interface LanguageResult {
 export async function setCardLanguage(
   deckId: number,
   card: DeckCardIdentity,
-  lang: string
+  lang: string,
+  /** Printings cached along the way, for the caller to fetch English prices for. */
+  cachedInto?: string[]
 ): Promise<CardOutcome> {
-  const found = await resolvePrintingInLanguage(card, lang)
+  const found = await resolvePrintingInLanguage(card, lang, cachedInto)
   if (found) {
     // Writing the override clears any earlier miss for this card.
     setCardOverride(deckId, card.oracle_id, found.scryfall_id, found.lang)
@@ -82,6 +85,7 @@ export async function setCardsLanguage(
 ): Promise<LanguageResult> {
   const result: LanguageResult = { converted: 0, declared: 0, failed: 0 }
   const cards = deckCardIdentities(deckId, oracleIds)
+  const cached: string[] = []
   const phase = `Applying ${lang.toUpperCase()}`
 
   onProgress({ job: 'deck-language', phase, done: 0, total: cards.length })
@@ -89,12 +93,20 @@ export async function setCardsLanguage(
   for (let i = 0; i < cards.length; i += 1) {
     const card = cards[i]
     try {
-      result[await setCardLanguage(deckId, card, lang)] += 1
+      result[await setCardLanguage(deckId, card, lang, cached)] += 1
     } catch {
       result.failed += 1
     }
     onProgress({ job: 'deck-language', phase, done: i + 1, total: cards.length, message: card.name })
   }
+
+  /*
+    The English prices for everything just cached, in batches rather than one per card.
+
+    Scryfall prices a French printing almost never, so a deck converted to French would
+    otherwise report every card as worth nothing — see `fillEnglishPrices`.
+  */
+  await fillEnglishPricesQuietly(cached, onProgress)
 
   // Remembered only as the language you last asked for, to preselect the menu.
   // It no longer decides which cards count as unconvertible — that is per card.

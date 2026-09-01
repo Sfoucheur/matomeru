@@ -303,7 +303,9 @@ const api = {
     refresh: () =>
       call<{ requested: number; updated: number; unpriced: number; syncedAt: string }>(
         'prices:refresh'
-      )
+      ),
+    /** Fetches the English printing of every card Scryfall prices in no other language. */
+    fill: () => call<{ requested: number; filled: number; unpriced: number }>('prices:fill')
   },
 
   stats: {
