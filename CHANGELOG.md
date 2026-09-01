@@ -1,3 +1,17 @@
+## [0.3.6](https://github.com/Sfoucheur/matomeru/compare/v0.3.5...v0.3.6) (2026-09-01)
+
+
+### Bug Fixes
+
+* **prices:** use english prices always ([b40a1db](https://github.com/Sfoucheur/matomeru/commit/b40a1db96955948cada8c2960d34104fa819357c))
+
+
+### Features
+
+* add pagination ([a88c329](https://github.com/Sfoucheur/matomeru/commit/a88c3291814af1b210dcbdb96eae3e438d6bb12d))
+* add pagination ([d27f444](https://github.com/Sfoucheur/matomeru/commit/d27f4447472fb6d032b2f2a6cde7d53709500b6b))
+* **decks:** show card price ([ac73379](https://github.com/Sfoucheur/matomeru/commit/ac733798e2b83611053a45c8181e712a41c2af17))
+
 ## [0.3.5](https://github.com/Sfoucheur/matomeru/compare/v0.3.4...v0.3.5) (2026-08-26)
 
 
