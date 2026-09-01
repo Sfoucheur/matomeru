@@ -23,6 +23,8 @@ import {
 } from './primitives'
 import { FINISH_LABEL, languageName, rarityName } from '../lib/format'
 import { useT } from '../hooks/useT'
+import { CARD_ASPECT } from '../hooks/useGridMetrics'
+import { useBoxSize } from '../hooks/useBoxSize'
 import FinishPicker from './FinishPicker'
 import CardZoom from './CardZoom'
 import PrintingPicker from './PrintingPicker'
@@ -70,6 +72,16 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
     whichever side you had turned it to rather than resetting it.
   */
   const [preview, setPreview] = useState<string | null>(null)
+  /*
+    The room the artwork has, measured.
+
+    The frame needs both numbers to stay a card: the height the details column left it, and
+    the width of its own column. It is absolutely positioned, so measuring the box it sits in
+    cannot feed back into that box's size -- which is what makes a measured frame safe here
+    and would not be if the picture were in flow.
+  */
+  const artBox = useBoxSize()
+  const frameHeight = Math.min(artBox.height, artBox.width * CARD_ASPECT)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** What is on screen, readable without making the hover callback depend on it. */
   const showing = useRef<string | null>(null)
@@ -259,12 +271,32 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
               `auto` against an indefinite height: every card came out at the 92vh ceiling
               because the picture's intrinsic 936px was setting the row.
             */}
-            <div className="relative h-[26rem] min-h-0 sm:h-auto sm:flex-1">
+            <div ref={artBox.ref} className="relative h-[26rem] min-h-0 sm:h-auto sm:flex-1">
               <button
                 onClick={() => setZoomed(true)}
                 title={t('zoom.open')}
                 /* The framed element, so a check can measure the shape it draws. */
                 data-card-frame=""
+                /*
+                  Card-shaped by arithmetic, which is the only way to be card-shaped under
+                  two caps at once.
+
+                  The frame has to fit the room the details column left *and* the width of
+                  its column, and stay a card either way. CSS can express one cap or the
+                  other -- `w-full` plus a ratio, or a definite height plus a ratio -- and
+                  whichever it is, the second cap breaks the first: an explicit height wins
+                  against `aspect-ratio`, so `max-h-full` on a width-driven frame silently
+                  turned it into a wide, short box on every card whose details were shorter
+                  than the picture. `min` of the two, in pixels, cannot do that.
+
+                  Zero until the box is measured, and the ratio-and-width fallback below
+                  covers that first frame.
+                */
+                style={
+                  artBox.height > 0 && artBox.width > 0
+                    ? { height: frameHeight, width: frameHeight / CARD_ASPECT }
+                    : undefined
+                }
                 /*
                   Card-shaped, not box-shaped.
 
@@ -278,18 +310,19 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                   flow is what stops the artwork contributing height, which is the whole
                   mechanism behind a dialog that follows its content.
 
-                  The height comes from the width, not the other way round. Deriving the
-                  width from `h-full` does not work: an explicit height wins against
-                  `aspect-ratio`, so as soon as `max-w-full` clamped the width the ratio
-                  was simply violated -- measured at 224x716, a ratio of 0.313 against the
-                  0.718 a card is. The column is the binding constraint in this layout
-                  anyway (capped at 24rem against a row of 500-800px), so `w-full` plus the
-                  ratio is the honest way round, with `max-h-full` as the guard for a row
-                  short enough to bind instead.
+                  Sized in pixels above rather than by `aspect-ratio` here. This was `w-full`
+                  plus the ratio with `max-h-full` as a guard, on the reasoning that the
+                  column was the binding constraint anyway -- true when the column was 24rem
+                  and false ever since it became 32rem: a 512px column asks for 713px of
+                  height, which most cards' details do not reach, so the guard bound on the
+                  common case and took the ratio with it.
+
+                  Centred, because it is now narrower than its column whenever the height is
+                  what binds.
                 */
-                className="group absolute left-0 top-0 block aspect-[488/680] w-full
-                  max-h-full cursor-zoom-in overflow-hidden rounded-xl ring-1 ring-ink-700
-                  transition-all hover:ring-gold-500"
+                className="group absolute left-1/2 top-0 block aspect-[488/680] w-full
+                  max-h-full -translate-x-1/2 cursor-zoom-in overflow-hidden rounded-xl
+                  ring-1 ring-ink-700 transition-all hover:ring-gold-500"
               >
               {/*
                 The card turns over rather than cutting between two pictures.
@@ -311,7 +344,8 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 <CardImage
                   scryfallId={preview}
                   size="large"
-                  className="h-full w-full object-contain"
+                  fit="contain"
+                  className="h-full w-full"
                   alt={t('printing.preview')}
                   data-card-preview=""
                 />
@@ -342,7 +376,8 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                         scryfallId={sides.front.scryfallId}
                         size="large"
                         face={sides.front.face}
-                        className="h-full w-full object-contain"
+                        fit="contain"
+                        className="h-full w-full"
                         alt={sides.front.title}
                       />
                     </div>
@@ -355,7 +390,8 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                         scryfallId={sides.back.scryfallId}
                         size="large"
                         face={sides.back.face}
-                        className="h-full w-full object-contain"
+                        fit="contain"
+                        className="h-full w-full"
                         alt={sides.back.title}
                       />
                     </div>
@@ -365,7 +401,8 @@ export default function CardDetailModal({ scryfallId }: { scryfallId: string }):
                 <CardImage
                   scryfallId={scryfallId}
                   size="large"
-                  className="h-full w-full object-contain"
+                  fit="contain"
+                  className="h-full w-full"
                   alt={title}
                 />
               )}

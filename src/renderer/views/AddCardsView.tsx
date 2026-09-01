@@ -84,7 +84,18 @@ export default function AddCardsView({ active }: ViewProps): React.ReactElement 
         ))}
       </div>
 
-      {tab === 'search' ? <SearchTab active={active} /> : <QuickTab active={active} />}
+      {/*
+        Both tabs mounted, the inactive one hidden — the same trick `App` uses for the
+        screens themselves, and for the same reason. Rendering one or the other unmounted
+        whichever you left: a fast-entry log of forty added cards, and everything typed into
+        the fields above it, thrown away by a click on Search and back.
+      */}
+      <div className={`flex min-h-0 flex-1 flex-col ${tab === 'search' ? '' : 'hidden'}`}>
+        <SearchTab active={active && tab === 'search'} />
+      </div>
+      <div className={`flex min-h-0 flex-1 flex-col ${tab === 'quick' ? '' : 'hidden'}`}>
+        <QuickTab active={active && tab === 'quick'} />
+      </div>
     </div>
   )
 }

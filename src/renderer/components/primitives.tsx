@@ -660,6 +660,7 @@ export function CardImage({
   scryfallId,
   size = 'small',
   face = 0,
+  fit = 'cover',
   className = '',
   alt
 }: {
@@ -668,6 +669,17 @@ export function CardImage({
   size?: 'small' | 'normal' | 'large'
   /** The back of a double-faced card. Falls back to the front if there is none. */
   face?: 0 | 1
+  /**
+   * How the picture sits in its box, when the box is not exactly card-shaped.
+   *
+   * A prop rather than a class, because `className` lands on the wrapper below and
+   * `object-fit` only means anything on a replaced element. The detail dialog passed
+   * `object-contain` for weeks and got `object-cover`: the class was applied to a `div`,
+   * where it does nothing, and the `img` kept the hardcoded value. On a frame that had lost
+   * its ratio that scaled the picture up to cover the wider box and cropped a third of the
+   * card away, which is the bug this exists to make impossible to reintroduce.
+   */
+  fit?: 'cover' | 'contain'
   className?: string
   alt: string
 }): React.ReactElement {
@@ -705,9 +717,9 @@ export function CardImage({
         decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
-        className={`h-full w-full object-cover transition-opacity duration-200 ${
-          loaded ? 'opacity-100' : 'opacity-0'
-        }`}
+        className={`h-full w-full transition-opacity duration-200 ${
+          fit === 'contain' ? 'object-contain' : 'object-cover'
+        } ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />
     </div>
   )

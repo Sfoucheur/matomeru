@@ -829,6 +829,27 @@ async function main(): Promise<void> {
       check('CardImage still positions itself, so nothing may pass it a position',
         /className=\{`relative overflow-hidden/.test(art),
         'CardImage no longer sets relative -- this check has lost its subject')
+      /*
+        The same trap, one property over, and this one shipped.
+
+        `object-fit` only means anything on a replaced element, and `className` lands on the
+        wrapper `div`. The detail dialog passed `object-contain` at four call sites for weeks
+        and got `object-cover`: on a frame that had lost its ratio, that scaled the picture up
+        to cover the wider box and cropped a third of the card away -- the artwork visibly
+        larger than the ring around it, which is exactly what was reported.
+
+        So the fit is a prop, and it has to reach the `img`. Asserted as a pair, because
+        either half alone still leaves a caller's intent on the wrong element.
+      */
+      check('the picture takes its fit from a prop, on the img rather than a wrapper',
+        /fit\?: 'cover' \| 'contain'/.test(art) &&
+          /fit === 'contain' \? 'object-contain' : 'object-cover'/.test(art),
+        'an object-fit handed to CardImage would land on a div, where it does nothing')
+      check('and no caller tries to say it through className instead',
+        !/className="[^"]*object-(contain|cover)/.test(
+          readFileSync(joinPath('src', 'renderer', 'components', 'CardDetailModal.tsx'), 'utf8')
+        ),
+        'a class that cannot work is being passed where the prop belongs')
       {
         const stacked = art.slice(art.indexOf('export function StackedArt'),
           art.indexOf('export function CardImage'))

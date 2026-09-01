@@ -48,7 +48,7 @@ import { FINISH_LABEL } from '../lib/format'
 import { useT } from '../hooks/useT'
 import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
-import { bigMoney, count, relativeTime } from '../lib/format'
+import { bigMoney, count, money, proxyMoney, relativeTime } from '../lib/format'
 import {
   FLAT_CARDS,
   buildDeckBody,
@@ -1026,6 +1026,7 @@ function DeckBody({
               <DeckCardLine
                 card={item.card}
                 deck={deck}
+                currency={currency}
                 selected={selected.has(item.card.id)}
                 onSelect={onSelect}
                 onPreview={preview.onEnter}
@@ -1050,6 +1051,7 @@ function DeckBody({
                     key={card.id}
                     card={card}
                     deck={deck}
+                    currency={currency}
                     density={density}
                     selected={selected.has(card.id)}
                     onSelect={onSelect}
@@ -1132,6 +1134,7 @@ const SectionHeader = memo(function SectionHeader({
 const DeckCardLine = memo(function DeckCardLine({
   card,
   deck,
+  currency,
   selected,
   onSelect,
   onPreview,
@@ -1141,6 +1144,8 @@ const DeckCardLine = memo(function DeckCardLine({
 }: {
   card: DeckCardRow
   deck: Deck
+  /** The active currency, for the price the row shows. */
+  currency: 'usd' | 'eur'
   /** Which category drew this row; the same card is drawn under each one it carries. */
   section: string
   selected: boolean
@@ -1289,7 +1294,8 @@ const DeckCardLine = memo(function DeckCardLine({
 
       <RarityPip rarity={card.rarity} />
 
-      <span className="w-24 shrink-0 truncate text-right text-[10px]">
+      {/* Narrowed for the price too; the foil label was already truncated. */}
+      <span className="w-20 shrink-0 truncate text-right text-[10px]">
         {card.finish === 'nonfoil' ? (
           <span className="text-ink-700">—</span>
         ) : (
@@ -1310,7 +1316,9 @@ const DeckCardLine = memo(function DeckCardLine({
         )}
       </span>
 
-      <span className="w-20 shrink-0 truncate text-[11px] uppercase text-ink-500">
+      {/* Narrowed from w-20 to make room for the price: a set code is three or four
+          characters, and the row was already 200px wider than the smallest window. */}
+      <span className="w-14 shrink-0 truncate text-[11px] uppercase text-ink-500">
         {card.set_code ?? '—'}
       </span>
 
@@ -1339,7 +1347,31 @@ const DeckCardLine = memo(function DeckCardLine({
         )}
       </span>
 
-      <span className="flex w-40 shrink-0 justify-end gap-1">
+      {/*
+        What one copy costs — the same figure, in the same shape, as the collection's Unit
+        column.
+
+        Every other number on this screen is missing-copy money: the header's pile and each
+        section's figure multiply the price by what you still have to buy, so a card you
+        already own contributes nothing to any of them and its value appeared nowhere. This
+        is the card's own price, per copy, which is the question the collection answers about
+        the same card.
+
+        A `span` rather than a button, and no visible word "proxy": the selection probe finds
+        the card name as the row's third button and skips any row whose text says Proxy, so a
+        clickable or wordier cell here breaks it somewhere else entirely.
+      */}
+      <span
+        className="numeric w-20 shrink-0 truncate text-right text-xs text-ink-300"
+        title={card.price_is_proxy ? t('price.borrowed') : undefined}
+      >
+        {card.price_is_proxy
+          ? proxyMoney(card.unit_value, currency)
+          : money(card.unit_value, currency)}
+      </span>
+
+      {/* Also narrowed for the price. Four badges, rarely more than one at a time. */}
+      <span className="flex w-32 shrink-0 justify-end gap-1">
         {card.moved !== 0 && <PulledBadge card={card} />}
         {card.proxied && (
           <span
@@ -1375,12 +1407,15 @@ const DeckCardLine = memo(function DeckCardLine({
 const DeckGridTile = memo(function DeckGridTile({
   card,
   deck,
+  currency,
   density,
   selected,
   onSelect
 }: {
   card: DeckCardRow
   deck: Deck
+  /** The active currency, for the price in the tile's footer. */
+  currency: 'usd' | 'eur'
   density: ReturnType<typeof useGridMetrics>['density']
   selected: boolean
   onSelect: (id: number, mode: PickMode) => void
@@ -1508,15 +1543,33 @@ const DeckGridTile = memo(function DeckGridTile({
       }
       footer={
         density === 'full' ? (
-          <>
-            <LangChip lang={card.lang} />
-            <span className="numeric rounded bg-ink-950 px-1.5 text-[10px] text-ink-50">
-              x{card.quantity}
+          /*
+            Two lines, because the first one is full at the smallest tile this density
+            covers: language, quantity and what the deck holds already spend 160px. The
+            footer is absolutely positioned over the art, so a second line costs the tile no
+            height and the virtualizer nothing at all.
+          */
+          <div className="flex w-full flex-col gap-1">
+            <div className="flex items-center gap-1.5">
+              <LangChip lang={card.lang} />
+              <span className="numeric rounded bg-ink-950 px-1.5 text-[10px] text-ink-50">
+                x{card.quantity}
+              </span>
+              <span
+                className={`numeric ml-auto text-[10px] ${complete ? 'text-good' : 'text-bad'}`}
+              >
+                {t('decks.have', { held: allocated.inDeck })}
+              </span>
+            </div>
+            <span
+              className="numeric text-right text-[10px] text-ink-200"
+              title={card.price_is_proxy ? t('price.borrowed') : undefined}
+            >
+              {card.price_is_proxy
+                ? proxyMoney(card.unit_value, currency)
+                : money(card.unit_value, currency)}
             </span>
-            <span className={`numeric ml-auto text-[10px] ${complete ? 'text-good' : 'text-bad'}`}>
-              have {allocated.inDeck}
-            </span>
-          </>
+          </div>
         ) : (
           <span
             className={`numeric rounded px-1.5 text-[10px] ${

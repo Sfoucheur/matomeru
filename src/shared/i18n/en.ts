@@ -645,7 +645,7 @@ export const en = {
     + 'find, so they are not in the missing pile, but the deck is not finished either.',
   'decks.inBulk': '· {count} in bulk',
   'decks.missing': '{count} missing',
-  'decks.missingPile': 'Missing pile ≈ ',
+  'decks.missingPile': 'Missing pile ',
   'decks.entries': '{count} entries',
   'decks.exactOnlyHint': 'With this on, owning the Japanese printing does not count as owning a card the deck lists in English.',
   'decks.exactOnly': 'Require the exact printing',

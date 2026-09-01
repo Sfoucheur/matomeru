@@ -195,6 +195,85 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   await closeDialog()
   await sleep(700)
 
+  /**
+   * The framed card, measured: its shape, its size, and the picture inside it.
+   *
+   * A function rather than a block, because the configuration that broke was the one this
+   * was never run in -- a card whose details are shorter than the picture wants, below the
+   * ceiling. See section 4, which now calls it.
+   */
+  const measureFrame = async () =>
+    JSON.parse(await ev(`(() => {
+      const el = document.querySelector('[role="dialog"] [data-card-frame]')
+      if (!el) return JSON.stringify({ found: false })
+      const r = el.getBoundingClientRect()
+      const body = el.closest('[role="dialog"]').getBoundingClientRect()
+      const column = el.parentElement.parentElement.getBoundingClientRect()
+      const img = el.querySelector('img')
+      const p = img ? img.getBoundingClientRect() : null
+      return JSON.stringify({
+        found: true,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        ratio: Number((r.width / r.height).toFixed(3)),
+        column: Math.round(column.width),
+        box: Math.round(el.parentElement.getBoundingClientRect().height),
+        viewport: window.innerWidth,
+        insideWidth: r.right <= body.right + 1,
+        insideHeight: r.bottom <= body.bottom + 1,
+        picture: p
+          ? {
+              w: Math.round(p.width),
+              h: Math.round(p.height),
+              inside:
+                p.left >= r.left - 1 &&
+                p.right <= r.right + 1 &&
+                p.top >= r.top - 1 &&
+                p.bottom <= r.bottom + 1
+            }
+          : null
+      })
+    })()`))
+
+  /** Everything that must hold of the frame, whatever card is open. */
+  const checkFrame = (label, frame) => {
+    const of = label ? ` (${label})` : ''
+    check('the framed card keeps a card its shape' + of,
+      frame.found && Math.abs(frame.ratio - 488 / 680) <= 0.02,
+      JSON.stringify(frame))
+    check('and it stays inside the dialog on both axes' + of,
+      frame.insideWidth === true && frame.insideHeight === true, JSON.stringify(frame))
+    /*
+      The picture is inside the frame it is ringed by.
+
+      This is the bug stated directly: `object-contain` was passed to `CardImage` as a class,
+      where it landed on a wrapper div and did nothing, so the img kept `object-cover` and --
+      on a frame that had lost its ratio -- was laid out 353px taller than the box that
+      clipped it. The name and the text box were simply gone.
+    */
+    check('and the picture is inside the frame, not scaled up past it' + of,
+      frame.picture !== null && frame.picture.inside === true,
+      JSON.stringify(frame.picture))
+    /*
+      And it is actually big. Taking the picture out of the layout flow -- which is what
+      lets the dialog follow its content -- left nothing in that column asking for width,
+      so it collapsed to its floor and the card came out at 224px, smaller than before the
+      dialog was ever made to grow. A ratio check alone passes happily on a tiny card.
+
+      Either constraint may be the binding one: the column's width, or the height the details
+      column left. It used to be only the width, on the reasoning that the column was always
+      the smaller -- which stopped being true when the column grew to 32rem, and the frame
+      answered by breaking its ratio rather than its width.
+    */
+    check('it fills the room it has, in whichever direction is binding' + of,
+      frame.w >= frame.column - 2 || frame.h >= frame.box - 2,
+      JSON.stringify(frame))
+    if (frame.viewport >= 1200) {
+      check('and on a wide window it is a card you can actually read' + of,
+        frame.w >= 320, JSON.stringify(frame))
+    }
+  }
+
   /*
     ---- 3b. the ceiling.
 
@@ -227,41 +306,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     // Opens its own card: the section above closes the dialog, and a check that measures
     // whatever the previous one left behind is a check that reports its own ordering.
     await openCard('Oko')
-    const frame = JSON.parse(await ev(`(() => {
-      const el = document.querySelector('[role="dialog"] [data-card-frame]')
-      if (!el) return JSON.stringify({ found: false })
-      const r = el.getBoundingClientRect()
-      const body = el.closest('[role="dialog"]').getBoundingClientRect()
-      const column = el.parentElement.parentElement.getBoundingClientRect()
-      return JSON.stringify({
-        found: true,
-        w: Math.round(r.width),
-        h: Math.round(r.height),
-        ratio: Number((r.width / r.height).toFixed(3)),
-        column: Math.round(column.width),
-        viewport: window.innerWidth,
-        insideWidth: r.right <= body.right + 1,
-        insideHeight: r.bottom <= body.bottom + 1
-      })
-    })()`))
+    const frame = await measureFrame()
     console.log('        → frame ' + JSON.stringify(frame))
-    check('the framed card keeps a card its shape',
-      frame.found && Math.abs(frame.ratio - 488 / 680) <= 0.02,
-      JSON.stringify(frame))
-    check('and it stays inside the dialog on both axes',
-      frame.insideWidth === true && frame.insideHeight === true, JSON.stringify(frame))
-    /*
-      And it is actually big. Taking the picture out of the layout flow -- which is what
-      lets the dialog follow its content -- left nothing in that column asking for width,
-      so it collapsed to its floor and the card came out at 224px, smaller than before the
-      dialog was ever made to grow. A ratio check alone passes happily on a tiny card.
-    */
-    check('it fills the column it is in, rather than sitting in a letterbox',
-      frame.w >= frame.column - 2, JSON.stringify(frame))
-    if (frame.viewport >= 1200) {
-      check('and on a wide window it is a card you can actually read',
-        frame.w >= 320, JSON.stringify(frame))
-    }
+    checkFrame('', frame)
     await closeDialog()
     await sleep(500)
   }
@@ -292,6 +339,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       console.log(`        → ${label}: ` + JSON.stringify({ h: seen.box.h, cap }))
       check(`a ${label} card sits under the ceiling when there is room for it`,
         seen.box.h < cap, JSON.stringify({ got: seen.box.h, cap }))
+      /*
+        And the frame, here, which is the hole this section had.
+
+        Section 3c measures a wordy card on the default window, where the details reach the
+        ceiling and the picture fits with room to spare. The configuration that actually
+        broke is this one -- a short card, below the ceiling, where the height is what binds
+        -- and it was the one configuration never measured for shape.
+      */
+      const framed = await measureFrame()
+      console.log(`        → ${label} frame ` + JSON.stringify(framed))
+      checkFrame(label, framed)
       await closeDialog()
       await sleep(500)
     }

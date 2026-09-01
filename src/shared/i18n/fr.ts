@@ -636,7 +636,7 @@ export const fr: Record<keyof typeof en, string> = {
 		"Des exemplaires que vous possédez mais que le deck ne contient pas : ils sont en bulk. Ils ne coûtent rien à retrouver, donc ils ne figurent pas dans le total manquant, mais le deck n’est pas complet pour autant.",
 	"decks.inBulk": "· {count} en bulk",
 	"decks.missing": "{count} manquantes",
-	"decks.missingPile": "Pile manquante ≈ ",
+	"decks.missingPile": "Pile manquante ",
 	"decks.entries": "{count} entrées",
 	"decks.exactOnlyHint": "Avec cette option, posséder l’édition japonaise ne compte pas comme posséder une carte que le deck liste en anglais.",
 	"decks.exactOnly": "Exiger l’édition exacte",
