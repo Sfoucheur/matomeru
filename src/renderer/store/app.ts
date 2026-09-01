@@ -7,12 +7,14 @@ import {
   DEFAULT_FILTERS,
   DEFAULT_PRINTING_FILTERS,
   DEFAULT_GRID_COLUMNS,
+  DEFAULT_ROWS_PER_PAGE,
   DEFAULT_VIEW_MODES,
   GRID_MAX_COLUMNS,
   GRID_MIN_COLUMNS,
   type AppSettings,
   type CollectionFilters,
   type GridKey,
+  type PagedScreen,
   type PrintingFilters,
   type ProgressEvent,
   type ViewModes
@@ -103,6 +105,10 @@ interface AppState {
   /** List/grid choice for one screen, persisted so it survives a restart. */
   viewModeFor: <K extends keyof ViewModes>(screen: K) => ViewModes[K]
   setViewMode: <K extends keyof ViewModes>(screen: K, mode: ViewModes[K]) => void
+
+  /** Cards per page for one of the two lists long enough to need them. */
+  rowsPerPageFor: (screen: PagedScreen) => number
+  setRowsPerPage: (screen: PagedScreen, size: number) => void
 }
 
 /**
@@ -254,6 +260,26 @@ export const useApp = create<AppState>((set, get) => ({
     // Optimistic, like the column stepper: the toggle must feel instant.
     get().setSettings({ ...settings, viewModes })
     void window.api.settings.update({ viewModes }).catch(() => undefined)
+  },
+
+  rowsPerPageFor: (screen) =>
+    get().settings?.rowsPerPage[screen] ?? DEFAULT_ROWS_PER_PAGE[screen],
+
+  setRowsPerPage: (screen, size) => {
+    const settings = get().settings
+    if (!settings) return
+    if (settings.rowsPerPage[screen] === size) return
+    const rowsPerPage = { ...settings.rowsPerPage, [screen]: size }
+    /*
+      Optimistic, and deliberately not through `updateSettings`.
+
+      A page size does change what a query returns, so it looks like a data-affecting
+      setting -- but the refetch it needs is the one list that owns it, driven by that
+      screen's own effect. Going through `updateSettings` would bump `dataVersion` and fan a
+      request out to every mounted screen instead.
+    */
+    get().setSettings({ ...settings, rowsPerPage })
+    void window.api.settings.update({ rowsPerPage }).catch(() => undefined)
   }
 }))
 

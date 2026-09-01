@@ -144,16 +144,18 @@ import { parseLabel } from '../src/main/archidekt/mappers.js'
 import { planDeckSync } from '../src/main/services/deckSync.js'
 import {
   clampColumns,
+  clampRowsPerPage,
   DEFAULT_DECK_FILTERS,
   DEFAULT_FILTERS,
   DEFAULT_GRID_COLUMNS,
+  DEFAULT_ROWS_PER_PAGE,
   FOIL_TREATMENTS,
   foilTreatmentLabel,
   foilTreatmentOf,
   priceFor
 } from '../src/shared/types.js'
 import { collectionStats } from '../src/main/db/repos/stats.js'
-import { getSettings, updateSettings } from '../src/main/db/repos/settings.js'
+import { getSettings, setSetting, updateSettings } from '../src/main/db/repos/settings.js'
 import { addCard, printingsFor, quickAdd, resolveQuick } from '../src/main/services/addCards.js'
 import { fetchDeck, userByUsername } from '../src/main/archidekt/client.js'
 import { addDeckByUrl } from '../src/main/services/deckSync.js'
@@ -192,7 +194,13 @@ import {
   setCardPrinting,
   setDeckDefaultLang
 } from '../src/main/db/repos/decks.js'
-import { FLAT_CARDS, buildDeckBody, buildDeckSections } from '../src/renderer/lib/deckGroups.js'
+import {
+  FLAT_CARDS,
+  buildDeckBody,
+  buildDeckSections,
+  cardsOf,
+  pageOfSections
+} from '../src/renderer/lib/deckGroups.js'
 import { createThrottledBroadcaster } from '../src/main/ipc/progressThrottle.js'
 import {
   boosterOddsFor,
@@ -3905,6 +3913,142 @@ async function main(): Promise<void> {
           'the surviving section drew no heading'
         )
       }
+      /*
+        One page of a deck.
+
+        A page is neither a filter nor a grouping, so it is a pass of its own applied after
+        `buildDeckSections` and before `buildDeckBody` -- which is why not one check above
+        this had to change. What these hold is the arithmetic, and the one judgement in it:
+        a heading goes on counting its category, because a heading names a category.
+      */
+      {
+        const all = cardsOf(byCategory)
+        const size = 3
+        const walked: number[] = []
+        for (let offset = 0; offset < all.length; offset += size) {
+          walked.push(...cardsOf(pageOfSections(byCategory, offset, size)).map((c) => c.id))
+        }
+        check(
+          'the pages of a deck hold every card once, in the order the sections drew them',
+          JSON.stringify(walked) === JSON.stringify(all.map((c) => c.id)),
+          `${walked.length} paged vs ${all.length} whole, ${new Set(walked).size} distinct`
+        )
+        check(
+          'a page holds exactly the size asked for, until the last one',
+          cardsOf(pageOfSections(byCategory, 0, size)).length === size &&
+            cardsOf(pageOfSections(byCategory, 0, all.length + 10)).length === all.length,
+          `${cardsOf(pageOfSections(byCategory, 0, size)).length} on a page of ${size}`
+        )
+        check(
+          'and a page past the end is empty rather than the last one again',
+          pageOfSections(byCategory, all.length + 5, size).length === 0,
+          JSON.stringify(pageOfSections(byCategory, all.length + 5, size).map((x) => x.name))
+        )
+        /*
+          The judgement, asserted: a category split across a boundary keeps its own counts on
+          both pages. `cardsIn` sums `cardCount`, which is exactly the field `totalsFor` would
+          have recomputed -- so if this ever drifts back to recounting, the sum of a page's
+          headings stops matching the sections they name and this says so.
+        */
+        {
+          const split = byCategory.find((section) => section.cards.length > 1)
+          if (split) {
+            const at = cardsOf(byCategory).findIndex((card) => card.id === split.cards[1].id)
+            const page = pageOfSections(byCategory, at, 1)
+            check(
+              'a heading on a partial page still counts its whole category',
+              page.length === 1 &&
+                page[0].name === split.name &&
+                page[0].cards.length === 1 &&
+                page[0].cardCount === split.cardCount &&
+                page[0].missingCards === split.missingCards,
+              JSON.stringify({
+                page: page[0]?.cardCount,
+                section: split.cardCount,
+                cards: page[0]?.cards.length
+              })
+            )
+          }
+        }
+        /*
+          Except the flat list's own section, which is not a category. "The cards on this
+          page" is a coherent thing to count, so that one is recomputed -- and it must be,
+          or the heading would claim the whole deck on every page.
+        */
+        {
+          const wholeFlat = flat.find((section) => section.name === FLAT_CARDS)
+          // Wide enough to reach past the pinned commander and into the cards below it.
+          const pagedFlat = pageOfSections(flat, 0, flat[0].cards.length + 2).find(
+            (s) => s.name === FLAT_CARDS
+          )
+          check(
+            'while the flat list’s heading counts the page it is on',
+            !!wholeFlat &&
+              !!pagedFlat &&
+              pagedFlat.cardCount < wholeFlat.cardCount &&
+              pagedFlat.cardCount ===
+                pagedFlat.cards.reduce((sum, card) => sum + card.quantity, 0),
+            JSON.stringify({ page: pagedFlat?.cardCount, whole: wholeFlat?.cardCount })
+          )
+        }
+        /*
+          In grid mode a boundary inside a section rounds down to a whole tile row: a chunk
+          that started mid-row would draw a short row in the middle of a category, because
+          `buildDeckBody` chunks from what it is handed rather than from the section's start.
+
+          Asked of a section wide enough to be cut, built here rather than found in the
+          fixture -- every real section in it is smaller than a page, so a check that only
+          looked at those passed with the rounding deliberately removed.
+        */
+        {
+          const seed = byCategory.find((section) => section.cards.length > 0)!
+          const wide = {
+            ...seed,
+            cards: Array.from({ length: 10 }, (_, i) => seed.cards[i % seed.cards.length])
+          }
+          const took = (size: number, columns: number, offset = 0): number =>
+            cardsOf(pageOfSections([wide], offset, size, columns)).length
+          check(
+            'a page cut inside a section takes whole tile rows',
+            took(5, 2) === 4 && took(5, 3) === 3 && took(7, 3) === 6,
+            JSON.stringify({ two: took(5, 2), three: took(5, 3), seven: took(7, 3) })
+          )
+          /*
+            Rounding both ends by the same rule is what keeps the pages a partition: one
+            page's last row is the next one's first index, so nothing is drawn twice and
+            nothing is skipped -- and the final page still reaches the last card, because the
+            end of a section is never rounded away.
+          */
+          check(
+            'and the pages still partition the section, whatever the column count',
+            [2, 3, 4].every((columns) => {
+              const seen: number[] = []
+              for (let offset = 0; offset < wide.cards.length; offset += 5) {
+                seen.push(...cardsOf(pageOfSections([wide], offset, 5, columns)).map((_, i) => i))
+              }
+              return seen.length === wide.cards.length
+            }),
+            'a card was drawn twice or skipped between pages'
+          )
+          check(
+            'and the last page reaches the end of the section',
+            took(5, 3, 8) === 4 && took(5, 2, 8) === 2,
+            JSON.stringify({ three: took(5, 3, 8), two: took(5, 2, 8) })
+          )
+          check(
+            'in row mode nothing is rounded, because a row is one card',
+            took(5, 0) === 5 && took(7, 0) === 7,
+            JSON.stringify({ five: took(5, 0), seven: took(7, 0) })
+          )
+        }
+
+        check(
+          'and a page of nothing draws every section, so a size of zero cannot hide a deck',
+          pageOfSections(byCategory, 0, 0).length === byCategory.length,
+          `${pageOfSections(byCategory, 0, 0).length} of ${byCategory.length}`
+        )
+      }
+
       const rows = buildDeckBody(byCategory, 'rows', 8)
       check(
         'row mode emits one row per card plus one header per section',
@@ -4030,6 +4174,112 @@ async function main(): Promise<void> {
   db.run('DELETE FROM decks WHERE external_id = ?', ['verify-groups'])
 
   // ------------------------------------------------------------------- sorting
+  section('Pages: the rows past the first two hundred')
+
+  /*
+    Offset paging, which nothing in this suite had ever exercised.
+
+    Every call in this file asked for more rows than exist, at offset zero -- and so did the
+    screen, for ever: `queryCollection(filters, 200, 0)` and nothing else, which left row 201
+    onwards reachable only by narrowing the filters. The property that makes paging safe is
+    already here (the ORDER BY ends in a total order, and row keys are asserted unique just
+    below), so what these check is the arithmetic on top of it.
+  */
+  {
+    const whole = queryCollection(filters(), 'usd', 100000, 0)
+    const size = 7
+    const walked: string[] = []
+    let offset = 0
+    let guard = 0
+    for (;;) {
+      const page = queryCollection(filters(), 'usd', size, offset)
+      if (page.rows.length === 0) break
+      walked.push(...page.rows.map((row) => row.key))
+      offset += size
+      guard += 1
+      if (guard > 2000) break
+    }
+    check(
+      'walking the whole collection in pages of 7 finds every row, once, in order',
+      JSON.stringify(walked) === JSON.stringify(whole.rows.map((row) => row.key)),
+      `${walked.length} paged vs ${whole.rows.length} whole,` +
+        ` ${new Set(walked).size} distinct`
+    )
+    check(
+      'and every page reports the same totals, because they describe the filtered set',
+      (() => {
+        const first = queryCollection(filters(), 'usd', size, 0)
+        const middle = queryCollection(filters(), 'usd', size, size * 2)
+        return (
+          first.total === whole.total &&
+          middle.total === whole.total &&
+          Math.abs(middle.totalValue - whole.totalValue) < 0.005 &&
+          middle.totalQuantity === whole.totalQuantity
+        )
+      })(),
+      'a page changed a figure that is about the whole set'
+    )
+    check(
+      'a page past the end is empty rather than wrong, and still knows the total',
+      (() => {
+        const beyond = queryCollection(filters(), 'usd', size, whole.rows.length + 50)
+        return beyond.rows.length === 0 && beyond.total === whole.total
+      })(),
+      'an offset past the end answered with rows or lost the total'
+    )
+    check(
+      'and two pages never hand back the same row',
+      (() => {
+        const a = queryCollection(filters(), 'usd', 5, 0).rows.map((r) => r.key)
+        const b = queryCollection(filters(), 'usd', 5, 5).rows.map((r) => r.key)
+        return a.length === 5 && b.length > 0 && !a.some((key) => b.includes(key))
+      })(),
+      'a row appeared on both pages'
+    )
+  }
+
+  /*
+    The page size, stored and read like the two preferences beside it.
+  */
+  {
+    check(
+      'a page size out of range lands on one the menu offers',
+      clampRowsPerPage(500) === 500 &&
+        clampRowsPerPage(250) === 200 &&
+        clampRowsPerPage(1) === 50 &&
+        clampRowsPerPage(100000) === 500,
+      JSON.stringify([clampRowsPerPage(250), clampRowsPerPage(1), clampRowsPerPage(100000)])
+    )
+    check(
+      'and nonsense is rejected rather than clamped to the smallest page',
+      clampRowsPerPage('abc') === null &&
+        clampRowsPerPage(null) === null &&
+        clampRowsPerPage('') === null,
+      'a missing value would silently become a 50-row page'
+    )
+    updateSettings({ rowsPerPage: { collection: 100, decks: 500 } })
+    check(
+      'page sizes round-trip, per screen',
+      getSettings().rowsPerPage.collection === 100 &&
+        getSettings().rowsPerPage.decks === 500,
+      JSON.stringify(getSettings().rowsPerPage)
+    )
+    setSetting('rowsPerPage', '{"collection":9999,"decks":"nonsense"}')
+    check(
+      'a stored value out of range or corrupt falls back per screen',
+      getSettings().rowsPerPage.collection === 500 &&
+        getSettings().rowsPerPage.decks === DEFAULT_ROWS_PER_PAGE.decks,
+      JSON.stringify(getSettings().rowsPerPage)
+    )
+    setSetting('rowsPerPage', 'not json at all')
+    check(
+      'and a value that is not JSON falls back to every default',
+      JSON.stringify(getSettings().rowsPerPage) === JSON.stringify(DEFAULT_ROWS_PER_PAGE),
+      JSON.stringify(getSettings().rowsPerPage)
+    )
+    updateSettings({ rowsPerPage: { ...DEFAULT_ROWS_PER_PAGE } })
+  }
+
   section('Sorting: colour order, tie-breakers, row keys')
 
   // Every row must carry a unique non-empty key. This is the assertion that would
@@ -4697,7 +4947,9 @@ async function main(): Promise<void> {
       // Column headings and single words that are spelled the same in French:
       // Collection, Export, Total, Decks, and the abbreviations Lang / Rar.
       'coll.title', 'coll.export', 'coll.finishPlaceholder', 'coll.col.lang',
-      'coll.col.rarity', 'coll.col.finish', 'coll.col.decks', 'coll.col.total'
+      'coll.col.rarity', 'coll.col.finish', 'coll.col.decks', 'coll.col.total',
+      // Two interpolated numbers and a slash; there is nothing in it to translate.
+      'page.of'
     ])
     const untranslated = enKeys.filter(
       (k) =>

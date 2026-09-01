@@ -175,7 +175,8 @@ export const fr: Record<keyof typeof en, string> = {
 	"deck.flatListHint": "Une liste — le commandant, puis chaque carte une fois",
 	"deck.flatCards": "Cartes",
 	"deck.uncategorized": "Sans catégorie",
-	"deck.selectAllHint": "Sélectionner toutes les cartes affichées, pour qu’une langue ne s’applique qu’à celles-ci",
+	"deck.selectAllHint":
+		"Sélectionne toutes les cartes retenues par les filtres, sur toutes les pages : une langue ne s’applique donc qu’à celles-ci.",
 	"deck.cardsShown": "{shown} cartes sur {total}",
 	"deck.typeLinePlaceholder": "Ligne de type…",
 
@@ -333,6 +334,11 @@ export const fr: Record<keyof typeof en, string> = {
 	"stats.title": "Statistiques",
 	"stats.lastRefreshed": "Prix actualisés {when}",
 	"stats.refreshing": "Actualisation…",
+	"page.perPage": "Par page",
+	"page.range": "{first}–{last} sur {total}",
+	"page.of": "{page} / {pages}",
+	"page.previous": "Page précédente",
+	"page.next": "Page suivante",
 	"price.borrowed": "Cette édition n’a pas de prix propre : voici celui de l’édition anglaise de la même carte. Cardmarket fixe le prix d’un produit sans vraiment tenir compte de la langue.",
 	"price.borrowedNote": "édition anglaise",
 	"stats.fillPrices": "Compléter les prix",
@@ -504,7 +510,6 @@ export const fr: Record<keyof typeof en, string> = {
 		"Les {count} premières ont été sélectionnées : c’est le maximum pour une sélection. Affinez les filtres pour atteindre le reste.",
 	"coll.beyondLoaded":
 		"Les listes de prélèvement et les decks ont besoin des exemplaires eux-mêmes, et une partie de cette sélection n’est pas dans la liste actuelle.",
-	"coll.showingFirst": "Affichage des {shown} premières lignes sur {total} — affinez les filtres pour voir le reste.",
 	"add.cacheNote": "Chaque édition est mise en cache localement au fur et à mesure, pour rester consultable hors ligne.",
 	"app.credits": "Données des cartes : Scryfall. Decks : Archidekt.",
 	"decks.youSetThis": "(défini par vous)",

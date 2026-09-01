@@ -30,6 +30,7 @@ import {
   type DeckCardRow,
   type DeckFilters,
   type PickDestination,
+  ROWS_PER_PAGE_CHOICES,
   type Finish
 } from '@shared/types'
 import { guard, useApp } from '../store/app'
@@ -41,6 +42,7 @@ import DeckToolbar from '../components/DeckToolbar'
 import DeckBulkBar from '../components/DeckBulkBar'
 import { useCardPreview } from '../components/CardHoverPreview'
 import CardZoom from '../components/CardZoom'
+import Paginator from '../components/Paginator'
 import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import Popover from '../components/Popover'
@@ -53,7 +55,9 @@ import {
   FLAT_CARDS,
   buildDeckBody,
   buildDeckSections,
+  cardsOf,
   deckCardSelectable,
+  pageOfSections,
   type DeckBodyItem,
   type FilteredGroup
 } from '../lib/deckGroups'
@@ -438,21 +442,47 @@ function DeckDetail({
     enabled: mode === 'grid'
   })
 
+  /** Index of the first card drawn, over the cards the filter kept. */
+  const [offset, setOffset] = useState(0)
+  const rowsPerPage = useApp((s) => s.rowsPerPageFor('decks'))
+  /*
+    A new question starts at the beginning: another filter, another grouping, another sort.
+    The deck itself is free -- this whole component is remounted per deck.
+  */
+  useEffect(() => {
+    setOffset(0)
+  }, [filters, groupByCategory])
+
   // Section counts are recomputed from the filtered set, so every number on
-  // screen describes what is on screen.
+  // screen describes what the filter kept.
   const sections = useMemo(
     () => buildDeckSections(breakdown, filters, groupByCategory),
     [breakdown, filters, groupByCategory]
   )
+  /*
+    And then one page of them.
+
+    A synced Commander deck is 150-250 entries and drew whole, which is a lot of rows to walk
+    to reach the Maybeboard at the bottom. The window is applied here rather than inside
+    `buildDeckSections` on purpose: a page is a viewport, not a filter, so nothing about the
+    sections themselves changes -- see `pageOfSections`.
+  */
+  const filteredCards = useMemo(() => cardsOf(sections).length, [sections])
+  const paged = useMemo(
+    () => pageOfSections(sections, offset, rowsPerPage, mode === 'grid' ? columns : 0),
+    [sections, offset, rowsPerPage, mode, columns]
+  )
   const { items, ordered } = useMemo(
-    () => buildDeckBody(sections, mode, columns),
-    [sections, mode, columns]
+    () => buildDeckBody(paged, mode, columns),
+    [paged, mode, columns]
   )
   /*
-    Cards on screen, counted once.
+    Cards the filter kept, counted once.
 
     Summing the sections would read "249 of 161" on a deck whose categories overlap, which
-    is true of the rows and nonsense about the deck.
+    is true of the rows and nonsense about the deck. Counted over the filtered sections
+    rather than the page: this figure answers "how much did the filter keep", and the page's
+    own extent is the paginator's business.
   */
   const shown = useMemo(() => {
     const seen = new Set<number>()
@@ -496,9 +526,26 @@ function DeckDetail({
     selected,
     pick: dispatchSelect,
     clear: clearSelection,
-    selectAllShown,
+    replace: replaceSelection,
     keep
   } = useRangeSelection(selectableCards)
+
+  /*
+    Select all: everything the filters kept, across every page.
+
+    It used to be `selectAllShown`, which reads the drawn cards -- the same set, while the
+    whole deck was drawn at once. With pages that would mean "these two hundred", and the
+    button says it selects what the filters keep. Adds rather than replaces would be the
+    other reading; replacing is right here because this is the only control that reaches
+    past the page, so it has to be able to say exactly what it means.
+  */
+  const selectAllFiltered = useCallback(() => {
+    replaceSelection(
+      cardsOf(sections)
+        .filter((card) => !deckCardSelectable(card))
+        .map((card) => card.id)
+    )
+  }, [sections, replaceSelection])
 
   /*
     Every card in the deck, filtered or not — and every selected one, from that.
@@ -871,7 +918,7 @@ function DeckDetail({
         onReset={onResetFilters}
         groupByCategory={groupByCategory}
         onToggleGrouping={onToggleGrouping}
-        onSelectAll={selectAllShown}
+        onSelectAll={selectAllFiltered}
         shown={shown}
         total={totals.cards}
       />
@@ -929,6 +976,26 @@ function DeckDetail({
           />
         )}
       </div>
+
+      {/*
+        Offered once a deck is long enough for the control to be able to do something --
+        which is the smallest page size, not the current one. Gating on the current size
+        would hide the dropdown from exactly the deck that wants it: a 155-card deck at 200
+        a page has one page, so the control would never appear and the size could never be
+        turned down.
+
+        Below the scroller, never inside it: the body's rows are absolutely positioned by the
+        virtualizer, which measures every child of the track it owns.
+      */}
+      {filteredCards > ROWS_PER_PAGE_CHOICES[0] && (
+        <Paginator
+          screen="decks"
+          offset={offset}
+          onOffset={setOffset}
+          total={filteredCards}
+          shown={ordered.length}
+        />
+      )}
 
       {zoom && (
         <CardZoom

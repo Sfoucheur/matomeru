@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -43,6 +43,7 @@ import { useT } from '../hooks/useT'
 import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import type { ViewProps } from '../App'
 import FilterBar from '../components/FilterBar'
+import Paginator from '../components/Paginator'
 import ColumnStepper from '../components/ColumnStepper'
 import CardZoom from '../components/CardZoom'
 import LanguagePicker from '../components/LanguagePicker'
@@ -112,7 +113,6 @@ function pickable(row: CollectionRow): boolean {
   return row.source === 'collection' ? row.id !== null : row.quantity > 0
 }
 
-const PAGE_SIZE = 200
 const ROW_HEIGHT = 52
 
 export default function CollectionView({ active }: ViewProps): React.ReactElement {
@@ -126,6 +126,9 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   const toast = useApp((s) => s.toast)
 
   const [page, setPage] = useState<CollectionPage | null>(null)
+  /** Index of the first row on screen, over the whole filtered set. */
+  const [offset, setOffset] = useState(0)
+  const rowsPerPage = useApp((s) => s.rowsPerPageFor('collection'))
   const [facets, setFacets] = useState<FacetCounts | null>(null)
   const [decks, setDecks] = useState<Deck[]>([])
   const [loading, setLoading] = useState(true)
@@ -134,29 +137,86 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   const setMode = useApp((s) => s.setViewMode)
   const currency = settings?.currency ?? 'usd'
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [nextPage, nextFacets] = await Promise.all([
-        window.api.collection.query(filters, PAGE_SIZE, 0),
-        window.api.collection.facets(filters)
-      ])
-      setPage(nextPage)
-      setFacets(nextFacets)
-    } catch (err) {
-      toast('error', (err as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [filters, toast])
+  /*
+    The rows, one page at a time.
 
-  // A hidden view must not query: with every visited view kept mounted, one
-  // invalidate() would otherwise fan out into a request from each screen. The
-  // effect still re-runs on becoming active, picking up anything missed.
+    `offset` is in the effect's dependencies, which is the whole of what makes a page turn
+    refetch -- this asked for the first two hundred rows at offset zero and nothing else, so
+    everything past row two hundred was unreachable except by narrowing the filters.
+
+    Facets are fetched separately below. They do not depend on the offset, and the query
+    behind them runs six GROUP BYs over the union: re-running it on every page turn is work
+    nobody asked for.
+  */
+  /*
+    A hidden view must not query: with every visited view kept mounted, one invalidate()
+    would otherwise fan out into a request from each screen. The effect still re-runs on
+    becoming active, picking up anything missed.
+
+    Cancelled on the way out, which matters now that there is something to click quickly:
+    next, next, back leaves three requests in flight and SQLite need not answer them in
+    order. Without the flag the slowest reply wins and the screen shows a page nobody asked
+    for.
+  */
   useEffect(() => {
     if (!active) return
-    void load()
-  }, [active, load, dataVersion])
+    let cancelled = false
+    void (async () => {
+      const answer = await window.api.collection
+        .query(filters, rowsPerPage, offset)
+        .catch((err: Error) => {
+          if (!cancelled) toast('error', err.message)
+          return null
+        })
+      if (cancelled || !answer) return
+      setPage(answer)
+      setLoading(false)
+    })()
+    setLoading(true)
+    return () => {
+      cancelled = true
+    }
+  }, [active, filters, rowsPerPage, offset, dataVersion, toast])
+
+  /* Facets follow the filters alone, so a page turn leaves them be. */
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    void window.api.collection
+      .facets(filters)
+      .then((next) => {
+        if (!cancelled) setFacets(next)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [active, filters, dataVersion])
+
+  /*
+    A new question starts at the beginning.
+
+    `filters` lives in the store, so nothing local hears about a filter or a sort changing --
+    without this, narrowing a three-thousand-row collection to two rows would leave you on
+    page seven, looking at nothing.
+  */
+  useEffect(() => {
+    setOffset(0)
+  }, [filters])
+
+  /*
+    And a page that has stopped existing snaps back.
+
+    A bulk edit, a removal or a deck sync can shrink the set under a page you are already
+    on; asking SQLite for rows 400-600 of 150 answers with nothing at all, which reads as an
+    empty collection rather than as a stale page.
+  */
+  useEffect(() => {
+    if (!page) return
+    if (offset > 0 && offset >= page.total) {
+      setOffset(Math.max(0, (Math.ceil(page.total / rowsPerPage) - 1) * rowsPerPage))
+    }
+  }, [page, offset, rowsPerPage])
 
   useEffect(() => {
     if (!active) return
@@ -176,13 +236,18 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     () => rows.map((row) => ({ key: row.key, selectable: pickable(row) })),
     [rows]
   )
+  /*
+    `selectAllShown` and `dropShown` are not taken any more.
+
+    The header checkbox used to mean "the rows on screen"; it means every row the filters
+    match now, which is one call to the main process and a `replace`. The two page-scoped
+    helpers stay on the hook for the Decks screen, which still has a use for them.
+  */
   const {
     selected,
     pick,
     clear: clearSelection,
-    replace: replaceSelection,
-    selectAllShown,
-    dropShown
+    replace: replaceSelection
   } = useRangeSelection(selectableRows)
 
   /*
@@ -196,6 +261,21 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   const idByKey = useRef(new Map<string, number | null>())
   useMemo(() => {
     for (const row of rows) idByKey.current.set(row.key, row.id)
+  }, [rows])
+
+  /*
+    And the rows themselves, for the same reason and one more.
+
+    A bulk action that needs a whole row -- staging into a pick list, moving copies to a
+    deck -- reads `selectedRows`, which used to be the current page filtered by the
+    selection. Select on page one, turn to page two, and those rows were not in `rows` any
+    more: the bar decided the selection reached past what was loaded and hid both actions.
+    Keeping every row that has been seen makes the distinction disappear, which is what it
+    was always meant to be -- an id travelling with a key, as the map above does.
+  */
+  const rowByKey = useRef(new Map<string, CollectionRow>())
+  useMemo(() => {
+    for (const row of rows) rowByKey.current.set(row.key, row)
   }, [rows])
 
   /*
@@ -213,16 +293,6 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     change, which merges rows and so clears on its own. A key that ends up naming nothing
     is already handled at the far end, where it is reported as `gone` rather than failed.
   */
-
-  /** Selectable rows on screen, and how many of them are selected. */
-  const shownSelectable = useMemo(
-    () => selectableRows.filter((row) => row.selectable).length,
-    [selectableRows]
-  )
-  const shownSelected = useMemo(
-    () => selectableRows.filter((row) => row.selectable && selected.has(row.key)).length,
-    [selectableRows, selected]
-  )
 
   /**
    * The selection as it really is: one key per row, both kinds.
@@ -302,8 +372,13 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
   const [pendingMove, setPendingMove] = useState<CollectionRow[] | null>(null)
 
   const selectedRows = useMemo(
-    () => rows.filter((row) => selected.has(row.key)),
-    [rows, selected]
+    () =>
+      [...selected]
+        .map((key) => rowByKey.current.get(key))
+        .filter((row): row is CollectionRow => row !== undefined),
+    // `rows` because the map it reads is a ref filled as pages arrive, exactly as
+    // `selectedIds` is: a key selected before its row was loaded picks it up later.
+    [selected, rows]
   )
 
   /**
@@ -568,19 +643,22 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
           currency={currency}
           selected={selected}
           onPick={pick}
-          selectableCount={selectableRows.filter((row) => row.selectable).length}
-          shownSelectedCount={shownSelected}
-          onToggleAll={() => {
-            /*
-              About the rows on screen, both ways.
+          /*
+            About everything the filters match, not about this page.
 
-              This compared the whole selection against the rows on this page, which was
-              the same number while a selection could not outlive a filter and is not any
-              more. Unticking drops what is drawn and keeps the rest -- emptying the whole
-              selection is what the Clear button is for, and it says so.
-            */
-            if (shownSelected > 0 && shownSelected === shownSelectable) dropShown()
-            else selectAllShown()
+            It was page-scoped, which was the same thing while one page was all there was.
+            With pages it would mean "these two hundred", and the question a header checkbox
+            is asked is "all of them" -- so it ticks every matching row, through the same
+            call the Select all button makes, and unticking empties the selection.
+
+            Counted against the filtered total for the same reason: the box reads part-way
+            until every match is in, not until this page is.
+          */
+          selectableCount={page?.total ?? 0}
+          shownSelectedCount={selected.size}
+          onToggleAll={() => {
+            if (page && selected.size >= page.total) clearSelection()
+            else void selectAllMatching()
           }}
           sort={filters.sort}
           dir={filters.dir}
@@ -599,11 +677,21 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
         />
       )}
 
-      {page && page.total > rows.length && (
-        <div className="shrink-0 border-t border-ink-800 px-5 py-2 text-center text-[11px]
-          text-ink-500">
-          {t('coll.showingFirst', { shown: count(rows.length), total: count(page.total) })}
-        </div>
+      {/*
+        The pages, always offered.
+
+        This was a note saying "showing the first 200 of 1,247 -- narrow the filters to see
+        the rest", which was honest and was also the only way to reach row 201. The advice is
+        gone with the limitation.
+      */}
+      {page && (
+        <Paginator
+          screen="collection"
+          offset={offset}
+          onOffset={setOffset}
+          total={page.total}
+          shown={rows.length}
+        />
       )}
     </div>
   )

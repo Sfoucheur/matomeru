@@ -1324,6 +1324,44 @@ export interface ViewModes {
   decks: 'rows' | 'grid'
 }
 
+// ---------- Pages ----------
+
+/** The two lists long enough to page: your bulk, and a deck of any size. */
+export type PagedScreen = 'collection' | 'decks'
+
+/**
+ * How many cards a page holds, offered as a menu rather than a free number.
+ *
+ * The floor is 50 on purpose. Both lists are virtualized, so a page of ten would draw fewer
+ * rows than the virtualizer already paints and make "everything on this page" smaller than
+ * what is on screen — and the live checks that count painted rows against selected ones
+ * would start failing on correct code.
+ */
+export const ROWS_PER_PAGE_CHOICES = [50, 100, 200, 500] as const
+
+export const DEFAULT_ROWS_PER_PAGE: Record<PagedScreen, number> = {
+  collection: 200,
+  decks: 200
+}
+
+/**
+ * Returns one of the offered page sizes, or null when the input is not a number at all.
+ *
+ * Null and the empty string are rejected before `Number` sees them, for the reason
+ * `clampColumns` documents: both convert to 0, so a missing stored value would silently
+ * become the smallest page instead of falling back to the default.
+ */
+export function clampRowsPerPage(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return null
+  // The nearest offered size, so a stored 250 from a future build lands on 200 rather than
+  // on a page size no menu can show.
+  return ROWS_PER_PAGE_CHOICES.reduce((best, choice) =>
+    Math.abs(choice - n) < Math.abs(best - n) ? choice : best
+  )
+}
+
 export const DEFAULT_VIEW_MODES: ViewModes = {
   collection: 'table',
   // Rows by default on both: a pick list or deck list is something you read while
@@ -1362,6 +1400,11 @@ export interface AppSettings {
   labelPossession: Record<string, Possession>
   /** List/grid choice per screen. A display preference, so it survives restarts. */
   viewModes: ViewModes
+  /**
+   * Cards per page, per screen. A display preference like the others, so it survives a
+   * restart and never triggers a refetch of anything but the list that owns it.
+   */
+  rowsPerPage: Record<PagedScreen, number>
   /**
    * Whether a deck is grouped by its Archidekt categories. Off gives one flat
    * "Deck" section, with the commander and the excluded piles still separated —

@@ -92,7 +92,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   check('the list rows carry a handle at all', rowCount > 0, String(rowCount))
   if (rowCount < 3) {
     console.log('  (need three rows to check a range; add some cards to this profile)')
-    console.log('\n' + passed + ' passed, ' + failed + ' failed')
+  console.log('\n' + passed + ' passed, ' + failed + ' failed')
     process.exit(failed === 0 ? 0 : 1)
   }
 
@@ -695,6 +695,146 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       deckSel.changed === 2, JSON.stringify(deckSel))
   } else {
     console.log('        (could not select two plain cards here; skipped)')
+  }
+
+  /*
+  ---- 12. and it survives a page turn, not only a filter.
+
+  Block 11 proves an action reaches a card the *filter* is hiding. A page hides cards too,
+  and for a different reason -- so this repeats the same three steps across a page turn:
+  select two cards, go to the next page, mark them, read both back out of the breakdown.
+  Nothing here would have failed before pages existed; what it holds is that the selection
+  is never quietly re-pruned to what is drawn.
+  */
+  const pageSel = JSON.parse(await ev(`(async () => {
+  const pane = () => [...document.querySelectorAll('main > div')]
+    .find((p) => !p.classList.contains('hidden'))
+  const rows = () => [...document.querySelectorAll('[data-deck-card]')]
+  /*
+    Character classes, not shorthand: this whole block is a template literal, and a single
+    backslash in one is eaten before the browser ever sees it -- so a regex written with
+    backslash-d matches a literal "d" and quietly finds nothing.
+  */
+  const bar = () => [...document.querySelectorAll('div')].find(
+    (d) => /[0-9]+ *(selected|sélectionn)/i.test(d.innerText || '') && d.querySelector('button')
+  )
+  /*
+    The number that precedes the word, not the first number in the box: the bar carries other
+    figures, and taking whichever came first read "1" off a bar that said two were selected.
+  */
+  const count = () => {
+    const m = (bar()?.innerText || '').match(/([0-9]+) *(?:selected|sélectionn)/i)
+    return m ? Number(m[1]) : 0
+  }
+
+  /*
+    The whole deck, at the smallest page: block 11 leaves a search term in the box, and the
+    page size is whatever the profile last used. Both are set here so this block is about the
+    page boundary and nothing else.
+  */
+  const search = pane()?.querySelector('[data-search]')
+  if (search) {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value'
+    ).set
+    setter.call(search, '')
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 900))
+  }
+  const size = pane()?.querySelector('[data-paginator] select')
+  if (size) {
+    size.value = '50'
+    size.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 1200))
+  }
+
+  /*
+    A paginator that cannot turn is the same as no paginator for this block: the control
+    appears once a deck is long enough to be worth paging, which is not the same as being
+    longer than the current page size.
+  */
+  const next = pane()?.querySelector('[data-action="nextPage"]')
+  if (!next || next.disabled) return JSON.stringify({ paginator: false })
+
+  // A clean slate, then two cards on this page.
+  const clear = pane()?.querySelector('[data-action="clearSelection"]')
+  if (clear) clear.click()
+  await new Promise((r) => setTimeout(r, 500))
+  const plain = []
+  const seen = new Set()
+  for (const r of rows()) {
+    const id = r.getAttribute('data-deck-card')
+    if (seen.has(id)) continue
+    seen.add(id)
+    plain.push(r)
+    if (plain.length === 2) break
+  }
+  if (plain.length < 2) return JSON.stringify({ paginator: true, plain: plain.length })
+  const ids = plain.map((r) => r.getAttribute('data-deck-card'))
+  /*
+    Looked up again before each click, not held from before.
+
+    Selecting a row re-renders it, and the virtualizer recycles the elements -- so a handle
+    taken before the first click can be showing another card by the second, and the second
+    click lands on whatever moved into that slot.
+  */
+  const rowFor = (id) => rows().find((r) => r.getAttribute('data-deck-card') === id)
+  rowFor(ids[0])?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await new Promise((r) => setTimeout(r, 450))
+  rowFor(ids[1])?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+  await new Promise((r) => setTimeout(r, 600))
+  const selectedBoth = count()
+  /*
+    The deck that is open, which is the biggest one -- the block above chose it that way and
+    left it open. Taking the first data-sync-deck in the sidebar instead reads a different
+    deck's breakdown, where these ids do not exist at all.
+  */
+  const deckId = (() => {
+    const entries = [...(pane()?.querySelectorAll('[data-sync-deck]') ?? [])].map((sync) => {
+      const button = sync.parentElement && sync.parentElement.querySelector('button')
+      const seen = parseInt((button && button.querySelectorAll('p')[1]?.textContent) || '0', 10)
+      return { id: Number(sync.getAttribute('data-sync-deck')), count: seen || 0 }
+    })
+    return entries.sort((a, b) => b.count - a.count)[0]?.id ?? 0
+  })()
+  const flagOf = (bd, id) => (bd?.cards ?? [])
+    .filter((c) => String(c.id) === String(id))
+    .map((c) => !!c.proxied)[0]
+  const before = await window.api.decks.breakdown(deckId)
+  const wasProxied = ids.map((id) => flagOf(before, id))
+
+  // Over the page boundary, where neither of them is drawn any more.
+  next.click()
+  await new Promise((r) => setTimeout(r, 1200))
+  const stillSelected = count()
+  const drawnNow = new Set(rows().map((r) => r.getAttribute('data-deck-card')))
+  const shownNow = ids.filter((id) => drawnNow.has(id)).length
+
+  const proxyButton = [...(bar()?.querySelectorAll('button') ?? [])].find((b) =>
+    /Proxy|proxy/.test(b.innerText || ''))
+  if (!proxyButton) {
+    return JSON.stringify({
+      paginator: true, selectedBoth, stillSelected, proxyButton: false
+    })
+  }
+  proxyButton.click()
+  await new Promise((r) => setTimeout(r, 1600))
+
+  const after = await window.api.decks.breakdown(deckId)
+  const nowProxied = ids.map((id) => flagOf(after, id))
+  const changed = ids.filter((id, i) => nowProxied[i] !== wasProxied[i]).length
+  return JSON.stringify({
+    paginator: true, selectedBoth, stillSelected, shownNow, wasProxied, nowProxied, changed
+  })
+  })()`))
+  console.log('        → across a page ' + JSON.stringify(pageSel))
+  if (pageSel.paginator && pageSel.selectedBoth === 2) {
+  check('a deck selection survives a page turn',
+    pageSel.stillSelected === 2 && pageSel.shownNow === 0, JSON.stringify(pageSel))
+  check('and an action reaches the cards the page turn left behind',
+    pageSel.changed === 2, JSON.stringify(pageSel))
+  } else {
+  console.log('        (this deck fits on one page; skipped)')
   }
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed')

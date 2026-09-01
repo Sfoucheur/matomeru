@@ -2,12 +2,15 @@ import { getDb } from '../connection.js'
 import { resolveLocale, type Locale } from '@shared/i18n/index.js'
 import {
   DEFAULT_GRID_COLUMNS,
+  DEFAULT_ROWS_PER_PAGE,
   DEFAULT_VIEW_MODES,
   clampColumns,
+  clampRowsPerPage,
   type AppSettings,
   type Currency,
   type GridKey,
   type LocaleSetting,
+  type PagedScreen,
   parseTheme,
   parseThemeMode,
   type Possession,
@@ -28,6 +31,7 @@ const DEFAULTS: AppSettings = {
   gridColumns: { ...DEFAULT_GRID_COLUMNS },
   labelPossession: {},
   viewModes: { ...DEFAULT_VIEW_MODES },
+  rowsPerPage: { ...DEFAULT_ROWS_PER_PAGE },
   deckGroupByCategory: true,
   locale: 'system',
   theme: 'matomeru',
@@ -46,7 +50,8 @@ const DEFAULTS: AppSettings = {
 const JSON_KEYS = new Set<keyof AppSettings>([
   'gridColumns',
   'labelPossession',
-  'viewModes'
+  'viewModes',
+  'rowsPerPage'
 ])
 
 /**
@@ -60,6 +65,28 @@ function parseGridColumns(raw: string | null | undefined): Record<GridKey, numbe
     const parsed = JSON.parse(raw) as Partial<Record<GridKey, unknown>>
     for (const key of Object.keys(result) as GridKey[]) {
       const clamped = clampColumns(parsed[key])
+      if (clamped !== null) result[key] = clamped
+    }
+  } catch {
+    /* corrupt value — fall back to defaults */
+  }
+  return result
+}
+
+/**
+ * Page sizes are read defensively, the way column counts are.
+ *
+ * A hand-edited or stale value must never reach the renderer: a page of 0 would ask for no
+ * rows at all and read as an empty collection, and a page of 100000 would defeat the point
+ * of paging. `clampRowsPerPage` answers with one of the sizes the menu offers or with null.
+ */
+function parseRowsPerPage(raw: string | null | undefined): Record<PagedScreen, number> {
+  const result = { ...DEFAULT_ROWS_PER_PAGE }
+  if (!raw) return result
+  try {
+    const parsed = JSON.parse(raw) as Partial<Record<PagedScreen, unknown>>
+    for (const key of Object.keys(result) as PagedScreen[]) {
+      const clamped = clampRowsPerPage(parsed[key])
       if (clamped !== null) result[key] = clamped
     }
   } catch {
@@ -177,7 +204,8 @@ export function getSettings(): AppSettings {
     checkUpdatesOnLaunch: (map.get('checkUpdatesOnLaunch') ?? '1') === '1',
     gridColumns: parseGridColumns(map.get('gridColumns')),
     labelPossession: parsePossession(map.get('labelPossession'), map.get('notOwnedColors')),
-    viewModes: parseViewModes(map.get('viewModes'))
+    viewModes: parseViewModes(map.get('viewModes')),
+    rowsPerPage: parseRowsPerPage(map.get('rowsPerPage'))
   }
 }
 

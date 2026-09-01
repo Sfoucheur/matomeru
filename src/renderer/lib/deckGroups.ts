@@ -73,7 +73,9 @@ function totalsFor(
 
 /**
  * The sections to display, filtered and sorted, with counts recomputed from what
- * survived the filter so no number on screen describes cards you cannot see.
+ * survived the filter — so no number on screen describes cards the filter excluded. A page
+ * is a different thing from a filter: see `pageOfSections`, which narrows what is drawn
+ * without touching what a heading counts.
  *
  * Grouped by category, the sections are Archidekt's own and each card appears in exactly
  * one: the category Archidekt lists first, which is the one its own view groups by. So the
@@ -121,6 +123,75 @@ export function buildDeckSections(
   return breakdown.groups
     .map((group) => totalsFor(group.name, group, keep(group.cards)))
     .filter((group) => group.cards.length > 0)
+}
+
+/** Every card the sections hold, in the order they are drawn. */
+export function cardsOf(sections: readonly FilteredGroup[]): DeckCardRow[] {
+  return sections.flatMap((section) => section.cards)
+}
+
+/**
+ * One page of a deck: the same sections, holding only the cards in the window.
+ *
+ * A separate pass rather than an argument to `buildDeckSections` or `buildDeckBody`, and
+ * deliberately so — both of those are asserted at length against whole decks, and a page is
+ * neither a filter nor a grouping. It is a viewport, the way a scroll position is.
+ *
+ * A category that straddles the boundary keeps its heading on both pages, because
+ * `buildDeckBody` draws a heading for every section it is handed and neither page contains
+ * the whole category. That is the behaviour asked for: a page is N cards, and headings fall
+ * where their cards do.
+ *
+ * **The headings go on counting the category, not the page.** `totalsFor` derives every
+ * figure from the array it is given, so re-running it here would have a heading read
+ * "Land · 7 cards · €4.10" for a category of thirty-eight — arithmetically true about the
+ * page and a lie about the thing it names. The counts are carried through untouched instead,
+ * and the page's own extent is stated by the paginator, where it is labelled as such. The
+ * exception is `FLAT_CARDS`, which is not a category: "the cards on this page" is a coherent
+ * thing to count, so that one is recomputed.
+ *
+ * @param columns In grid mode, the boundary inside a section rounds down to a multiple of
+ *   this, so a tile row is never left short in the middle of a category. Pass 0 for rows,
+ *   where every card is its own line and no rounding is needed.
+ */
+export function pageOfSections(
+  sections: readonly FilteredGroup[],
+  offset: number,
+  size: number,
+  columns = 0
+): FilteredGroup[] {
+  if (size <= 0) return [...sections]
+  const end = offset + size
+  const page: FilteredGroup[] = []
+  let seen = 0
+
+  for (const section of sections) {
+    const start = seen
+    seen += section.cards.length
+    if (seen <= offset || start >= end) continue
+
+    // Where this section is cut, in its own indices.
+    let from = Math.max(0, offset - start)
+    let to = Math.min(section.cards.length, end - start)
+    if (columns > 1) {
+      // Down to a whole tile row at both ends: a chunk that starts mid-row would draw a
+      // short row in the middle of a category, and `buildDeckBody` chunks from what it is
+      // handed rather than from the section's true start.
+      from = Math.floor(from / columns) * columns
+      if (to < section.cards.length) to = Math.floor(to / columns) * columns
+    }
+    if (to <= from) continue
+
+    const cards = section.cards.slice(from, to)
+    page.push(
+      section.name === FLAT_CARDS
+        ? totalsFor(FLAT_CARDS, section, cards)
+        : // Counts carried, not recomputed: a heading names a category.
+          { ...section, cards }
+    )
+  }
+
+  return page
 }
 
 /**

@@ -199,6 +199,30 @@ async function main() {
     })()`)
     await wait(1200)
 
+    /*
+      Searched for by name first.
+
+      This read the whole screen and trusted the card to be inside the virtualizer's opening
+      window: it is picked in name order and drawn in category order, so that was luck even
+      before a long deck started drawing one page at a time. Narrowing to the one row makes
+      the reading independent of where the card falls.
+    */
+    await evaluate(`(async () => {
+      const pane = [...document.querySelectorAll('main > div')]
+        .find((p) => !p.classList.contains('hidden'))
+      const search = pane && pane.querySelector('[data-search]')
+      if (search) {
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value'
+        ).set
+        setter.call(search, ${JSON.stringify(marked.card)})
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+        await new Promise((r) => setTimeout(r, 900))
+      }
+      return Boolean(search)
+    })()`)
+    await wait(400)
+
     const badge = JSON.parse(
       await evaluate(`(() => {
         const text = document.body.innerText
@@ -207,6 +231,29 @@ async function main() {
     )
     check('the deck row names the foil type it was given', badge.surge, JSON.stringify(badge))
     check('and marks it as a value you set', badge.star, JSON.stringify(badge))
+
+    /*
+      And the search comes back out.
+
+      The narrowing above is for the two readings just made; the column sweep below counts
+      badges against tiles, and a deck filtered to one card has exactly as many of each --
+      which reads as "every card is marked" and fails a check that is about the opposite.
+    */
+    await evaluate(`(async () => {
+      const pane = [...document.querySelectorAll('main > div')]
+        .find((p) => !p.classList.contains('hidden'))
+      const search = pane && pane.querySelector('[data-search]')
+      if (search) {
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value'
+        ).set
+        setter.call(search, '')
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+        await new Promise((r) => setTimeout(r, 900))
+      }
+      return true
+    })()`)
+    await wait(500)
 
     // The derived collection row must agree, or the two screens disagree about
     // the same physical card — the failure the language override already had.
@@ -1365,10 +1412,24 @@ async function main() {
         // The field is debounced, so the query lands a beat after the keystroke.
         await new Promise((r) => setTimeout(r, 1600))
 
+        /*
+          Cleared first, then ticked.
+
+          The header box means "every row the filters match" now, so it reads as already
+          ticked whenever a selection left over from an earlier block covers the filtered
+          total -- and then this never clicked it, and read whatever that stale selection
+          was. Ticking from empty is the only way to be sure the selection is this card.
+        */
+        const clear = pane.querySelector('[data-action="clearSelection"]')
+        if (clear) {
+          clear.click()
+          await new Promise((r) => setTimeout(r, 400))
+        }
         header = pane.querySelector('input[type="checkbox"]')
         if (!header) return JSON.stringify({ broken: 'no select-all box after filtering to ' + base.printing.name })
         if (!header.checked) header.click()
-        await new Promise((r) => setTimeout(r, 500))
+        // The box asks the main process which rows match, so this waits on a round trip.
+        await new Promise((r) => setTimeout(r, 900))
 
         const move = pane.querySelector('[data-action="moveToDeck"]')
         if (!move) return JSON.stringify({ broken: 'no move control' })

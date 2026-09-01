@@ -25,7 +25,7 @@ export const en = {
   'common.close': 'Close',
   'common.clearAll': 'Clear all',
   'common.clearSelection': 'Clear selection',
-  'common.selectAllShown': 'Select all shown',
+  'common.selectAllShown': 'Select all matching',
   'search.placeholder': 'Search…',
   'search.clear': 'Clear search',
   'columns.title': 'Cards per row — fewer columns means bigger cards (Ctrl+= / Ctrl+− / Ctrl+0, or Ctrl+scroll)',
@@ -172,7 +172,9 @@ export const en = {
   'deck.flatListHint': 'One list — the commander, then every card once',
   'deck.flatCards': 'Cards',
   'deck.uncategorized': 'Uncategorized',
-  'deck.selectAllHint': 'Select every card currently shown, so a language applies to exactly these',
+  'deck.selectAllHint':
+    'Selects every card the filters keep, across every page — so a language applies to '
+    + 'exactly those.',
   'deck.cardsShown': '{shown} of {total} cards',
   'deck.typeLinePlaceholder': 'Type line…',
 
@@ -331,6 +333,11 @@ export const en = {
   'stats.title': 'Stats',
   'stats.lastRefreshed': 'Prices last refreshed {when}',
   'stats.refreshing': 'Refreshing…',
+  'page.perPage': 'Per page',
+  'page.range': '{first}–{last} of {total}',
+  'page.of': '{page} / {pages}',
+  'page.previous': 'Previous page',
+  'page.next': 'Next page',
   'price.borrowed': 'This printing has no price of its own, so this is the English printing of the same card. Cardmarket prices a product largely regardless of language.',
   'price.borrowedNote': 'English printing',
   'stats.fillPrices': 'Fill missing prices',
@@ -509,8 +516,6 @@ export const en = {
   'coll.beyondLoaded':
     'Pick lists and decks need the copies themselves, and some of this selection is not '
     + 'in the list right now.',
-  'coll.showingFirst':
-    'Showing the first {shown} of {total} rows — narrow the filters to see the rest.',
   'add.cacheNote':
     'Every printing is cached locally as you add it, so the card stays browsable offline.',
   'app.credits': 'Card data from Scryfall. Decks from Archidekt.',

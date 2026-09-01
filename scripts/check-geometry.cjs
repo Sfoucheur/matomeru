@@ -85,6 +85,15 @@ const GEOMETRY = `
     const worst = deltas.slice().sort((a, b) => a.delta - b.delta)[0]
     const overlapping = deltas.filter((d) => d.delta < -0.5)
     return JSON.stringify({
+      /*
+        Zero rows is a failure, not a clean sheet.
+
+        The body is found as the scroller with the most to scroll, and the deck sidebar is in
+        the same pane -- so a short list can hand this the wrong element, which has no
+        absolutely-positioned children and therefore no overlaps to report. "overlappingRows:
+        0" then reads as a pass while nothing was measured at all.
+      */
+      measuredNothing: deltas.length === 0,
       rowsMeasured: deltas.length,
       overlappingRows: overlapping.length,
       worst: worst ?? null,
@@ -212,12 +221,22 @@ async function main() {
     })()
   `)
 
-  // Scrolled to the bottom, where the excluded piles live.
+  /*
+    Scrolled to the bottom, where the excluded piles live -- and paged to the end first, since
+    a long deck no longer draws at once. Without the page turns the bottom of page one is not
+    the bottom of the deck, and the configuration this measurement exists for is unreachable.
+  */
   console.log(
     'grid, scrolled to end:   ',
     await run(`
       (async () => {
         const pane = ${PANE}
+        for (let i = 0; i < 40; i += 1) {
+          const next = pane.querySelector('[data-action="nextPage"]')
+          if (!next || next.disabled) break
+          next.click()
+          await new Promise((r) => setTimeout(r, 350))
+        }
         const body = [...pane.querySelectorAll('.overflow-y-auto')]
           .sort((a, b) => b.scrollHeight - a.scrollHeight)[0]
         body.scrollTop = body.scrollHeight
