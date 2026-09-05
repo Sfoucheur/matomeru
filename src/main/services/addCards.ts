@@ -1,8 +1,16 @@
 import { effectiveFinishFor } from '@shared/types'
-import type { AddCardInput, Printing, PrintingChoice, QuickAddInput } from '@shared/types'
+import type {
+  AddCardInput,
+  Condition,
+  Finish,
+  Printing,
+  PrintingChoice,
+  QuickAddInput
+} from '@shared/types'
 import { addToCollection, ownedCount, ownedCounts } from '../db/repos/collection.js'
 import { borrowedPricesFor, getPrinting, upsertPrinting } from '../db/repos/printings.js'
 import { fillEnglishPricesQuietly } from './priceFill.js'
+import { resolvePrintingInLanguage } from './languageResolve.js'
 import { transaction } from '../db/connection.js'
 import {
   autocomplete,
@@ -221,6 +229,90 @@ export async function quickAdd(
   await fillEnglishPricesQuietly([printing.scryfall_id])
 
   return { itemId, printing: { ...printing, owned: ownedCount(printing.scryfall_id) } }
+}
+
+/**
+ * Another version of a card you already have on screen: a foil, a played copy, a
+ * translation.
+ *
+ * Finish and condition are columns on a collection row, so those are simply what you
+ * ask for. **Language is not** -- it is the printing. A French Lightning Bolt is a
+ * different `scryfall_id`, so asking for one has to find that printing before anything
+ * can be added, which is what makes this async and what makes it a service rather than
+ * another call to `addCard` from the renderer.
+ *
+ * `resolvePrintingInLanguage` asks for the same set and collector number in the wanted
+ * language and nothing else -- see its docstring for why looking further afield is
+ * wrong. When it finds nothing this **refuses**: adding the printing on screen instead
+ * would quietly record an English card as the French one you asked for, and the point
+ * of asking was that they are different objects.
+ */
+export async function addVariant(input: {
+  /** The printing on screen -- what the variant is a variant *of*. */
+  scryfall_id: string
+  lang: string
+  finish: Finish
+  condition: Condition
+  quantity: number
+}): Promise<{ itemId: number; scryfall_id: string; lang: string; owned: number }> {
+  if (input.quantity <= 0) throw new Error(tr('err.quantityAtLeastOne'))
+  const base = getPrinting(input.scryfall_id)
+  if (!base) throw new Error(tr('err.notCached'))
+
+  let printing = base
+  if (input.lang !== base.lang) {
+    const resolved = await resolvePrintingInLanguage(
+      {
+        name: base.name,
+        oracle_id: base.oracle_id,
+        set_code: base.set_code,
+        collector_number: base.collector_number
+      },
+      input.lang
+    )
+    if (!resolved) {
+      throw new Error(
+        tr('err.noPrintingInLanguage', {
+          set: base.set_code.toUpperCase(),
+          number: base.collector_number,
+          lang: input.lang.toUpperCase()
+        })
+      )
+    }
+    const cached = getPrinting(resolved.scryfall_id)
+    // `resolvePrintingInLanguage` caches what it finds, so this is a read of the row it
+    // just wrote. Guarded anyway rather than asserted: the alternative is a foreign key
+    // violation two lines further down.
+    if (!cached) throw new Error(tr('err.notCached'))
+    printing = cached
+  }
+
+  /*
+    A printing sold only in foil cannot be held nonfoil, so record the finish it comes
+    in rather than inventing a row that does not exist. Same rule the search tab applies
+    when you click a foil-only promo.
+  */
+  const itemId = addToCollection({
+    scryfall_id: printing.scryfall_id,
+    finish: effectiveFinishFor(printing, input.finish),
+    condition: input.condition,
+    quantity: input.quantity
+  })
+
+  /*
+    A newly resolved French row has no price of its own -- Scryfall prices non-English
+    printings almost never -- so fetch the English twin it will borrow from. After the
+    write and quiet on failure, for the reason `quickAdd` gives: a 503 on a price must
+    not swallow a card somebody added.
+  */
+  await fillEnglishPricesQuietly([printing.scryfall_id])
+
+  return {
+    itemId,
+    scryfall_id: printing.scryfall_id,
+    lang: printing.lang,
+    owned: ownedCount(printing.scryfall_id)
+  }
 }
 
 // The fast-entry parser lives in shared/ so the renderer validates with the

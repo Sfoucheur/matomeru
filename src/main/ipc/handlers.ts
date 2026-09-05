@@ -38,7 +38,8 @@ import {
   removePickItem,
   renamePickList,
   reopenPickList,
-  setPickItemQuantity
+  setPickItemQuantity,
+  setPickItemSource
 } from '../db/repos/pickLists.js'
 import {
   deckBreakdown,
@@ -59,6 +60,7 @@ import { getSettings, updateSettings } from '../db/repos/settings.js'
 import { collectionStats } from '../db/repos/stats.js'
 import {
   addCard,
+  addVariant,
   printingsFor,
   printingsPage,
   quickAdd,
@@ -93,6 +95,7 @@ import type { TranslationKey } from '@shared/types'
 import {
   collectionKeyScope,
   moveScopes,
+  oracleScope,
   withPickItems,
   deckLanguageScopes,
   deckOverrideScopes,
@@ -206,6 +209,33 @@ export function registerHandlers(): void {
   */
   handle('collection:add', (input: AddCardInput) =>
     undoable('undo.addCard', [collectionKeyScope(input)], () => addCard(input))
+  )
+  /*
+    Another version of the card on screen, added from the detail page.
+
+    Async and therefore `undoableAsync`, for the reason spelled out on
+    `collection:setLanguage`: a language other than the printing's own has to be looked
+    up on Scryfall before anything can be written, and `undoable` would snapshot the
+    after-image while that request was still in flight.
+
+    Scoped on the oracle id rather than an id, because the row may not exist yet and the
+    printing it lands on is not known until the call returns -- another language is a
+    different `scryfall_id`. `oracleScope` covers both candidates. Through
+    `withPickItems` like every other collection write that can delete a row an open
+    list points at.
+  */
+  handle(
+    'collection:addVariant',
+    (input: {
+      scryfall_id: string
+      lang: string
+      finish: Finish
+      condition: Condition
+      quantity: number
+    }) =>
+      undoableAsync('undo.addVariant', withPickItems(oracleScope(input.scryfall_id)), () =>
+        addVariant(input)
+      )
   )
   handle('collection:setQuantity', (itemId: number, quantity: number) =>
     undoable('undo.setQuantity', [byId('collection_items', itemId)], () => {
@@ -425,6 +455,16 @@ export function registerHandlers(): void {
         setPickItemQuantity(pickItemId, quantity)
         return true
       }
+    )
+  )
+  handle('pickLists:setItemSource', (pickItemId: number, collectionItemId: number) =>
+    /*
+      The whole table, not this row's id: repointing onto a copy the list already stages
+      merges the two and deletes one, and a scope naming only the row passed in would
+      have nothing to restore the other from.
+    */
+    undoable('undo.repointPick', [wholeTable('pick_list_items')], () =>
+      setPickItemSource(pickItemId, collectionItemId)
     )
   )
   handle('pickLists:removeItem', (pickItemId: number) =>

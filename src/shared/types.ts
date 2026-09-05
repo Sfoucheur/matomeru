@@ -1095,14 +1095,39 @@ export interface CardLocations {
   oracle_id: string | null
   name: string
   printed_name: string | null
+  /**
+   * Every copy of this *card* you hold, not only of the printing asked for.
+   *
+   * Scoped to the oracle id, because a printing is not a card: your French copy and
+   * your English one are different `scryfall_id`s, and keying this on the printing
+   * meant each was invisible from the other's detail page -- so "keep the foil, drop
+   * the other" could not be done from one screen. The printing asked for comes first.
+   *
+   * Each entry therefore carries its own identity: a row here may be a different
+   * printing from the one at the top of this object.
+   */
   loose: {
     collection_item_id: number
+    scryfall_id: string
+    set_code: string
+    set_name: string
+    collector_number: string
+    lang: string
+    printed_name: string | null
+    /** True for rows on the printing this lookup was keyed on. */
+    same_printing: boolean
     finish: Finish
     /** An override you set; null means the printing's own tag applies. */
     foil_treatment: string | null
     condition: Condition
     quantity: number
     reserved: number
+    /**
+     * The row's own printing, for the finish picker: which finishes it was sold in,
+     * and the promo tags that say what its foil version is. See `foilTreatmentOf`.
+     */
+    finishes: Finish[]
+    promo_types: string[]
   }[]
   reservations: { pick_list_id: number; pick_list_name: string; quantity: number }[]
   decks: DeckRef[]

@@ -57,7 +57,8 @@ import {
   deletePickList,
   getPickListItems,
   revertPickList,
-  setPickItemQuantity
+  setPickItemQuantity,
+  setPickItemSource
 } from '../src/main/db/repos/pickLists.js'
 import { moveToCollection, moveToDeck, revertMove } from '../src/main/db/repos/moves.js'
 import {
@@ -85,6 +86,7 @@ import { applyLanguageToItem } from '../src/main/services/collectionLanguage.js'
 import { setRowLanguages } from '../src/main/services/rowLanguage.js'
 import { setCardsLanguage } from '../src/main/services/deckLanguage.js'
 import {
+  TWO_IMAGE_LAYOUTS,
   allocateCopies,
   bothSidesTitle,
   hasTwoImages,
@@ -107,6 +109,7 @@ import {
   discoverLabelColors,
   recomputeLabelPossession,
   replaceDeckCards,
+  setCardPrinting,
   setCardProxied,
   upsertDeck
 } from '../src/main/db/repos/decks.js'
@@ -156,7 +159,13 @@ import {
 } from '../src/shared/types.js'
 import { collectionStats } from '../src/main/db/repos/stats.js'
 import { getSettings, setSetting, updateSettings } from '../src/main/db/repos/settings.js'
-import { addCard, printingsFor, quickAdd, resolveQuick } from '../src/main/services/addCards.js'
+import {
+  addCard,
+  addVariant,
+  printingsFor,
+  quickAdd,
+  resolveQuick
+} from '../src/main/services/addCards.js'
 import { fetchDeck, userByUsername } from '../src/main/archidekt/client.js'
 import { addDeckByUrl } from '../src/main/services/deckSync.js'
 import { toDeckCards, toDeckUpsert } from '../src/main/archidekt/mappers.js'
@@ -2506,10 +2515,8 @@ async function main(): Promise<void> {
       }
 
       /*
-        The refusals. Both stop a move inventing a card: an entry under any other
-        label is a wishlist line rather than a card you hold, and a proxy cannot
-        become a collection row without dragging real copies of the same printing
-        into being proxies too.
+        The refusals. What stops a move inventing a card: an entry under any other
+        label is a wishlist line rather than a card you hold.
       */
       const otherEntry = db.get(
         `SELECT oracle_id FROM deck_cards
@@ -2533,7 +2540,37 @@ async function main(): Promise<void> {
         skip('an entry you have not marked as owned cannot be moved out', 'no such entry')
       }
 
+      /*
+        A proxy, by contrast, is not a card being invented -- it is one you physically
+        hold, and taking it out of a deck is the same act as any other move. It lands in
+        the row for its printing, tagged: `proxied` is a flag on a collection row, not
+        part of its identity, so there is no second row to make.
+
+        This used to refuse outright, and that refusal was the first thing a French
+        deck's owner hit. The one case that still has to refuse is below it: a row that
+        already holds real copies, which a single flag cannot describe.
+
+        Both halves are undone as they go, so the rest of this section sees the deck it
+        set up rather than one this paragraph moved a card out of.
+      */
       setCardProxied(deckId3, moveOracle, true)
+      const proxyEntry = db.get(
+        `SELECT COALESCE(o.scryfall_id, dc.scryfall_id) AS scryfall_id,
+                COALESCE(o.finish, dc.finish) AS finish
+           FROM deck_cards dc
+           LEFT JOIN deck_card_overrides o
+                  ON o.deck_id = dc.deck_id AND o.oracle_id = dc.oracle_id
+          WHERE dc.deck_id = ? AND dc.oracle_id = ? LIMIT 1`,
+        [deckId3, moveOracle]
+      ) as { scryfall_id: string; finish: string } | undefined
+      const heldRow = (): { quantity: number; proxied: number } | undefined =>
+        db.get(
+          `SELECT quantity, proxied FROM collection_items
+            WHERE scryfall_id = ? AND finish = ? AND condition = 'NM'`,
+          [proxyEntry?.scryfall_id ?? '', proxyEntry?.finish ?? '']
+        ) as { quantity: number; proxied: number } | undefined
+
+      const beforeProxy = fingerprint()
       let proxyRefused = ''
       try {
         moveToCollection(deckId3, moveOracle, 1)
@@ -2541,10 +2578,63 @@ async function main(): Promise<void> {
         proxyRefused = (err as Error).message
       }
       check(
-        'and neither can a slot filled by a proxy',
-        proxyRefused.length > 0,
-        proxyRefused || 'it moved anyway'
+        'a slot filled by a proxy moves out like any other card',
+        proxyRefused.length === 0,
+        proxyRefused
       )
+      check(
+        'and the copies land tagged as proxies, in the row for their printing',
+        heldRow()?.proxied === 1,
+        JSON.stringify(heldRow())
+      )
+      const proxyMove = db.get(
+        'SELECT id FROM deck_card_moves WHERE deck_id = ? ORDER BY id DESC LIMIT 1',
+        [deckId3]
+      ) as { id: number } | undefined
+      if (proxyMove) revertMove(proxyMove.id)
+      check(
+        'and undoing that move leaves the database exactly as it was',
+        fingerprint() === beforeProxy,
+        fpDiff(beforeProxy, fingerprint())
+      )
+
+      /*
+        The case a single flag cannot describe. Merging here would mark copies you paid
+        for as proxies and quietly zero their value, so it refuses -- and says which
+        card, because the toast now shows the reason rather than guessing at it.
+      */
+      if (proxyEntry && !heldRow()) {
+        addToCollection({
+          scryfall_id: proxyEntry.scryfall_id,
+          finish: proxyEntry.finish as Finish,
+          condition: 'NM',
+          quantity: 1
+        })
+        let mixed = ''
+        try {
+          moveToCollection(deckId3, moveOracle, 1)
+        } catch (err) {
+          mixed = (err as Error).message
+        }
+        check(
+          'but not on top of real copies of the same printing',
+          mixed === t('en', 'err.moveProxyMixes'),
+          mixed || 'it moved anyway'
+        )
+        check(
+          'and those real copies are left alone, still worth what they were',
+          heldRow()?.quantity === 1 && heldRow()?.proxied === 0,
+          JSON.stringify(heldRow())
+        )
+        db.run(
+          `DELETE FROM collection_items
+            WHERE scryfall_id = ? AND finish = ? AND condition = 'NM'`,
+          [proxyEntry.scryfall_id, proxyEntry.finish]
+        )
+      } else {
+        skip('but not on top of real copies of the same printing', 'the printing is already held')
+        skip('and those real copies are left alone, still worth what they were', 'as above')
+      }
       setCardProxied(deckId3, moveOracle, false)
 
       let tooMany = ''
@@ -2803,8 +2893,15 @@ async function main(): Promise<void> {
          FROM printings a
          JOIN printings b ON b.oracle_id = a.oracle_id AND b.scryfall_id > a.scryfall_id
         WHERE a.oracle_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = a.scryfall_id)
-          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = b.scryfall_id)
+          -- No copies of the *card* anywhere, on any printing. Excluding only these two
+          -- printings is not enough now that the query answers per card: the first run
+          -- of this section counted seven rows because earlier sections had left copies
+          -- of the same card on other printings, and every count below was off.
+          AND NOT EXISTS (
+            SELECT 1 FROM collection_items ci
+            JOIN printings pp ON pp.scryfall_id = ci.scryfall_id
+            WHERE pp.oracle_id = a.oracle_id
+          )
         ORDER BY a.scryfall_id LIMIT 1`
     ) as { a: string; b: string; oracle: string; name: string } | undefined
 
@@ -3010,7 +3107,447 @@ async function main(): Promise<void> {
     }
   }
 
+  // ------------------------------------------------- the printing you own, not theirs
+  section('A move follows the printing you own, not the one Archidekt named')
+  {
+    const db = getDb()
+
+    /*
+      The reported failure, in full.
+
+      Archidekt has no language field, so it can only ever report the English printing.
+      A deck switched to French carries a `deck_card_overrides` row per entry, and from
+      then on two different ids describe it: `dc.scryfall_id` (theirs) and the resolved
+      printing (yours). The deck screen renders yours -- it has to, that is the card in
+      the sleeve -- and hands it back when you move a row out. `moveToCollection`
+      filtered on theirs, matched nothing, and threw "entry not found", which the Decks
+      screen swallowed and reported as "None of those can be pulled: they are proxies, or
+      not marked as cards you own."
+
+      Measured on the deck that reported it: 137 of 148 entries diverged, and every one
+      of the 43 in the "Cut" category was refused. Neither a proxy nor unowned among them.
+    */
+    const pair = db.get(
+      `SELECT a.scryfall_id AS a, b.scryfall_id AS b, a.oracle_id AS oracle, a.name AS name
+         FROM printings a
+         JOIN printings b ON b.oracle_id = a.oracle_id AND b.scryfall_id > a.scryfall_id
+        WHERE a.oracle_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = a.scryfall_id)
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = b.scryfall_id)
+        ORDER BY a.scryfall_id LIMIT 1`
+    ) as { a: string; b: string; oracle: string; name: string } | undefined
+
+    if (!pair) {
+      check('two printings of one card are cached', false, 'fixture too thin')
+    } else {
+      const deck = upsertDeck({
+        external_id: 'verify-override-move',
+        name: 'Overridden printing',
+        format: null,
+        owner_username: null,
+        url: null,
+        external_updated_at: null,
+        is_private: false,
+        is_unlisted: false
+      })
+      /** The decklist as Archidekt reports it: print A, in English, under a label. */
+      const listed = (label: string): void => {
+        replaceDeckCards(deck, [
+          {
+            scryfall_id: pair.a,
+            oracle_id: pair.oracle,
+            quantity: 1,
+            finish: 'nonfoil',
+            categories: ['Cut'],
+            in_maindeck: false,
+            name: pair.name,
+            lang: 'en',
+            set_code: null,
+            collector_number: null,
+            rarity: null,
+            image_uri_small: null,
+            label
+          }
+        ])
+        recomputeLabelPossession({ '#4caf50': 'owned', '#e53935': 'not_owned' })
+      }
+      const reset = (owned = true): void => {
+        db.run('DELETE FROM deck_card_moves WHERE deck_id = ?', [deck])
+        db.run('DELETE FROM deck_card_overrides WHERE deck_id = ?', [deck])
+        db.run('DELETE FROM deck_entry_traits WHERE deck_id = ?', [deck])
+        db.run('DELETE FROM collection_items WHERE scryfall_id IN (?, ?)', [pair.a, pair.b])
+        listed(owned ? 'Have it,#4CAF50' : 'Need it,#E53935')
+      }
+      /** The row the Decks screen would draw, and the id it would hand back. */
+      const drawn = (): DeckCardRow | undefined =>
+        allDeckCards(deckBreakdown(deck, 'usd', false)).find((c) => c.oracle_id === pair.oracle)
+      const refusal = (fn: () => void): string => {
+        try {
+          fn()
+          return ''
+        } catch (err) {
+          return (err as Error).message
+        }
+      }
+      const inCollection = (id: string): { quantity: number; proxied: number } | undefined =>
+        db.get(
+          `SELECT quantity, proxied FROM collection_items
+            WHERE scryfall_id = ? AND finish = 'nonfoil' AND condition = 'NM'`,
+          [id]
+        ) as { quantity: number; proxied: number } | undefined
+
+      // ---- the bug itself
+      reset()
+      setCardPrinting(deck, pair.oracle, pair.b)
+      const drawnRow = drawn()
+      check('an override makes the screen draw the printing you own',
+        drawnRow?.scryfall_id === pair.b, `drew ${drawnRow?.scryfall_id?.slice(0, 8)}`)
+      check('and that is a different id from the one Archidekt reported',
+        drawnRow?.scryfall_id !== pair.a, 'the fixture is not exercising the divergence')
+      check('the id the screen drew still finds the entry',
+        refusal(() => moveToCollection(deck, pair.oracle, 1, drawnRow?.scryfall_id)) === '',
+        refusal(() => moveToCollection(deck, pair.oracle, 1, pair.b)))
+
+      reset()
+      setCardPrinting(deck, pair.oracle, pair.b)
+      moveToCollection(deck, pair.oracle, 1, pair.b)
+      check('and the copies land on the printing you own, not the one they named',
+        inCollection(pair.b)?.quantity === 1 && inCollection(pair.a) === undefined,
+        JSON.stringify({ yours: inCollection(pair.b), theirs: inCollection(pair.a) }))
+      check('while the deck records the move against the entry Archidekt knows',
+        (db.get('SELECT entry_scryfall_id AS id FROM deck_card_moves WHERE deck_id = ?',
+          [deck]) as { id: string } | undefined)?.id === pair.a,
+        JSON.stringify(
+          db.all('SELECT scryfall_id, entry_scryfall_id FROM deck_card_moves WHERE deck_id = ?',
+            [deck])))
+
+      // ---- a proxy is a card you hold, so it moves
+      reset()
+      setCardProxied(deck, pair.oracle, true)
+      check('a proxied entry moves to the collection',
+        refusal(() => moveToCollection(deck, pair.oracle, 1, pair.a)) === '',
+        'it was refused')
+      check('and lands in the row for its printing, tagged rather than split off',
+        inCollection(pair.a)?.quantity === 1 && inCollection(pair.a)?.proxied === 1,
+        JSON.stringify(inCollection(pair.a)))
+
+      // ---- but never on top of real copies, which one flag cannot describe
+      reset()
+      setCardProxied(deck, pair.oracle, true)
+      addToCollection({ scryfall_id: pair.a, finish: 'nonfoil', condition: 'NM', quantity: 2 })
+      const mixed = refusal(() => moveToCollection(deck, pair.oracle, 1, pair.a))
+      check('a proxy is refused when real copies of that printing are already there',
+        mixed === t('en', 'err.moveProxyMixes'), mixed || 'it was allowed')
+      check('and those real copies are untouched, still worth what they were',
+        inCollection(pair.a)?.quantity === 2 && inCollection(pair.a)?.proxied === 0,
+        JSON.stringify(inCollection(pair.a)))
+
+      // ---- and a refusal says which one it was, because the toast now shows it
+      reset(false)
+      const notOwned = refusal(() => moveToCollection(deck, pair.oracle, 1, pair.a))
+      check('a not-owned entry refuses with its own message, not a generic one',
+        notOwned === t('en', 'err.moveNotOwned'), notOwned || 'it was allowed')
+      const gone = refusal(() => moveToCollection(deck, 'no-such-oracle-id', 1))
+      check('and a missing deck entry says so in deck terms',
+        gone === t('en', 'err.deckEntryNotFound'), gone || 'it was allowed')
+
+      // clean up, so later sections see the shape they expect
+      db.run('DELETE FROM collection_items WHERE scryfall_id IN (?, ?)', [pair.a, pair.b])
+      db.run('DELETE FROM decks WHERE external_id = ?', ['verify-override-move'])
+      recomputeLabelPossession({})
+    }
+  }
+
   // ------------------------------------------------- groups, commanders, langs
+  // ------------------------------------------------- which copy, and how many
+  section('Every copy of a card, and choosing between them')
+  {
+    const db = getDb()
+
+    /*
+      Two printings of one card, so the questions this section asks can be asked at all.
+
+      "Keep the foil, drop the other" was impossible from the detail page because
+      `cardLocations` was keyed on the printing -- a French copy and an English one are
+      different `scryfall_id`s, so each was invisible from the other's page. It is keyed
+      on the oracle id now, and everything below is about that being true without the
+      page losing track of which printing it is otherwise showing.
+    */
+    const pair = db.get(
+      `SELECT a.scryfall_id AS a, b.scryfall_id AS b, a.oracle_id AS oracle, a.name AS name
+         FROM printings a
+         JOIN printings b ON b.oracle_id = a.oracle_id AND b.scryfall_id > a.scryfall_id
+        WHERE a.oracle_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = a.scryfall_id)
+          AND NOT EXISTS (SELECT 1 FROM collection_items ci WHERE ci.scryfall_id = b.scryfall_id)
+        ORDER BY a.scryfall_id LIMIT 1`
+    ) as { a: string; b: string; oracle: string; name: string } | undefined
+
+    if (!pair) {
+      check('two printings of one card are cached', false, 'fixture too thin')
+    } else {
+      const idOf = (scryfallId: string, finish: string, condition = 'NM'): number =>
+        (
+          db.get(
+            `SELECT id FROM collection_items
+              WHERE scryfall_id = ? AND finish = ? AND condition = ?`,
+            [scryfallId, finish, condition]
+          ) as { id: number }
+        ).id
+      const wipe = (): void => {
+        db.run('DELETE FROM pick_lists WHERE name LIKE ?', ['verify-copies%'])
+        db.run('DELETE FROM collection_items WHERE scryfall_id IN (?, ?)', [pair.a, pair.b])
+      }
+      const refusal = (fn: () => void): string => {
+        try {
+          fn()
+          return ''
+        } catch (err) {
+          return (err as Error).message
+        }
+      }
+
+      // ---- every copy of the card, whichever printing it is on
+      wipe()
+      /*
+        Measured as a delta rather than an absolute.
+
+        The fixture is a real collection built up by every section before this one, and
+        the card picked here can already be held on printings neither of these two --
+        which is not pollution to be scrubbed but exactly the case this feature is for.
+        So the baseline is recorded and the assertions are about what changes.
+      */
+      const baseline = cardLocations(pair.a)?.loose.length ?? 0
+      addToCollection({ scryfall_id: pair.a, finish: 'nonfoil', condition: 'NM', quantity: 2 })
+      addToCollection({ scryfall_id: pair.a, finish: 'foil', condition: 'NM', quantity: 1 })
+      addToCollection({ scryfall_id: pair.b, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+
+      const fromA = cardLocations(pair.a)
+      const fromB = cardLocations(pair.b)
+      const onlyMine = (rows: NonNullable<ReturnType<typeof cardLocations>>['loose']) =>
+        rows.filter((row) => row.scryfall_id === pair.a || row.scryfall_id === pair.b)
+      check('the detail page lists every copy of the card, not only of its printing',
+        fromA?.loose.length === baseline + 3, `${fromA?.loose.length} rows, baseline ${baseline}`)
+      check('and the same list whichever printing you opened',
+        fromB?.loose.length === fromA?.loose.length,
+        `${fromB?.loose.length} vs ${fromA?.loose.length}`)
+      /*
+        The point of the change, stated on its own: opening one printing shows you the
+        copies held on *another*. Keyed on the printing, this list was two rows and the
+        third was invisible -- so the two could never be compared, let alone one dropped.
+      */
+      check('a copy on another printing of the card is visible from this one',
+        (fromA?.loose ?? []).some((row) => row.scryfall_id === pair.b),
+        JSON.stringify(fromA?.loose.map((row) => row.scryfall_id.slice(0, 8))))
+      check('the printing you opened comes first',
+        onlyMine(fromA?.loose ?? []).slice(0, 2).every((row) => row.scryfall_id === pair.a) &&
+          onlyMine(fromA?.loose ?? [])[2]?.scryfall_id === pair.b &&
+          (fromA?.loose ?? [])[0]?.scryfall_id === pair.a,
+        JSON.stringify(fromA?.loose.map((row) => row.scryfall_id.slice(0, 8))))
+      check('and each row says whether it is the printing on screen',
+        onlyMine(fromA?.loose ?? []).filter((row) => row.same_printing).length === 2 &&
+          onlyMine(fromB?.loose ?? []).filter((row) => row.same_printing).length === 1,
+        JSON.stringify({
+          fromA: fromA?.loose.map((r) => r.same_printing),
+          fromB: fromB?.loose.map((r) => r.same_printing)
+        }))
+      /*
+        Each row carries its own printing, which is what lets the finish picker beside it
+        offer that row's finishes. Reading them off the page's printing would offer a
+        French foil the finishes of the English card.
+      */
+      check('every row carries its own printing, for the picker beside it',
+        (fromA?.loose ?? []).every(
+          (row) => row.set_code.length > 0 && row.lang.length > 0 && Array.isArray(row.finishes)
+        ),
+        JSON.stringify(fromA?.loose.map((r) => ({ set: r.set_code, lang: r.lang, f: r.finishes }))))
+
+      // ---- deleting one copy leaves the others alone, which is the whole request
+      removeItem(idOf(pair.a, 'foil'))
+      const afterDelete = onlyMine(cardLocations(pair.a)?.loose ?? [])
+      check('deleting one copy leaves the other versions untouched',
+        afterDelete.length === 2 &&
+          afterDelete.every((row) => !(row.scryfall_id === pair.a && row.finish === 'foil')) &&
+          afterDelete.some((row) => row.scryfall_id === pair.b),
+        JSON.stringify(afterDelete.map((r) => ({ id: r.scryfall_id.slice(0, 8), f: r.finish }))))
+
+      // ---- adding a variant
+      wipe()
+      const sameLang = await addVariant({
+        scryfall_id: pair.a,
+        lang: (getPrinting(pair.a) as { lang: string }).lang,
+        finish: 'nonfoil',
+        condition: 'LP',
+        quantity: 2
+      })
+      check('a variant in this printing\’s own language lands on this printing',
+        sameLang.scryfall_id === pair.a, sameLang.scryfall_id.slice(0, 8))
+      check('and as its own row, because condition is part of a row\’s identity',
+        (cardLocations(pair.a)?.loose ?? []).some(
+          (row) => row.condition === 'LP' && row.quantity === 2
+        ),
+        JSON.stringify(cardLocations(pair.a)?.loose))
+
+      /*
+        And a language Scryfall has no printing of refuses rather than filing an English
+        card as a French one. Phyrexian exists for a handful of cards and this fixture is
+        not one of them, which is the point: the refusal has to be the answer.
+      */
+      const before = (cardLocations(pair.a)?.loose ?? []).length
+      let missing = ''
+      try {
+        await addVariant({
+          scryfall_id: pair.a,
+          lang: 'ph',
+          finish: 'nonfoil',
+          condition: 'NM',
+          quantity: 1
+        })
+      } catch (err) {
+        missing = (err as Error).message
+      }
+      check('a language with no such printing refuses instead of substituting one',
+        missing.length > 0, 'it added something')
+      check('and adds nothing at all',
+        (cardLocations(pair.a)?.loose ?? []).length === before,
+        `${(cardLocations(pair.a)?.loose ?? []).length} rows, was ${before}`)
+
+      // ---- repointing a staged copy at another one you own
+      wipe()
+      addToCollection({ scryfall_id: pair.a, finish: 'nonfoil', condition: 'NM', quantity: 1 })
+      /*
+        Two copies on the row being merged onto, because the merge below moves one copy
+        onto a row that already stages one. With a single copy there the repoint is
+        correctly refused for want of stock -- which is a different assertion, and the
+        one just above it.
+      */
+      addToCollection({ scryfall_id: pair.b, finish: 'foil', condition: 'LP', quantity: 2 })
+      const rowA = idOf(pair.a, 'nonfoil')
+      const rowB = idOf(pair.b, 'foil', 'LP')
+
+      const listId = createPickList('verify-copies')
+      addToPickList(listId, { kind: 'collection', itemId: rowA }, 1)
+      const staged = (): { id: number; collection_item_id: number | null; scryfall_id: string;
+        finish: string; condition: string }[] =>
+        db.all(
+          `SELECT id, collection_item_id, scryfall_id, finish, condition
+             FROM pick_list_items WHERE pick_list_id = ? ORDER BY id`,
+          [listId]
+        ) as never
+      const item = staged()[0]
+
+      setPickItemSource(item.id, rowB)
+      const moved = staged()[0]
+      /*
+        Every snapshot column, not just the printing: they describe one physical copy
+        together, and `confirmPickList` decrements on the (scryfall_id, finish, condition)
+        triple. A row left claiming NM nonfoil while pointing at an LP foil would take the
+        copies out of the wrong place.
+      */
+      check('a staged row can be repointed at another copy you own',
+        moved.collection_item_id === rowB, JSON.stringify(moved))
+      check('and the whole snapshot follows it, not just the printing',
+        moved.scryfall_id === pair.b && moved.finish === 'foil' && moved.condition === 'LP',
+        JSON.stringify(moved))
+
+      check('a copy of a different card is refused',
+        (() => {
+          const other = db.get(
+            `SELECT ci.id FROM collection_items ci
+             JOIN printings p ON p.scryfall_id = ci.scryfall_id
+             WHERE p.oracle_id IS NOT NULL AND p.oracle_id != ? LIMIT 1`,
+            [pair.oracle]
+          ) as { id: number } | undefined
+          if (!other) return true
+          return refusal(() => setPickItemSource(item.id, other.id)) ===
+            t('en', 'err.pickItemOtherCard')
+        })(),
+        'it was allowed')
+
+      // The reservation it is releasing must not count against the row it moves onto.
+      check('repointing back onto the copy it started from is allowed',
+        refusal(() => setPickItemSource(item.id, rowA)) === '',
+        refusal(() => setPickItemSource(item.id, rowA)))
+
+      /*
+        Room on the row it is moving *to*, counted with this item's own reservation left
+        out. Staging both copies of rowB elsewhere leaves nothing for this one to take,
+        and the refusal names the number rather than silently over-reserving.
+      */
+      const hog = createPickList('verify-copies-hog')
+      addToPickList(hog, { kind: 'collection', itemId: rowB }, 2)
+      check('a repoint onto a copy with nothing free is refused, with the number',
+        refusal(() => setPickItemSource(item.id, rowB)) === tp('en', 'err.onlyAvailable', 0),
+        refusal(() => setPickItemSource(item.id, rowB)) || 'it was allowed')
+      deletePickList(hog)
+
+      // ---- and it merges rather than making two rows for one copy
+      addToPickList(listId, { kind: 'collection', itemId: rowB }, 1)
+      check('the list now stages both copies', staged().length === 2, `${staged().length} rows`)
+      const survivor = setPickItemSource(staged()[0].id, rowB)
+      const merged = staged()
+      check('repointing onto a copy the list already stages merges the two rows',
+        merged.length === 1 && merged[0].id === survivor,
+        JSON.stringify(merged.map((r) => r.id)))
+      check('and the quantities add up rather than one being lost',
+        (db.get('SELECT quantity FROM pick_list_items WHERE id = ?', [survivor]) as {
+          quantity: number
+        }).quantity === 2,
+        JSON.stringify(db.all('SELECT id, quantity FROM pick_list_items WHERE pick_list_id = ?', [listId])))
+
+      // ---- and never once the list has been closed
+      cancelPickList(listId)
+      check('a closed list refuses the edit, because revert reads the snapshot back',
+        refusal(() => setPickItemSource(survivor, rowA)) === t('en', 'err.pickListClosed'),
+        refusal(() => setPickItemSource(survivor, rowA)) || 'it was allowed')
+
+      /*
+        And a staged row knows whether its card has a back.
+
+        `layout` is on the PickListItem type and was never selected, so `twoSides` read
+        every staged card as one-sided: the gallery tiles could not be turned, and neither
+        could the zoom that now opens from a row. One column, and the two callers that
+        already assume it mean what they say.
+      */
+      const twoFaced = db.get(
+        `SELECT scryfall_id, layout FROM printings
+          WHERE layout IN (${TWO_IMAGE_LAYOUTS.map(() => '?').join(', ')})
+          ORDER BY scryfall_id LIMIT 1`,
+        [...TWO_IMAGE_LAYOUTS]
+      ) as { scryfall_id: string; layout: string } | undefined
+
+      if (twoFaced) {
+        addToCollection({
+          scryfall_id: twoFaced.scryfall_id,
+          finish: 'nonfoil',
+          condition: 'NM',
+          quantity: 1
+        })
+        const faceList = createPickList('verify-copies-faces')
+        addToPickList(
+          faceList,
+          { kind: 'collection', itemId: idOf(twoFaced.scryfall_id, 'nonfoil') },
+          1
+        )
+        const [faceItem] = getPickListItems(faceList, 'usd')
+        check('a staged row carries the layout its card actually has',
+          faceItem?.layout === twoFaced.layout,
+          `${faceItem?.layout} vs ${twoFaced.layout}`)
+        check('so a two-faced staged card can be turned over',
+          twoSides(faceItem) !== null, JSON.stringify(twoSides(faceItem)))
+        deletePickList(faceList)
+        db.run('DELETE FROM collection_items WHERE scryfall_id = ?', [twoFaced.scryfall_id])
+      } else {
+        skip('a staged row carries the layout its card actually has', 'no two-faced printing cached')
+        skip('so a two-faced staged card can be turned over', 'no two-faced printing cached')
+      }
+
+      // clean up, so later sections see the shape they expect
+      db.run('DELETE FROM pick_lists WHERE name LIKE ?', ['verify-copies%'])
+      db.run('DELETE FROM collection_items WHERE scryfall_id IN (?, ?)', [pair.a, pair.b])
+    }
+  }
+
   section('One meaning per table')
   {
     /*
@@ -4949,7 +5486,10 @@ async function main(): Promise<void> {
       'coll.title', 'coll.export', 'coll.finishPlaceholder', 'coll.col.lang',
       'coll.col.rarity', 'coll.col.finish', 'coll.col.decks', 'coll.col.total',
       // Two interpolated numbers and a slash; there is nothing in it to translate.
-      'page.of'
+      'page.of',
+      // A reason and a list of card names in brackets. Both halves are already
+      // translated where they are built; this is only the punctuation around them.
+      'decks.refusedFor'
     ])
     const untranslated = enKeys.filter(
       (k) =>

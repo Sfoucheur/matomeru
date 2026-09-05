@@ -349,6 +349,8 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     entries: { source: PickSource; quantity: number }[]
     ambiguous: PendingChoice[]
     destination: PickDestination
+    /** How many of each, so the which-deck answers stage what the dialog asked for. */
+    quantity: number
   } | null>(null)
 
   /** Open while the dialog is asking which list and what happens to the copies. */
@@ -381,6 +383,9 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     [selected, rows]
   )
 
+  /** The selection that can actually be staged — the same predicate staging itself uses. */
+  const stageableSelection = useMemo(() => selectedRows.filter(stageable), [selectedRows])
+
   /**
    * Stages the selection into a named list.
    *
@@ -391,7 +396,8 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
    */
   const addSelectedToPickList = async (
     target: number | 'new',
-    destination: PickDestination
+    destination: PickDestination,
+    choice: { quantity: number; collectionItemId: number | null }
   ): Promise<void> => {
     /*
       The same predicate selection uses, not a restatement of it.
@@ -416,9 +422,23 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     const entries: { source: PickSource; quantity: number }[] = []
     const ambiguous: PendingChoice[] = []
 
+    /*
+      One copy of each, unless a single card was asked about in detail.
+
+      This used to stage `row.available` -- every free copy of the row -- so selecting
+      twenty cards put however many of each you happened to own on the list, and the
+      only way back was to edit twenty quantities. One each is the useful default; the
+      dialog asks properly when there is only one card to ask about.
+    */
+    const single = staged.length === 1
     for (const row of staged) {
       if (row.source === 'collection' && row.id !== null) {
-        entries.push({ source: { kind: 'collection', itemId: row.id }, quantity: row.available })
+        entries.push({
+          // The copy chosen in the dialog, when one was: it may be a different printing
+          // of the same card from the row that was selected.
+          source: { kind: 'collection', itemId: single ? (choice.collectionItemId ?? row.id) : row.id },
+          quantity: single ? choice.quantity : 1
+        })
         continue
       }
       const decks = await window.api.decks
@@ -432,7 +452,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
             oracleId: decks[0].oracle_id,
             destination
           },
-          quantity: Math.min(row.quantity, decks[0].quantity)
+          quantity: Math.min(single ? choice.quantity : 1, decks[0].quantity)
         })
       } else if (decks.length > 1) {
         ambiguous.push({ row, decks })
@@ -444,7 +464,13 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
     if (ambiguous.length) {
       // Resolved by the dialog, which stages both halves together so a partial
       // list is never left behind if the dialog is dismissed.
-      setPendingPick({ target, entries, ambiguous, destination })
+      setPendingPick({
+        target,
+        entries,
+        ambiguous,
+        destination,
+        quantity: single ? choice.quantity : 1
+      })
       return
     }
     if (!entries.length) {
@@ -557,15 +583,33 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
       {listDialog && (
         <AddToListDialog
           /*
+            One card, so the dialog can ask how many and which copy. A collection row is
+            already one specific copy, which is what seeds the picker; a derived deck row
+            has no `collection_items` id, so it gets the quantity question only.
+          */
+          subject={
+            stageableSelection.length === 1
+              ? {
+                  scryfallId: stageableSelection[0].scryfall_id,
+                  collectionItemId:
+                    stageableSelection[0].source === 'collection' ? stageableSelection[0].id : null,
+                  max:
+                    stageableSelection[0].source === 'collection'
+                      ? stageableSelection[0].available
+                      : stageableSelection[0].quantity
+                }
+              : undefined
+          }
+          /*
             Only offered when the selection actually contains a sleeved card. A
             collection row has one possible answer — it leaves your possession,
             which is what a pick list is for.
           */
           showDestination={selectedRows.some((row) => row.source === 'deck')}
           onCancel={() => setListDialog(false)}
-          onConfirm={(target, destination) => {
+          onConfirm={(target, destination, choice) => {
             setListDialog(false)
-            void addSelectedToPickList(target, destination)
+            void addSelectedToPickList(target, destination, choice)
           }}
         />
       )}
@@ -582,6 +626,7 @@ export default function CollectionView({ active }: ViewProps): React.ReactElemen
         <WhichDeckDialog
           ambiguous={pendingPick.ambiguous}
           destination={pendingPick.destination}
+          quantity={pendingPick.quantity}
           onCancel={() => setPendingPick(null)}
           onConfirm={(chosen) => {
             const pending = pendingPick
@@ -987,11 +1032,14 @@ interface PendingChoice {
 function WhichDeckDialog({
   ambiguous,
   destination,
+  quantity,
   onCancel,
   onConfirm
 }: {
   ambiguous: PendingChoice[]
   destination: PickDestination
+  /** Copies of each, decided before this dialog opened: one, or what one card asked for. */
+  quantity: number
   onCancel: () => void
   onConfirm: (entries: { source: PickSource; quantity: number }[]) => void
 }): React.ReactElement {
@@ -1014,7 +1062,7 @@ function WhichDeckDialog({
         },
         // Never offer more than the chosen deck actually has: the row's own
         // figure is the total across every deck holding the card.
-        quantity: Math.min(item.row.quantity, deck.quantity)
+        quantity: Math.min(quantity, deck.quantity)
       })
     }
     onConfirm(entries)
@@ -1688,20 +1736,30 @@ function CardRow({
             alt={printing.name}
           />
         </button>
-        <div className="min-w-0 leading-tight">
-          <p className="truncate text-ink-100">
+        {/*
+          The name cell fills the space up to the next token, and so does the button
+          inside it.
+
+          Both used to hug the text, which left a strip of bare row between the end of a
+          card's name and its colour pips — and clicking there selected the card instead
+          of opening it, on the half of the list whose names are short. The deck screen
+          has always sized its name button this way; this is the same thing.
+        */}
+        <div className="min-w-0 flex-1 leading-tight">
+          <p className="flex items-center text-ink-100">
             <button
               onClick={(e) => {
                 e.stopPropagation()
                 // A modified click is a selection gesture wherever it lands, so the
                 // name hands it back to the row rather than opening a dialog over it.
+                // It matters more now the button covers the strip that used to be row.
                 if (e.ctrlKey || e.metaKey || e.shiftKey) {
                   onRowClick(e)
                   return
                 }
                 onOpenCard()
               }}
-              className="underline-offset-2 hover:underline"
+              className="min-w-0 flex-1 truncate text-left underline-offset-2 hover:underline"
               title={t('coll.cardDetails')}
             >
               {printing.printed_name ?? printing.name}
@@ -1720,7 +1778,7 @@ function CardRow({
                   nothing controls what is behind it, and `text-ink-950` on a solid
                   tone reads at 8:1 in dark and 6:1 in light because both invert.
                 */
-                className="ml-2 rounded bg-warn px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-950"
+                className="ml-2 shrink-0 rounded bg-warn px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-950"
               >
                 {row.reserved} held
               </span>

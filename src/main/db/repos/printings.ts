@@ -42,7 +42,14 @@ export interface PrintingRow {
   borrowed_prices_json?: string | null
 }
 
-function parseJson<T>(raw: string | null, fallback: T): T {
+/**
+ * A JSON text column, or the fallback when it is null or unparseable.
+ *
+ * Exported because `cardLocations` reads `finishes` and `promo_types` straight off
+ * `printings` without building a whole `Printing`, and a second copy of this would be
+ * a second place for the two to disagree.
+ */
+export function parseJson<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback
   try {
     return JSON.parse(raw) as T

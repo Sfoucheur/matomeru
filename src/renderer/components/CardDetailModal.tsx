@@ -6,20 +6,30 @@ import {
   ListChecks,
   MapPin,
   Package,
+  Plus,
   RefreshCw,
   Trash2,
   ZoomIn
 } from 'lucide-react'
-import { foilTreatmentLabel, foilTreatmentOf, twoSides } from '@shared/types'
-import type { CardLocations, Printing } from '@shared/types'
+import {
+  CONDITIONS,
+  FINISHES,
+  LANGUAGES,
+  foilTreatmentLabel,
+  foilTreatmentOf,
+  twoSides
+} from '@shared/types'
+import type { CardLocations, Condition, Finish, Printing } from '@shared/types'
 import { guard, useApp } from '../store/app'
 import {
+  Button,
   CardImage,
   ColorPips,
   LangChip,
   Modal,
   QuantityStepper,
-  RarityPip
+  RarityPip,
+  Select
 } from './primitives'
 import { FINISH_LABEL, languageName, rarityName } from '../lib/format'
 import { useT } from '../hooks/useT'
@@ -670,6 +680,143 @@ function PriceTable({ printing }: { printing: Printing }): React.ReactElement {
   )
 }
 
+/**
+ * Another version of the card on screen: a foil, a played copy, a translation.
+ *
+ * The modal had no way to add anything at all -- own none of a printing and it said so
+ * and stopped -- so the answer to "I also have the foil" was to leave, go to Add cards,
+ * search the name again and find the same printing.
+ *
+ * Finish and condition are columns on a collection row, so those are simply recorded.
+ * **Language is not**: a French card is a different printing with a different Scryfall
+ * id, so choosing one sends the main process looking for the same set and collector
+ * number in that language, and it refuses rather than quietly filing an English card as
+ * a French one. That is why this posts to `addVariant` instead of `add`.
+ */
+function AddVariant({
+  printing,
+  onChanged
+}: {
+  printing: Printing
+  onChanged: () => void
+}): React.ReactElement {
+  const t = useT()
+  const toast = useApp((s) => s.toast)
+  const [open, setOpen] = useState(false)
+  const [finish, setFinish] = useState<Finish>(printing.finishes[0] ?? 'nonfoil')
+  const [condition, setCondition] = useState<Condition>('NM')
+  const [lang, setLang] = useState(printing.lang)
+  const [quantity, setQuantity] = useState(1)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (): Promise<void> => {
+    setBusy(true)
+    const result = await guard(() =>
+      window.api.collection.addVariant({
+        scryfall_id: printing.scryfall_id,
+        lang,
+        finish,
+        condition,
+        quantity
+      })
+    )
+    setBusy(false)
+    if (!result) return
+    /*
+      Say where it actually landed when that is not where you were looking.
+
+      A language other than this printing's resolves to a different printing, and a
+      foil-only printing substitutes its own finish. Reporting "added" without naming
+      either would leave the count changing somewhere off screen.
+    */
+    toast(
+      'success',
+      result.scryfall_id === printing.scryfall_id
+        ? t('detail.variantAdded', {
+            quantity,
+            name: printing.printed_name ?? printing.name,
+            lang: result.lang.toUpperCase(),
+            owned: result.owned
+          })
+        : t('detail.variantAddedElsewhere', {
+            quantity,
+            name: printing.printed_name ?? printing.name,
+            lang: result.lang.toUpperCase(),
+            set: printing.set_code.toUpperCase(),
+            number: printing.collector_number,
+            owned: result.owned
+          })
+    )
+    onChanged()
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        data-action="addVariant"
+        className="mt-1 flex items-center gap-1 rounded px-1 py-1 text-[11px] text-gold-300
+          transition-colors hover:bg-ink-750"
+      >
+        <Plus size={11} /> {t('detail.addVariant')}
+      </button>
+    )
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-ink-700 bg-ink-800 p-3">
+      <p className="mb-2 text-[10px] leading-relaxed text-ink-500">{t('detail.addVariantHint')}</p>
+      <div className="flex flex-wrap items-end gap-2.5">
+        <label className="flex flex-col gap-1 text-[11px] text-ink-400">
+          {t('add.finish')}
+          <Select
+            className="w-24"
+            value={finish}
+            onChange={setFinish}
+            options={FINISHES.map((f) => ({ value: f, label: FINISH_LABEL[f] }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-400">
+          {t('detail.condition')}
+          <Select
+            className="w-20"
+            value={condition}
+            onChange={setCondition}
+            options={CONDITIONS.map((c) => ({ value: c, label: c }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-400">
+          {t('add.language')}
+          <Select
+            className="w-28"
+            value={lang}
+            onChange={setLang}
+            options={LANGUAGES.map((code) => ({ value: code, label: languageName(code) }))}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-400">
+          {t('add.quantity')}
+          <QuantityStepper value={quantity} min={1} size="sm" onChange={setQuantity} />
+        </label>
+      </div>
+      <div className="mt-3 flex justify-end gap-2">
+        <Button size="sm" onClick={() => setOpen(false)}>
+          {t('common.cancel')}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={busy}
+          onClick={() => void submit()}
+          data-action="confirmAddVariant"
+        >
+          {t('detail.addVariant')}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function Locations({
   locations,
   printing,
@@ -687,8 +834,23 @@ function Locations({
   onGoDeck: (deckId: number) => void
 }): React.ReactElement {
   const t = useT()
+  /*
+    Every copy of the card, not of the printing.
+
+    `cardLocations` is oracle-scoped, so this list spans printings: your French copy sits
+    beside your English one and the foil beside the plain. That is the point -- those are
+    precisely the copies there was previously no single screen on which to compare, so
+    "keep this foil, drop the other" could not be done at all.
+
+    The two counts are kept apart because they answer different questions. The badge says
+    how many of the card you hold; the line under it says how many of *this* printing,
+    which is what the page is otherwise about.
+  */
   const totalLoose = locations.loose.reduce((sum, e) => sum + e.quantity, 0)
   const totalReserved = locations.loose.reduce((sum, e) => sum + e.reserved, 0)
+  const thisPrinting = locations.loose
+    .filter((e) => e.same_printing)
+    .reduce((sum, e) => sum + e.quantity, 0)
 
   return (
     <div className="space-y-3.5">
@@ -698,7 +860,7 @@ function Locations({
 
       <Section
         icon={<Package size={12} />}
-        title={t('detail.inCollection')}
+        title={t('detail.yourCopies')}
         badge={
           totalReserved
             ? t('detail.totalHeldReserved', { total: totalLoose, held: totalReserved })
@@ -708,11 +870,31 @@ function Locations({
         {locations.loose.length === 0 ? (
           <Empty>{t('detail.dontOwnPrinting')}</Empty>
         ) : (
-          locations.loose.map((entry) => (
+          <>
+            {/* Only worth saying when the two differ -- otherwise it restates the badge. */}
+            {thisPrinting !== totalLoose && (
+              <p className="px-1 pb-1 text-[10px] text-ink-500">
+                {t.p('detail.thisPrinting', thisPrinting)} · {t.p('detail.copiesTotal', totalLoose)}
+              </p>
+            )}
+            {locations.loose.map((entry) => (
             <Line key={entry.collection_item_id}>
               <span className="flex min-w-0 flex-1 items-center gap-1 text-ink-200">
+                {/*
+                  A row may be a different printing from the one on screen, so it is
+                  named -- two lines reading "Foil · NM" are otherwise indistinguishable.
+                */}
+                {!entry.same_printing && (
+                  <span className="numeric shrink-0 text-[10px] uppercase text-ink-500">
+                    {entry.set_code} #{entry.collector_number}
+                  </span>
+                )}
+                <LangChip lang={entry.lang} />
                 <FinishPicker
-                  printing={printing}
+                  // The row's own printing, not the page's: a French foil and an English
+                  // nonfoil of one card are sold in different finishes and carry
+                  // different promo tags.
+                  printing={{ finishes: entry.finishes, promo_types: entry.promo_types }}
                   finish={entry.finish}
                   treatment={entry.foil_treatment}
                   onApply={(finish, treatment) => {
@@ -725,7 +907,26 @@ function Locations({
                     })
                   }}
                 />
-                <span className="shrink-0 text-ink-400">· {entry.condition}</span>
+                {/*
+                  Condition was static text here, so the only way to correct one was the
+                  collection table -- which a gallery view does not have.
+
+                  `updateItem` merges when the edit collides with an existing row for the
+                  same printing and finish, and returns nothing, so the id held here can
+                  legitimately vanish. Every edit reloads, which is what makes that safe:
+                  nothing below reuses the id afterwards.
+                */}
+                <Select
+                  className="w-16"
+                  value={entry.condition}
+                  onChange={(condition) => {
+                    void guard(async () => {
+                      await window.api.collection.update(entry.collection_item_id, { condition })
+                      onChanged()
+                    })
+                  }}
+                  options={CONDITIONS.map((c) => ({ value: c, label: c }))}
+                />
               </span>
               {entry.reserved > 0 && (
                 <span className="numeric rounded bg-warn/15 px-1.5 py-0.5 text-[10px] text-warn">
@@ -768,8 +969,10 @@ function Locations({
                 <Trash2 size={12} />
               </button>
             </Line>
-          ))
+            ))}
+          </>
         )}
+        <AddVariant printing={printing} onChanged={onChanged} />
       </Section>
 
       <Section icon={<ListChecks size={12} />} title={t('detail.stagedIn')}>

@@ -428,7 +428,6 @@ export const en = {
   'detail.etched': 'Etched',
   'detail.na': 'n/a',
   'detail.whereItIs': 'Where it is',
-  'detail.inCollection': 'In the collection',
   'detail.totalHeld': '{total} total',
   'detail.totalHeldReserved': '{total} total, {held} held',
   'detail.dontOwnPrinting': 'You do not own this printing.',
@@ -699,10 +698,43 @@ export const en = {
   'settings.dataNote1': 'The collection database and the card image cache live in your Windows app-data folder, deliberately outside the application directory, so reinstalling or updating Matomeru never touches your collection.',
   'settings.dataNote2': 'Card data comes from Scryfall; deck data from Archidekt. Neither is affiliated with this app, and nothing is uploaded anywhere — every request is a read.',
   'err.reserved': 'Cannot delete: copies are reserved by an open pick list.',
-  'decks.pullRefused_one': '{count} entry could not be pulled (a proxy, or not marked as owned).',
-  'decks.pullRefused_other': '{count} entries could not be pulled (proxies, or not marked as owned).',
-  'decks.pullNothing': 'None of those can be pulled: they are proxies, or not marked as cards you own.',
+  // No guessed reason any more: the real one comes back from the main process and is
+  // shown alongside, via decks.refusedFor. These only count.
+  'decks.pullRefused_one': '{count} entry was refused.',
+  'decks.pullRefused_other': '{count} entries were refused.',
+  // One refusal, and the cards it applied to.
+  'decks.refusedFor': '{reason} ({names})',
+  'decks.andMore': '+{count} more',
+  // Last resort only, for a refusal that somehow carried no message at all.
+  'decks.pullNothing': 'Nothing could be taken out of the deck.',
   'err.notConfirmed': 'Only a validated pick list can be reverted.',
+
+  // ---- Which copy, and how many ----
+  'copies.title': 'Which copy',
+  'copies.none': 'You hold no copies of this card.',
+  // Set, number, language and finish are rendered as chips beside the row; this is
+  // only how many of it are free to stage.
+  'copies.free_one': '{count} free',
+  'copies.free_other': '{count} free',
+  'copies.allReserved': 'all reserved',
+  'copies.change': 'Change copy',
+  'copies.otherPrinting': 'Another printing',
+  'picks.quantityToStage': 'How many',
+  'picks.stagingFrom': 'Taking from',
+  'picks.fromDeck': 'This deck',
+  'picks.copyChanged': 'Now taking the {set} #{number} copy.',
+  'detail.yourCopies': 'Your copies',
+  'detail.copiesTotal_one': '{count} copy in all',
+  'detail.copiesTotal_other': '{count} copies in all',
+  'detail.thisPrinting_one': '{count} of this printing',
+  'detail.thisPrinting_other': '{count} of this printing',
+  'detail.addVariant': 'Add a copy',
+  'detail.addVariantHint':
+    'Another version of this card: a foil, a played copy, or a translation. A language other than this one is looked up as the same set and number in that language.',
+  'detail.variantAdded': 'Added {quantity} × {name} ({lang}). You now hold {owned}.',
+  'detail.variantAddedElsewhere':
+    'Added {quantity} × {name} on the {lang} printing, {set} #{number}. You now hold {owned}.',
+  'detail.condition': 'Condition',
   // What Ctrl+Z would take back, named so the toast can say which action
   // it was rather than just "undone".
   'undo.moveToCollection': 'Move to the collection',
@@ -720,6 +752,8 @@ export const en = {
   'undo.forceLanguage': 'Set a language by hand',
   'undo.createList': 'Create a pick list',
   'undo.renameList': 'Rename a pick list',
+  'undo.repointPick': 'Change which copy a staged card takes',
+  'undo.addVariant': 'Add a copy',
   'undo.stage': 'Add to a pick list',
   'undo.stageQuantity': 'Change a staged quantity',
   'undo.unstage': 'Remove from a pick list',
@@ -753,10 +787,10 @@ export const en = {
   'err.scryfallStatus': 'Scryfall returned {status}{detail}',
   'err.moveNotOwned':
     'That deck entry is not marked as a card you own, so there is nothing to move. Map its label colour to owned first.',
+  // Used both ways round. Deck side: the deck already holds real copies. Collection
+  // side: the collection row already holds real copies. Same shape, same sentence.
   'err.moveProxyMixes':
-    'That deck already holds copies of this card, and a proxy cannot be told apart from them there — the deck records one proxy flag per card. Move the real copies out first, or mark the deck entry as a proxy yourself.',
-  'err.moveProxy':
-    'That deck slot is filled by a proxy. Moving it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
+    'Real copies of that card are already there, and a proxy cannot be told apart from them — one proxy flag covers the whole row. Move the real copies out first, or mark them as proxies yourself.',
   'err.moveShortfall': 'Only {held} copies are available to move, and {asked} were asked for.',
   'err.moveNotFound': 'That move is no longer recorded.',
   'err.moveGone':
@@ -764,9 +798,22 @@ export const en = {
   'err.deckNotFound': 'That deck no longer exists.',
   'err.pickNotOwned':
     'That deck entry is not marked as a card you own, so there is nothing to pull. Map its label colour to owned first.',
-  'err.pickProxy':
-    'That deck slot is filled by a proxy. Adding it to the collection would merge it with your real copies of the same printing and mark those as proxies too, so it is not allowed.',
+  'err.pickProxyMixes':
+    'You already hold real copies of {name} in that printing and condition, and a proxy cannot be told apart from them there — the collection records one proxy flag per row. Move the real copies out first, or send this one to "gone" instead.',
   'err.itemNotFound': 'Collection item not found.',
+  // Language is the printing, not a column on your row, so asking for one Scryfall has
+  // no record of has to refuse. Adding the printing on screen instead would file an
+  // English card as the French one you asked for.
+  'err.noPrintingInLanguage':
+    'Scryfall has no {lang} printing of {set} #{number}. Only the same set and collector number is the same physical card, so nothing was added.',
+  'err.pickItemPrinting':
+    'That staged copy comes from a deck, so its printing is the deck’s. Change it on the deck screen.',
+  'err.pickItemOtherCard': 'That copy is a different card, not another version of this one.',
+  // The deck-side counterpart. It used to reuse err.itemNotFound, whose noun is wrong
+  // here -- and that wrong noun is what hid a lookup bug that refused every entry of a
+  // deck with a language override.
+  'err.deckEntryNotFound':
+    'That deck entry could not be found — the deck may have been re-synced since this screen was drawn. Refresh the deck and try again.',
   'err.notCached': 'That printing is not cached yet — look the card up first.',
   'err.noLangAnchor': 'That deck entry has no printing to anchor a language to.',
   'err.noFinishAnchor': 'That deck entry has no printing to anchor a finish to.',

@@ -47,7 +47,7 @@ import AddToListDialog from '../components/AddToListDialog'
 import FoilBadge from '../components/FoilBadge'
 import Popover from '../components/Popover'
 import { FINISH_LABEL } from '../lib/format'
-import { useT } from '../hooks/useT'
+import { useT, type Translate } from '../hooks/useT'
 import { useRangeSelection, type PickMode } from '../hooks/useRangeSelection'
 import { Button, CardImage, EmptyState, LangChip, Modal, RarityPip } from '../components/primitives'
 import { bigMoney, count, money, proxyMoney, relativeTime } from '../lib/format'
@@ -62,6 +62,49 @@ import {
   type FilteredGroup
 } from '../lib/deckGroups'
 import { CARD_ASPECT, useGridMetrics } from '../hooks/useGridMetrics'
+
+/** How many card names a refusal spells out before it starts counting instead. */
+const REFUSAL_NAMES_SHOWN = 4
+
+/**
+ * Refusals from a bulk action, grouped by the reason the main process gave.
+ *
+ * Every refusal arrives as a written, localized sentence -- a label that is not
+ * "owned", a proxy that would mislabel real copies, a shortfall, a deck entry that no
+ * longer exists. Both handlers below used to throw all of that away with
+ * `.catch(() => null)`, count the failures, and have the toast guess at the cause. The
+ * guess named proxies and ownership, which sent someone hunting through a deck that had
+ * neither while the real reason -- the lookup could not find the entry at all -- went
+ * unsaid.
+ *
+ * Grouped rather than listed one per card: twenty cards refused for one reason is one
+ * sentence, and that is also the shape of the answer.
+ */
+class Refusals {
+  private readonly byReason = new Map<string, string[]>()
+  count = 0
+
+  add(error: unknown, cardName: string): void {
+    const reason = (error as Error)?.message
+    this.count += 1
+    if (!reason) return
+    const names = this.byReason.get(reason) ?? []
+    names.push(cardName)
+    this.byReason.set(reason, names)
+  }
+
+  /** One clause per distinct reason, naming the cards it applied to. Empty if none. */
+  describe(t: Translate): string {
+    return [...this.byReason]
+      .map(([reason, names]) => {
+        const shown = names.slice(0, REFUSAL_NAMES_SHOWN)
+        const rest = names.length - shown.length
+        const listed = rest > 0 ? [...shown, t('decks.andMore', { count: rest })] : shown
+        return t('decks.refusedFor', { reason, names: listed.join(', ') })
+      })
+      .join(' ')
+  }
+}
 
 /**
  * What opening this card lets you change: which printing this deck entry uses.
@@ -615,13 +658,16 @@ function DeckDetail({
    * The deck is unambiguous here, which is why this is the simpler of the two
    * entry points: the Collection has to ask which deck a grouped row leaves.
    *
-   * Entries the pull refuses — a slot filled by a proxy, a label that is not
-   * "owned" — are reported rather than skipped silently, because a selection of
-   * twenty that stages fifteen needs to say why.
+   * Entries the pull refuses — a label that is not "owned", a deck entry that has
+   * since been re-synced away — are reported rather than skipped silently, because a
+   * selection of twenty that stages fifteen needs to say why. The reason shown is the
+   * one the main process gave, not a guess: see `Refusals`.
    */
   const stageForPull = async (
     target: number | 'new',
-    destination: PickDestination
+    destination: PickDestination,
+    /** How many of each: one, unless a single card was asked about in the dialog. */
+    quantity = 1
   ): Promise<void> => {
     const chosen = selectedCards.filter((card) => card.oracle_id)
     if (!chosen.length) return
@@ -636,12 +682,12 @@ function DeckDetail({
     }
 
     let added = 0
-    let refused = 0
+    const refusals = new Refusals()
     for (const card of chosen) {
       // One at a time: addMany would abort the whole batch on the first refusal,
       // and a mixed selection is exactly when this is used.
-      const result = await window.api.pickLists
-        .add(
+      try {
+        const result = await window.api.pickLists.add(
           listId,
           {
             kind: 'deck',
@@ -649,24 +695,28 @@ function DeckDetail({
             oracleId: card.oracle_id as string,
             destination
           },
-          1
+          // One of each across a selection; the dialog asks properly for a single card.
+          chosen.length === 1 ? quantity : 1
         )
-        .catch(() => null)
-      if (result) added += result.added
-      else refused += 1
+        added += result.added
+      } catch (err) {
+        refusals.add(err, card.name)
+      }
     }
     setBusy(false)
 
     if (added > 0) {
       toast(
-        'success',
+        refusals.count > 0 ? 'warn' : 'success',
         `${t.p('coll.staged', added)}${
-          refused > 0 ? ` ${t.p('decks.pullRefused', refused)}` : ''
-        }`
+          refusals.count > 0
+            ? ` ${t.p('decks.pullRefused', refusals.count)} ${refusals.describe(t)}`
+            : ''
+        }`.trim()
       )
       invalidate()
     } else {
-      toast('warn', t('decks.pullNothing'))
+      toast('warn', refusals.describe(t) || t('decks.pullNothing'))
     }
   }
 
@@ -689,29 +739,40 @@ function DeckDetail({
     if (!chosen.length) return
     setBusy(true)
     let moved = 0
-    let refused = 0
+    const refusals = new Refusals()
     for (const card of chosen) {
       // One at a time: a batch call would abort on the first refusal, and a mixed
       // selection is exactly when this is used.
-      const result = await window.api.decks
-        // The row that was selected, not just the card: the deck can hold two printings
-        // of it, and taking the other one out is not what was asked for.
-        .moveToCollection(deck.id, card.oracle_id as string, 1, card.scryfall_id)
-        .catch(() => null)
-      if (result) moved += result.moved
-      else refused += 1
+      try {
+        const result = await window.api.decks
+          /*
+            The row that was selected, not just the card: the deck can hold two printings
+            of it, and taking the other one out is not what was asked for.
+
+            This is the *resolved* printing -- an override replaces the one Archidekt
+            reported -- which is what the main process now matches on. It used to match
+            against the raw Archidekt id instead, so every entry of a deck with a
+            language override found nothing and was refused.
+          */
+          .moveToCollection(deck.id, card.oracle_id as string, 1, card.scryfall_id)
+        moved += result.moved
+      } catch (err) {
+        refusals.add(err, card.name)
+      }
     }
     setBusy(false)
     if (moved > 0) {
       toast(
-        'success',
+        refusals.count > 0 ? 'warn' : 'success',
         `${t.p('decks.movedToCollection', moved)}${
-          refused > 0 ? ` ${t.p('decks.pullRefused', refused)}` : ''
-        }`
+          refusals.count > 0
+            ? ` ${t.p('decks.pullRefused', refusals.count)} ${refusals.describe(t)}`
+            : ''
+        }`.trim()
       )
       invalidate()
     } else {
-      toast('warn', t('decks.pullNothing'))
+      toast('warn', refusals.describe(t) || t('decks.pullNothing'))
     }
   }
 
@@ -946,10 +1007,26 @@ function DeckDetail({
           // Always offered here: everything selectable on this screen is a deck
           // card, so the question always has two answers.
           showDestination
+          /*
+            Quantity only, and no copy picker: a deck entry is the printing that deck
+            holds, so "which copy" has one answer and changing it is a deck edit rather
+            than a decision about this list.
+          */
+          subject={
+            // A deck row can have no cached printing at all, and then there is nothing
+            // for the dialog to describe.
+            selectedCards.length === 1 && selectedCards[0].scryfall_id
+              ? {
+                  scryfallId: selectedCards[0].scryfall_id as string,
+                  collectionItemId: null,
+                  max: Math.max(1, selectedCards[0].quantity)
+                }
+              : undefined
+          }
           onCancel={() => setListDialog(false)}
-          onConfirm={(target, destination) => {
+          onConfirm={(target, destination, choice) => {
             setListDialog(false)
-            void stageForPull(target, destination)
+            void stageForPull(target, destination, choice.quantity)
           }}
         />
       )}

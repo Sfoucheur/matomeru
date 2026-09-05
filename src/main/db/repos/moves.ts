@@ -49,6 +49,13 @@ export function moveToCollection(
   /**
    * Which entry to take them out of, when the deck holds more than one printing.
    *
+   * The *resolved* printing -- `DECK_PRINTING`, what the deck screen renders and
+   * therefore the only id it can hand back. Matching it against `dc.scryfall_id`
+   * instead is what broke every move out of a deck with a language override: an
+   * override replaces the printing entirely, so the screen showed the French id and
+   * the lookup filtered on Archidekt's English one, matched nothing, and refused all
+   * 148 entries of a French deck as "not owned or a proxy".
+   *
    * Optional, and the fallback is what this did before it existed: any entry of the
    * card. The deck screen has always selected a *row*, which is a printing, and threw
    * that away before calling -- so removing one print could empty the other, and could
@@ -73,18 +80,25 @@ export function moveToCollection(
        ${DECK_OVERRIDE_JOIN}
        ${DECK_TRAITS_JOIN}
        WHERE dc.deck_id = ? AND dc.oracle_id = ? AND ${DECK_PRINTING} IS NOT NULL
-         AND (? IS NULL OR dc.scryfall_id = ?)
        /*
          The entry asked for first, then any of them.
 
-         The deck screen selects a row, which is a printing, and used to throw that away
-         before calling here -- so with two entries this picked one arbitrarily and read
-         the other's proxy flag. The fallback stays because Archidekt may have re-pointed
-         the entry since it was drawn, and the copies still have to come from somewhere.
+         A preference, not a filter. The deck screen selects a row, which is a printing,
+         and used to throw that away before calling here -- so with two entries this
+         picked one arbitrarily and read the other's proxy flag. The fallback stays
+         because Archidekt may have re-pointed the entry since it was drawn, and the
+         copies still have to come from somewhere; a WHERE clause on the same id made
+         that fallback unreachable and turned "I could not find the row you drew" into a
+         refusal.
+
+         Compared against the resolved printing, for the reason given on the parameter:
+         that is the id the screen renders. COALESCE because equality against NULL is
+         NULL rather than 0, so without it a call that passes no id would sort every row
+         on NULL and lose the tiebreak that prefers an entry with copies left in it.
        */
-       ORDER BY (dc.scryfall_id = ?) DESC, dc.quantity > 0 DESC, dc.id
+       ORDER BY COALESCE(${DECK_PRINTING} = ?, 0) DESC, dc.quantity > 0 DESC, dc.id
        LIMIT 1`,
-      [deckId, oracleId, scryfallId ?? null, scryfallId ?? null, scryfallId ?? null]
+      [deckId, oracleId, scryfallId ?? null]
     ) as
       | {
           scryfall_id: string
@@ -96,15 +110,31 @@ export function moveToCollection(
           held: number
         }
       | undefined
-    if (!entry) throw new Error(tr('err.itemNotFound'))
+    if (!entry) throw new Error(tr('err.deckEntryNotFound'))
     if (entry.label_possession !== 'owned') throw new Error(tr('err.moveNotOwned'))
     /*
-      A proxy cannot become a collection row: `collection_items` is UNIQUE on
-      (scryfall_id, finish, condition) and does not include `proxied`, so it would
-      merge into your real copies of the same printing and mark those as proxies
-      too — quietly zeroing the value of cards you own.
+      A proxy moves like anything else -- it is a card you physically hold, and taking
+      it out of a deck is the same act. It lands in the *same* row as the real printing
+      rather than a new one, tagged `proxied`, which is the shape the collection already
+      has: `collection_items` is UNIQUE on (scryfall_id, finish, condition) and `proxied`
+      is a flag on the row, not part of its identity.
+
+      That flag describes every copy in the row, so there is exactly one case left that
+      has to refuse: a row already holding *real* copies of this printing. Merging into
+      it would mark those as proxies too and quietly zero the value of cards you own.
+      This is the mirror of the guard `moveToDeck` applies in the other direction, and it
+      reuses its message.
     */
-    if (entry.proxied === 1) throw new Error(tr('err.moveProxy'))
+    if (entry.proxied === 1) {
+      const destination = db.get(
+        `SELECT quantity, proxied FROM collection_items
+          WHERE scryfall_id = ? AND finish = ? AND condition = 'NM'`,
+        [entry.scryfall_id, entry.finish]
+      ) as { quantity: number; proxied: number } | undefined
+      if (destination && destination.proxied === 0 && destination.quantity > 0) {
+        throw new Error(tr('err.moveProxyMixes'))
+      }
+    }
     // Re-checked here rather than trusted from the UI, which may be looking at a
     // stale row.
     if (entry.held < quantity) {
@@ -152,6 +182,15 @@ export function moveToCollection(
         entry.foil_treatment,
         itemId
       ])
+    }
+    /*
+      Same reasoning as the treatment above: `addToCollection` knows nothing about
+      proxies, so the flag has to be carried here. Only ever set, never cleared -- the
+      guard has already established that the row holds no real copies, and a row that
+      was already proxied stays that way.
+    */
+    if (entry.proxied === 1) {
+      db.run('UPDATE collection_items SET proxied = 1 WHERE id = ?', [itemId])
     }
     return { moved: quantity }
   })

@@ -5,6 +5,7 @@ dist/
 .verify.cjs
 .seed.cjs
 .probe.cjs
+.probe-move.cjs
 *.log
 .DS_Store
 

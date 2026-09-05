@@ -7,6 +7,7 @@ import {
   LayoutGrid,
   ListChecks,
   Plus,
+  Replace,
   RotateCcw,
   Rows3,
   Trash2,
@@ -22,6 +23,9 @@ import ColumnStepper from '../components/ColumnStepper'
 import FoilBadge from '../components/FoilBadge'
 import GalleryGrid from '../components/GalleryGrid'
 import CardTile from '../components/CardTile'
+import CopyPicker from '../components/CopyPicker'
+import CardZoom from '../components/CardZoom'
+import { useCardPreview } from '../components/CardHoverPreview'
 import {
   Button,
   CardImage,
@@ -48,6 +52,19 @@ export default function PickListView({ active: isActive }: ViewProps): React.Rea
   const [items, setItems] = useState<PickListItem[]>([])
   const [confirming, setConfirming] = useState(false)
   const [loading, setLoading] = useState(true)
+  /*
+    A closer look at the art, and the card under the pointer.
+
+    Both live here rather than in the row, for the reason `useCardPreview` gives: one
+    panel and one timer for the whole list, not one per row. The zoom is one dialog at a
+    time by definition, so it is the same shape.
+  */
+  const [zoom, setZoom] = useState<{
+    scryfallId: string
+    title: string
+    hasBack: boolean
+  } | null>(null)
+  const preview = useCardPreview()
   // Persisted, so the choice survives navigation and a restart.
   const mode = useApp((s) => s.viewModeFor('picks'))
   const setViewMode = useApp((s) => s.setViewMode)
@@ -243,6 +260,17 @@ export default function PickListView({ active: isActive }: ViewProps): React.Rea
                               currency={currency}
                               editable={active.status === 'open'}
                               onChanged={invalidate}
+                              onZoom={() =>
+                                setZoom({
+                                  scryfallId: item.scryfall_id,
+                                  title: bothSidesTitle(item),
+                                  // The same helper the tiles ask, so nothing gets a
+                                  // second opinion about what the back of a card is.
+                                  hasBack: twoSides(item) !== null
+                                })
+                              }
+                              onPreview={preview.onEnter}
+                              onPreviewEnd={preview.onLeave}
                             />
                           ))}
                         </AnimatePresence>
@@ -255,6 +283,18 @@ export default function PickListView({ active: isActive }: ViewProps): React.Rea
           </>
         )}
       </div>
+
+      {preview.panel}
+
+      {zoom && (
+        <CardZoom
+          scryfallId={zoom.scryfallId}
+          title={zoom.title}
+          hasBack={zoom.hasBack}
+          open
+          onClose={() => setZoom(null)}
+        />
+      )}
 
       {active && (
         <ConfirmDialog
@@ -538,18 +578,37 @@ function PickRow({
   item,
   currency,
   editable,
-  onChanged
+  onChanged,
+  onZoom,
+  onPreview,
+  onPreviewEnd
 }: {
   item: PickListItem
   currency: 'usd' | 'eur'
   editable: boolean
   onChanged: () => void
+  onZoom: () => void
+  onPreview: (scryfallId: string | null, anchor: HTMLElement | null) => void
+  onPreviewEnd: () => void
 }): React.ReactElement {
   const t = useT()
   const openCard = useApp((s) => s.openCard)
+  const toast = useApp((s) => s.toast)
   // Available to this row = what is still in the collection. The backend caps
   // this too; the UI limit just avoids a pointless round trip.
   const max = item.owned_quantity ?? item.quantity
+  const [changing, setChanging] = useState(false)
+
+  /*
+    Whose copy this is.
+
+    `destination` is null only for a collection-sourced row -- migration 13 set it on
+    every deck one -- and a deck row's printing is the deck's, resolved afresh every time
+    the deck is read. Repointing that here would make the row disagree with the deck it
+    claims to come from, so the button is only offered for copies that are yours to
+    choose between, and the main process refuses the rest anyway.
+  */
+  const fromCollection = item.destination === null && item.collection_item_id !== null
 
   return (
     <motion.div
@@ -560,14 +619,54 @@ function PickRow({
       transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
       className="flex items-center gap-3 rounded-lg border border-ink-800 bg-ink-850 px-3 py-2"
     >
-      <CardImage
-        scryfallId={item.scryfall_id}
-        className="h-9 w-7 shrink-0"
-        alt={item.name}
-      />
+      {/*
+        The thumbnail opens the closer look, exactly as it does on the collection list:
+        the row is 36px tall, so this is the one place the art cannot otherwise be seen.
+        No `title`, because the hover preview is already showing what one would say.
+      */}
+      <button
+        onClick={onZoom}
+        onMouseEnter={(e) => onPreview(item.scryfall_id, e.currentTarget)}
+        onMouseLeave={onPreviewEnd}
+        onFocus={(e) => onPreview(item.scryfall_id, e.currentTarget)}
+        onBlur={onPreviewEnd}
+        aria-label={t('coll.zoomHint')}
+        data-action="zoomArt"
+        className="shrink-0 cursor-zoom-in rounded"
+      >
+        <CardImage
+          scryfallId={item.scryfall_id}
+          className="h-9 w-7 shrink-0"
+          alt={item.name}
+        />
+      </button>
 
       <div className="min-w-0 flex-1 leading-tight">
-        <p className="truncate text-sm text-ink-100">{item.printed_name ?? item.name}</p>
+        {/*
+          The name opens the card, as it does on every other list.
+
+          It used to be inert text, and the only way into the detail dialog from this
+          screen was the deck-warning badge below -- which appears only for a card some
+          deck is using, so a staged card in no deck could not be opened at all.
+
+          No `CardContext`: a staged row's printing cannot be repointed while an open list
+          is reserving it, and the row has its own button for changing which copy it takes.
+
+          `w-full`, where the collection and deck rows use `flex-1`, because this wrapper
+          is an ordinary block rather than a flex container -- `flex-1` would be inert
+          here. It has to be a width and not `max-w-full`: a button carries
+          `width: fit-content` from the UA stylesheet even at `display: block`, so a cap
+          leaves it hugging the text and the strip up to the language chip stays dead,
+          which is exactly what the other two screens do not do.
+        */}
+        <button
+          onClick={() => openCard(item.scryfall_id)}
+          className="block w-full truncate text-left text-sm text-ink-100
+            underline-offset-2 hover:underline"
+          title={t('coll.cardDetails')}
+        >
+          {item.printed_name ?? item.name}
+        </button>
         <p className="truncate text-[11px] text-ink-500">
           #{item.collector_number} ·{' '}
                     {item.foil_treatment
@@ -605,6 +704,60 @@ function PickRow({
             </span>
           )}
         </button>
+      )}
+
+      {editable && fromCollection && (
+        <>
+          <button
+            onClick={() => setChanging(true)}
+            data-action="changeCopy"
+            title={t('copies.change')}
+            aria-label={t('copies.change')}
+            className="rounded p-1 text-ink-600 transition-colors hover:bg-ink-750 hover:text-ink-200"
+          >
+            <Replace size={13} />
+          </button>
+          {changing && (
+            <Modal
+              open
+              onClose={() => setChanging(false)}
+              title={t('copies.change')}
+              width="max-w-md"
+            >
+              <div className="px-5 py-4">
+                <CopyPicker
+                  scryfallId={item.scryfall_id}
+                  selected={item.collection_item_id}
+                  needed={item.quantity}
+                  /*
+                    This row is releasing its own reservation as it moves, so its copies
+                    must not count against the row it is moving to -- or moving back onto
+                    the copy it already holds would report nothing free.
+                  */
+                  exclude={{
+                    collectionItemId: item.collection_item_id,
+                    quantity: item.quantity
+                  }}
+                  onChoose={async (copy) => {
+                    const ok = await guard(() =>
+                      window.api.pickLists.setItemSource(item.id, copy.collection_item_id)
+                    )
+                    setChanging(false)
+                    if (ok === undefined) return
+                    toast(
+                      'success',
+                      t('picks.copyChanged', {
+                        set: copy.set_code.toUpperCase(),
+                        number: copy.collector_number
+                      })
+                    )
+                    onChanged()
+                  }}
+                />
+              </div>
+            </Modal>
+          )}
+        </>
       )}
 
       {editable ? (

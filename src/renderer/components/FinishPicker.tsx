@@ -5,8 +5,7 @@ import {
   FOIL_TREATMENTS,
   foilTreatmentLabel,
   foilTreatmentOf,
-  type Finish,
-  type Printing
+  type Finish
 } from '@shared/types'
 import { FINISH_LABEL } from '../lib/format'
 import { useT } from '../hooks/useT'
@@ -33,7 +32,15 @@ export default function FinishPicker({
   forced,
   onApply
 }: {
-  printing: Printing
+  /**
+   * The printing these copies are of -- narrowed to the two fields this reads.
+   *
+   * A whole `Printing` used to be required, which meant the caller could only ever
+   * offer the one it had on screen. The detail page now lists copies across *several*
+   * printings of a card, and each row's picker has to offer that row's finishes, so the
+   * shape asked for is the shape used.
+   */
+  printing: { finishes: Finish[]; promo_types: string[] }
   finish: Finish
   /** Your stored override, or null when the printing's own tag applies. */
   treatment: string | null

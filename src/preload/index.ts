@@ -55,6 +55,24 @@ const api = {
       call<CollectionPage>('collection:query', filters, limit, offset),
     facets: (filters: CollectionFilters) => call<FacetCounts>('collection:facets', filters),
     add: (input: AddCardInput) => call<{ itemId: number; owned: number }>('collection:add', input),
+    /**
+     * Another version of the printing you are looking at.
+     *
+     * `lang` may differ from the printing's own, in which case the same set and
+     * collector number is looked up in that language — so the printing it lands on is
+     * not always the one asked about, which is why the result names it.
+     */
+    addVariant: (input: {
+      scryfall_id: string
+      lang: string
+      finish: Finish
+      condition: Condition
+      quantity: number
+    }) =>
+      call<{ itemId: number; scryfall_id: string; lang: string; owned: number }>(
+        'collection:addVariant',
+        input
+      ),
     setQuantity: (itemId: number, quantity: number) =>
       call<boolean>('collection:setQuantity', itemId, quantity),
     update: (
@@ -176,6 +194,9 @@ const api = {
       ),
     setQuantity: (pickItemId: number, quantity: number) =>
       call<boolean>('pickLists:setQuantity', pickItemId, quantity),
+    /** Repoints a staged row at another copy you own. Returns the surviving item id. */
+    setItemSource: (pickItemId: number, collectionItemId: number) =>
+      call<number>('pickLists:setItemSource', pickItemId, collectionItemId),
     removeItem: (pickItemId: number) => call<boolean>('pickLists:removeItem', pickItemId),
     confirm: (id: number) =>
       call<{

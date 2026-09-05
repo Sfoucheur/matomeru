@@ -153,10 +153,14 @@ function availableInDeck(
  * so a staged row shows the printing and finish the deck screen shows. Condition is
  * NM because Archidekt records none.
  *
- * The two refusals live here so every entry point gets them: an entry not under an
- * "owned" label is a wishlist line rather than a card you hold, and a proxied entry
- * cannot become a collection row without mislabelling real copies of the same
- * printing.
+ * The refusal lives here so every entry point gets it: an entry not under an "owned"
+ * label is a wishlist line rather than a card you hold.
+ *
+ * A proxy is *not* refused here. It is a card you physically hold, so it can be staged
+ * like any other -- and whether it can land in the collection depends on what the
+ * collection holds when the list is validated, not on what it held when the card was
+ * staged. `confirmPickList` asks that question at the point it matters, and a list
+ * destined for `gone` never has to ask it at all.
  */
 function snapshotOfDeckEntry(db: Sql, deckId: number, oracleId: string): PickSnapshot {
   const row = db.get(
@@ -175,9 +179,8 @@ function snapshotOfDeckEntry(db: Sql, deckId: number, oracleId: string): PickSna
      LIMIT 1`,
     [deckId, oracleId]
   ) as (PickSnapshot & { label_possession: string | null }) | undefined
-  if (!row) throw new Error(tr('err.itemNotFound'))
+  if (!row) throw new Error(tr('err.deckEntryNotFound'))
   if (row.label_possession !== 'owned') throw new Error(tr('err.pickNotOwned'))
-  if (row.proxied === 1) throw new Error(tr('err.pickProxy'))
   return { ...row, condition: 'NM' }
 }
 
@@ -364,6 +367,147 @@ export function removePickItem(pickItemId: number): void {
   getDb().run('DELETE FROM pick_list_items WHERE id = ?', [pickItemId])
 }
 
+/**
+ * Points a staged row at a different copy you own.
+ *
+ * "The wrong version is on the list" is a real thing to want to fix -- you meant the
+ * foil, or the French one -- and the only way to do it was to delete the row and stage
+ * again from the collection screen. This is that, without losing the row.
+ *
+ * It repoints, it does not retarget: the new row has to be another copy of the *same
+ * card*. Allowing any printing would turn a pull list into a wishlist, and every reader
+ * of these rows assumes the snapshot describes something you hold.
+ *
+ * Only while the list is open, and that guard is load-bearing rather than tidiness:
+ * `revertPickList` finds the collection row to give back by looking up the snapshot
+ * triple (scryfall_id, finish, condition), so editing a validated row would send the
+ * undo hunting a row that never existed.
+ *
+ * Returns the surviving item id, which is not always the one passed in -- see the merge
+ * below.
+ */
+export function setPickItemSource(pickItemId: number, collectionItemId: number): number {
+  return transaction((db) => {
+    const item = db.get(
+      `SELECT pli.id, pli.pick_list_id, pli.quantity, pli.scryfall_id,
+              pli.collection_item_id, pli.source_deck_id, pli.source_oracle_id,
+              pl.status
+       FROM pick_list_items pli JOIN pick_lists pl ON pl.id = pli.pick_list_id
+       WHERE pli.id = ?`,
+      [pickItemId]
+    ) as
+      | {
+          id: number
+          pick_list_id: number
+          quantity: number
+          scryfall_id: string
+          collection_item_id: number | null
+          source_deck_id: number | null
+          source_oracle_id: string | null
+          status: string
+        }
+      | undefined
+    if (!item) throw new Error(tr('err.pickItemNotFound'))
+    if (item.status !== 'open') throw new Error(tr('err.pickListClosed'))
+    /*
+      A deck-sourced row's printing is the deck's, resolved through DECK_PRINTING every
+      time it is read. Repointing it here would make the row disagree with the deck it
+      claims to come from, and the deck screen is where that is actually changed.
+    */
+    if (item.source_deck_id !== null) throw new Error(tr('err.pickItemPrinting'))
+
+    const target = db.get(
+      `SELECT ci.id, p.oracle_id
+       FROM collection_items ci
+       JOIN printings p ON p.scryfall_id = ci.scryfall_id
+       WHERE ci.id = ?`,
+      [collectionItemId]
+    ) as { id: number; oracle_id: string | null } | undefined
+    if (!target) throw new Error(tr('err.itemNotFound'))
+
+    /*
+      Same card, on the oracle id. Matched against the row's own printing rather than
+      trusting the caller: the picker offers copies of one card, but nothing stops a
+      stale id arriving after the row it named was merged into another.
+    */
+    const was = db.get('SELECT oracle_id FROM printings WHERE scryfall_id = ?', [
+      item.scryfall_id
+    ]) as { oracle_id: string | null } | undefined
+    if (was?.oracle_id && target.oracle_id && was.oracle_id !== target.oracle_id) {
+      throw new Error(tr('err.pickItemOtherCard'))
+    }
+
+    if (item.collection_item_id === collectionItemId) return item.id
+
+    /*
+      Room on the *new* row, with this item excluded from the reservation it is about to
+      stop making. Without the exclusion a row already fully staged by this very item
+      would report nothing free and refuse a move it is itself the cause of.
+    */
+    const available = availableInCollection(collectionItemId, pickItemId)
+    if (item.quantity > available) throw new Error(trp('err.onlyAvailable', available))
+
+    const snapshot = snapshotOfCollectionItem(db, collectionItemId)
+    if (!snapshot) throw new Error(tr('err.itemNotFound'))
+
+    /*
+      Merge when the list already stages that copy.
+
+      `addToPickList` treats (pick_list_id, collection_item_id) as a row's identity, so
+      two rows naming one collection item would make the next staging of it pick an
+      arbitrary one to top up. Quantities add, and the availability check above already
+      proved the total fits.
+    */
+    const twin = db.get(
+      `SELECT id, quantity FROM pick_list_items
+       WHERE pick_list_id = ? AND collection_item_id = ? AND id != ?`,
+      [item.pick_list_id, collectionItemId, pickItemId]
+    ) as { id: number; quantity: number } | undefined
+    if (twin) {
+      db.run('UPDATE pick_list_items SET quantity = ? WHERE id = ?', [
+        twin.quantity + item.quantity,
+        twin.id
+      ])
+      db.run('DELETE FROM pick_list_items WHERE id = ?', [pickItemId])
+      return twin.id
+    }
+
+    /*
+      Every snapshot column, not just the printing.
+
+      They describe one physical copy together: leaving `finish` or `condition` behind
+      would leave the row claiming a foil NM copy while pointing at a played nonfoil
+      one, and `confirmPickList` decrements on that triple.
+    */
+    db.run(
+      `UPDATE pick_list_items
+          SET collection_item_id = ?, scryfall_id = ?, name = ?, printed_name = ?,
+              lang = ?, set_code = ?, set_name = ?, collector_number = ?, rarity = ?,
+              finish = ?, foil_treatment = ?, proxied = ?, condition = ?,
+              image_uri_small = ?
+        WHERE id = ?`,
+      [
+        collectionItemId,
+        snapshot.scryfall_id,
+        snapshot.name,
+        snapshot.printed_name,
+        snapshot.lang,
+        snapshot.set_code,
+        snapshot.set_name,
+        snapshot.collector_number,
+        snapshot.rarity,
+        snapshot.finish,
+        snapshot.foil_treatment,
+        snapshot.proxied,
+        snapshot.condition,
+        snapshot.image_uri_small,
+        pickItemId
+      ]
+    )
+    return item.id
+  })
+}
+
 export function getPickListItems(pickListId: number, currency: Currency): PickListItem[] {
   const db = getDb()
   const price = priceExpr(currency, 'pli.finish')
@@ -375,7 +519,11 @@ export function getPickListItems(pickListId: number, currency: Currency): PickLi
             pli.image_uri_small, pli.destination,
             ${price} AS unit_value,
             ci.quantity AS owned_quantity,
-            p.oracle_id AS oracle_id
+            p.oracle_id AS oracle_id,
+            -- What twoSides() needs to know a card has a back. It was never selected,
+            -- so every staged row read as one-sided: the gallery's tiles could not be
+            -- turned, and neither could the zoom that opens from a row.
+            p.layout AS layout
      FROM pick_list_items pli
      LEFT JOIN printings p ON p.scryfall_id = pli.scryfall_id
      LEFT JOIN collection_items ci ON ci.id = pli.collection_item_id
@@ -445,7 +593,8 @@ export function confirmPickList(pickListId: number): ConfirmResult {
 
     const items = db.all(
       `SELECT id, collection_item_id, source_deck_id, source_oracle_id, quantity,
-              scryfall_id, finish, condition, name, destination
+              scryfall_id, finish, condition, name, destination,
+              COALESCE(proxied, 0) AS proxied
        FROM pick_list_items WHERE pick_list_id = ?`,
       [pickListId]
     ) as {
@@ -459,6 +608,7 @@ export function confirmPickList(pickListId: number): ConfirmResult {
       condition: string
       name: string
       destination: string | null
+      proxied: number
     }[]
 
     let cardsRemoved = 0
@@ -514,12 +664,35 @@ export function confirmPickList(pickListId: number): ConfirmResult {
           // Out of the deck and out of your possession: nothing to add anywhere.
           cardsRemoved += item.quantity
         } else {
-          addToCollection({
+          /*
+            Same guard as `moveToCollection`, asked at the moment it can be answered.
+
+            A proxy lands in the row for its printing, tagged -- `proxied` is a flag on
+            the row, not part of its identity. That flag then describes every copy in
+            the row, so the one case that must refuse is a row already holding real
+            copies of this printing: merging would mark those as proxies and zero the
+            value of cards you own.
+          */
+          if (item.proxied === 1) {
+            const destination = db.get(
+              `SELECT quantity, proxied FROM collection_items
+                WHERE scryfall_id = ? AND finish = ? AND condition = ?`,
+              [item.scryfall_id, item.finish, item.condition]
+            ) as { quantity: number; proxied: number } | undefined
+            if (destination && destination.proxied === 0 && destination.quantity > 0) {
+              throw new Error(tr('err.pickProxyMixes', { name: item.name }))
+            }
+          }
+          const landed = addToCollection({
             scryfall_id: item.scryfall_id,
             finish: item.finish as Finish,
             condition: item.condition as Condition,
             quantity: item.quantity
           })
+          // `addToCollection` knows nothing about proxies, so the flag is carried here.
+          if (item.proxied === 1) {
+            db.run('UPDATE collection_items SET proxied = 1 WHERE id = ?', [landed])
+          }
           cardsFreedFromDecks += item.quantity
         }
         continue

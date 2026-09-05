@@ -71,6 +71,29 @@ export function scryfallScope(itemId: number): UndoScope {
     : nothing('collection_items')
 }
 
+/**
+ * Every collection row of the *card*, across all its printings.
+ *
+ * For a write whose printing is not known until it returns: adding a copy in another
+ * language resolves to a different `scryfall_id`, so neither the printing asked about
+ * nor the one it lands on can be named in advance. The oracle id covers both, and a
+ * card has a handful of rows at most.
+ */
+export function oracleScope(scryfallId: string): UndoScope {
+  const row = getDb().get('SELECT oracle_id FROM printings WHERE scryfall_id = ?', [
+    scryfallId
+  ]) as { oracle_id: string | null } | undefined
+  // No oracle id is not "every card": fall back to the printing itself.
+  if (!row?.oracle_id) {
+    return { table: 'collection_items', where: 'scryfall_id = ?', params: [scryfallId] }
+  }
+  return {
+    table: 'collection_items',
+    where: 'scryfall_id IN (SELECT scryfall_id FROM printings WHERE oracle_id = ?)',
+    params: [row.oracle_id]
+  }
+}
+
 /** The same, for a bulk edit across several rows. */
 export function scryfallScopeMany(itemIds: number[]): UndoScope {
   if (itemIds.length === 0) return nothing('collection_items')

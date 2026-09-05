@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { PickDestination, PickList } from '@shared/types'
 import { useT } from '../hooks/useT'
-import { Button, Modal } from './primitives'
+import { Button, Modal, QuantityStepper } from './primitives'
 import { count } from '../lib/format'
+import CopyPicker from './CopyPicker'
 
 /**
  * Asks everything a pull needs to know: what happens to the copies, and which list
@@ -18,9 +19,15 @@ import { count } from '../lib/format'
  * answers to give and one confirm has to apply both. No list is preselected:
  * silently reusing whichever was open last is exactly the behaviour this control
  * was built to replace.
+ *
+ * A single card also gets asked how many, and which of your copies. Both questions only
+ * make sense one card at a time -- twenty rows of steppers is a spreadsheet, not a
+ * dialog -- so a multi-card selection stages one copy of each and is tuned afterwards
+ * in the list itself, where the cards are visible side by side.
  */
 export default function AddToListDialog({
   showDestination,
+  subject,
   onCancel,
   onConfirm
 }: {
@@ -33,8 +40,27 @@ export default function AddToListDialog({
    * exist.
    */
   showDestination: boolean
+  /**
+   * The one card being staged, when there is only one.
+   *
+   * Absent for a multi-card selection, which stages a copy of each: the quantity and
+   * copy controls are hidden entirely rather than shown applying to everything at once,
+   * which would mean "4 of each of these twenty cards".
+   */
+  subject?: {
+    /** The printing on screen, so the copy list can span the card's other printings. */
+    scryfallId: string
+    /** The copy staged unless another is chosen. Null for a card coming out of a deck. */
+    collectionItemId: number | null
+    /** Most copies the current source can supply. */
+    max: number
+  }
   onCancel: () => void
-  onConfirm: (target: number | 'new', destination: PickDestination) => void
+  onConfirm: (
+    target: number | 'new',
+    destination: PickDestination,
+    choice: { quantity: number; collectionItemId: number | null }
+  ) => void
 }): React.ReactElement {
   const t = useT()
   const [lists, setLists] = useState<PickList[] | null>(null)
@@ -45,6 +71,13 @@ export default function AddToListDialog({
     that loses the card.
   */
   const [alsoRemove, setAlsoRemove] = useState(false)
+  const [quantity, setQuantity] = useState(1)
+  /*
+    Which copy, tracked separately from the subject so choosing one can raise the cap:
+    a different row of yours may have more free than the one you started on.
+  */
+  const [copyId, setCopyId] = useState<number | null>(subject?.collectionItemId ?? null)
+  const [copyMax, setCopyMax] = useState(subject?.max ?? 1)
 
   useEffect(() => {
     void window.api.pickLists
@@ -66,7 +99,11 @@ export default function AddToListDialog({
 
   const confirm = (): void => {
     if (target === null) return
-    onConfirm(target, showDestination && alsoRemove ? 'gone' : 'collection')
+    onConfirm(target, showDestination && alsoRemove ? 'gone' : 'collection', {
+      // One of each when several cards are going on at once; see the docstring.
+      quantity: subject ? Math.min(quantity, copyMax) : 1,
+      collectionItemId: copyId
+    })
   }
 
   return (
@@ -90,6 +127,50 @@ export default function AddToListDialog({
               </span>
             </span>
           </label>
+        )}
+
+        {subject && (
+          <div className="mb-4 space-y-3">
+            <label className="flex items-center gap-2.5 text-[11px] text-ink-400">
+              {t('picks.quantityToStage')}
+              <QuantityStepper
+                value={quantity}
+                min={1}
+                max={Math.max(1, copyMax)}
+                size="sm"
+                onChange={setQuantity}
+              />
+            </label>
+
+            {/*
+              Only when the copies are yours to choose between. A card coming out of a
+              deck is the printing that deck holds, and changing that is a deck edit,
+              not a decision about this list.
+            */}
+            {subject.collectionItemId !== null ? (
+              <div>
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
+                  {t('copies.title')}
+                </p>
+                <CopyPicker
+                  scryfallId={subject.scryfallId}
+                  selected={copyId}
+                  needed={quantity}
+                  onChoose={(copy) => {
+                    setCopyId(copy.collection_item_id)
+                    const free = copy.quantity - copy.reserved
+                    setCopyMax(free)
+                    // Never leave the stepper above what the copy just chosen can give.
+                    setQuantity((current) => Math.min(current, Math.max(1, free)))
+                  }}
+                />
+              </div>
+            ) : (
+              <p className="text-[11px] text-ink-500">
+                {t('picks.stagingFrom')}: {t('picks.fromDeck')}
+              </p>
+            )}
+          </div>
         )}
 
         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-500">

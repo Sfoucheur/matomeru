@@ -1,6 +1,7 @@
 import { getDb, nowIso, transaction } from '../connection.js'
 import {
   PRINTING_COLUMNS,
+  parseJson,
   priceExpr,
   priceIsProxyExpr,
   rowToPrinting,
@@ -856,18 +857,54 @@ export function cardLocations(scryfallId: string): CardLocations | null {
   ) as { scryfall_id: string; oracle_id: string | null; name: string; printed_name: string | null } | undefined
   if (!printing) return null
 
-  const loose = db.all(
+  /*
+    Every copy of the *card*, not of the printing.
+
+    Keyed on the oracle id, with the printing asked for sorted first. It used to read
+    `WHERE ci.scryfall_id = ?`, which is a different question: a French copy and an
+    English one are different printings, so each was invisible from the other's detail
+    page and there was no single screen on which to compare them and drop one.
+
+    Falls back to the printing when the oracle id is unknown -- a printing cached
+    before Scryfall gave it one -- because grouping every such row together under NULL
+    would put unrelated cards in one list.
+
+    Each row carries its own printing, so the finish picker beside it offers that
+    row's finishes rather than the ones at the top of the page.
+  */
+  const oracleId = printing.oracle_id
+  const looseRows = db.all(
     `SELECT ci.id AS collection_item_id, ci.finish, ci.condition, ci.quantity,
             ci.foil_treatment,
+            ci.scryfall_id AS scryfall_id,
+            p.set_code, p.set_name, p.collector_number,
+            COALESCE(ci.forced_lang, p.lang) AS lang,
+            COALESCE(ci.forced_name, p.printed_name) AS printed_name,
+            p.finishes AS finishes, p.promo_types AS promo_types,
+            CASE WHEN ci.scryfall_id = ? THEN 1 ELSE 0 END AS same_printing,
             (SELECT COALESCE(SUM(pli.quantity), 0)
              FROM pick_list_items pli
              JOIN pick_lists pl ON pl.id = pli.pick_list_id
              WHERE pli.collection_item_id = ci.id AND pl.status = 'open') AS reserved
      FROM collection_items ci
-     WHERE ci.scryfall_id = ? AND ci.quantity > 0
-     ORDER BY ci.finish, ci.condition`,
-    [scryfallId]
-  ) as CardLocations['loose']
+     JOIN printings p ON p.scryfall_id = ci.scryfall_id
+     WHERE ci.quantity > 0
+       AND ((? IS NULL AND ci.scryfall_id = ?) OR p.oracle_id = ?)
+     ORDER BY same_printing DESC, p.set_code, p.collector_number, ci.finish, ci.condition`,
+    [scryfallId, oracleId, scryfallId, oracleId]
+  ) as (Omit<CardLocations['loose'][number], 'finishes' | 'promo_types' | 'same_printing'> & {
+    finishes: string | null
+    promo_types: string | null
+    same_printing: number
+  })[]
+
+  const loose = looseRows.map((row) => ({
+    ...row,
+    same_printing: row.same_printing === 1,
+    // Stored as JSON text, exactly as `printings.ts` writes them.
+    finishes: parseJson<Finish[]>(row.finishes, ['nonfoil']),
+    promo_types: parseJson<string[]>(row.promo_types, [])
+  })) as CardLocations['loose']
 
   const reservations = db.all(
     `SELECT pl.id AS pick_list_id, pl.name AS pick_list_name, SUM(pli.quantity) AS quantity
