@@ -1,3 +1,10 @@
+## [0.3.7](https://github.com/Sfoucheur/matomeru/compare/v0.3.6...v0.3.7) (2026-09-05)
+
+
+### Bug Fixes
+
+* deck moving ([47a284e](https://github.com/Sfoucheur/matomeru/commit/47a284e134429f6b7466d652a5b86b2f56b1a2c1))
+
 ## [0.3.6](https://github.com/Sfoucheur/matomeru/compare/v0.3.5...v0.3.6) (2026-09-01)
 
 
